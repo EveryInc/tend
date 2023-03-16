@@ -3,6 +3,8 @@ import os
 import redis
 from rq import Worker, Queue, Connection
 
+os.environ['OBJC_DISABLE_INITIALIZE_FORK_SAFETY'] = 'YES'
+
 listen = ['high', 'default', 'low']
 
 redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')

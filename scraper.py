@@ -2,6 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 import io
 from pdfminer.high_level import extract_text
+import string
 
 def query_pdf(url):
     headers = {
@@ -10,11 +11,19 @@ def query_pdf(url):
 
     # Send a GET request to the PDF
     response = requests.get(url, headers=headers)
-    pdf_file = io.BytesIO(response.content)
-    # Extract the text from the PDF content using pdfminer
-    pdf_text = extract_text(pdf_file)
-    
-    return pdf_text
+    if (response.status_code == 404):
+        # raise an error with the message 404
+        Exception("404: Couldn't find the file.")
+    else:
+        pdf_file = io.BytesIO(response.content)
+        # Extract the text from the PDF content using pdfminer
+        pdf_text = extract_text(pdf_file)
+
+        # remove non-printable characters
+        printable_chars = set(string.printable)
+        pdf_text = ''.join(filter(lambda x: x in printable_chars, pdf_text))
+        
+        return pdf_text
 
 def query_html_website(url):
     headers = {
