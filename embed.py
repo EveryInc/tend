@@ -14,6 +14,9 @@ index = pinecone.Index('transcripts')
 
 DOC_EMBEDDINGS_MODEL = "text-embedding-ada-002"
 
+def dummy_function(url, metadata):
+    print(f"Processing URL: {url}, Metadata: {metadata}")
+
 def generate_pinecone_id(start_string):
     random.seed(start_string)
     characters = string.ascii_letters + string.digits

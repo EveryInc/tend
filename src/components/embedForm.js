@@ -20,17 +20,19 @@ function EmbedForm() {
   };
 
   return (
-    <form onSubmit={handleSubmit}>
-      <label>
-        URL:
-        <input
-          type="text"
-          value={url}
-          onChange={(event) => setUrl(event.target.value)}
-        />
-      </label>
-      <button type="submit">Submit</button>
-    </form>
+    <div className='embed-form'>
+      <form onSubmit={handleSubmit}>
+        <label>
+          URL:
+          <input
+            type="text"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
+          />
+        </label>
+        <button type="submit">Submit</button>
+      </form>
+    </div>
   );
 }
 

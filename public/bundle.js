@@ -17,7 +17,7 @@
 
 var ___CSS_LOADER_EXPORT___ = _node_modules_css_loader_dist_runtime_api_js__WEBPACK_IMPORTED_MODULE_1___default()((_node_modules_css_loader_dist_runtime_noSourceMaps_js__WEBPACK_IMPORTED_MODULE_0___default()));
 // Module
-___CSS_LOADER_EXPORT___.push([module.id, "", ""]);
+___CSS_LOADER_EXPORT___.push([module.id, ".app-container {\n    display: flex;\n    flex-direction: column;\n    align-items: center;\n    justify-content: center;\n    height: 100vh;\n}\n\n.app-container h1 {\n    margin-bottom: 20px;\n}\n\n.embed-form {\n    display: flex;\n    flex-direction: column;\n    align-items: center;\n}\n\n.embed-form input[type=\"text\"] {\n    width: 300px;\n    padding: 10px;\n    margin: 10px 0;\n    border: 1px solid #ccc;\n    border-radius: 4px;\n}\n\n.embed-form button {\n    padding: 10px 20px;\n    border: none;\n    background-color: #4CAF50;\n    color: white;\n    cursor: pointer;\n    border-radius: 20px;\n    transition: background-color 0.3s ease;\n}\n\n.embed-form button:hover {\n    background-color: #8BC34A;\n}\n\n.input-success {\n    border-color: limegreen;\n    animation: flash-green 0.5s;\n}\n\n@keyframes flash-green {\n    0% {\n        background-color: limegreen;\n    }\n    100% {\n        background-color: transparent;\n    }\n}\n\n.shake-button {\n    animation: shake 0.5s;\n}\n\n@keyframes shake {\n    0% { transform: translate(1px, 1px) rotate(0deg); }\n    10% { transform: translate(-1px, -2px) rotate(-1deg); }\n    20% { transform: translate(-3px, 0px) rotate(1deg); }\n    30% { transform: translate(3px, 2px) rotate(0deg); }\n    40% { transform: translate(1px, -1px) rotate(1deg); }\n    50% { transform: translate(-1px, 2px) rotate(-1deg); }\n    60% { transform: translate(-3px, 1px) rotate(0deg); }\n    70% { transform: translate(3px, 1px) rotate(-1deg); }\n    80% { transform: translate(-1px, -1px) rotate(1deg); }\n    90% { transform: translate(1px, 2px) rotate(0deg); }\n    100% { transform: translate(1px, -2px) rotate(-1deg); }\n}", ""]);
 // Exports
 /* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (___CSS_LOADER_EXPORT___);
 
@@ -4414,7 +4414,9 @@ function EmbedForm() {
       return _ref.apply(this, arguments);
     };
   }();
-  return /*#__PURE__*/react.createElement("form", {
+  return /*#__PURE__*/react.createElement("div", {
+    className: "embed-form"
+  }, /*#__PURE__*/react.createElement("form", {
     onSubmit: handleSubmit
   }, /*#__PURE__*/react.createElement("label", null, "URL:", /*#__PURE__*/react.createElement("input", {
     type: "text",
@@ -4424,14 +4426,16 @@ function EmbedForm() {
     }
   })), /*#__PURE__*/react.createElement("button", {
     type: "submit"
-  }, "Submit"));
+  }, "Submit")));
 }
 /* harmony default export */ const components_EmbedForm = (EmbedForm);
 ;// CONCATENATED MODULE: ./src/components/app.js
 
 
 function App() {
-  return /*#__PURE__*/react.createElement("div", null, /*#__PURE__*/react.createElement("h1", null, "Embed a URL"), /*#__PURE__*/react.createElement(components_EmbedForm, null));
+  return /*#__PURE__*/react.createElement("div", {
+    className: "app-container"
+  }, /*#__PURE__*/react.createElement("h1", null, "Embed a URL"), /*#__PURE__*/react.createElement(components_EmbedForm, null));
 }
 /* harmony default export */ const app = (App);
 // EXTERNAL MODULE: ./node_modules/style-loader/dist/runtime/injectStylesIntoStyleTag.js

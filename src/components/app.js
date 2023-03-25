@@ -3,7 +3,7 @@ import React from 'react';
 
 function App() {
   return (
-    <div>
+    <div className="app-container">
       <h1>Embed a URL</h1>
       <EmbedForm />
     </div>
