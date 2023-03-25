@@ -17,7 +17,7 @@
 
 var ___CSS_LOADER_EXPORT___ = _node_modules_css_loader_dist_runtime_api_js__WEBPACK_IMPORTED_MODULE_1___default()((_node_modules_css_loader_dist_runtime_noSourceMaps_js__WEBPACK_IMPORTED_MODULE_0___default()));
 // Module
-___CSS_LOADER_EXPORT___.push([module.id, ".app-container {\n    display: flex;\n    flex-direction: column;\n    align-items: center;\n    justify-content: center;\n    height: 100vh;\n}\n\n.app-container h1 {\n    margin-bottom: 20px;\n}\n\n.embed-form {\n    display: flex;\n    flex-direction: column;\n    align-items: center;\n}\n\n.embed-form input[type=\"text\"] {\n    width: 300px;\n    padding: 10px;\n    margin: 10px 0;\n    border: 1px solid #ccc;\n    border-radius: 4px;\n}\n\n.embed-form button {\n    padding: 10px 20px;\n    border: none;\n    background-color: #4CAF50;\n    color: white;\n    cursor: pointer;\n    border-radius: 20px;\n    transition: background-color 0.3s ease;\n}\n\n.embed-form button:hover {\n    background-color: #8BC34A;\n}\n\n.input-success {\n    border-color: limegreen;\n    animation: flash-green 0.5s;\n}\n\n@keyframes flash-green {\n    0% {\n        background-color: limegreen;\n    }\n    100% {\n        background-color: transparent;\n    }\n}\n\n.shake-button {\n    animation: shake 0.5s;\n}\n\n@keyframes shake {\n    0% { transform: translate(1px, 1px) rotate(0deg); }\n    10% { transform: translate(-1px, -2px) rotate(-1deg); }\n    20% { transform: translate(-3px, 0px) rotate(1deg); }\n    30% { transform: translate(3px, 2px) rotate(0deg); }\n    40% { transform: translate(1px, -1px) rotate(1deg); }\n    50% { transform: translate(-1px, 2px) rotate(-1deg); }\n    60% { transform: translate(-3px, 1px) rotate(0deg); }\n    70% { transform: translate(3px, 1px) rotate(-1deg); }\n    80% { transform: translate(-1px, -1px) rotate(1deg); }\n    90% { transform: translate(1px, 2px) rotate(0deg); }\n    100% { transform: translate(1px, -2px) rotate(-1deg); }\n}", ""]);
+___CSS_LOADER_EXPORT___.push([module.id, ".app-container {\n    display: flex;\n    flex-direction: column;\n    align-items: center;\n    justify-content: center;\n    height: 100vh;\n}\n\n.app-container h1 {\n    margin-bottom: 20px;\n}\n\n.embed-form {\n    display: flex;\n    flex-direction: column;\n    align-items: center;\n}\n\n.embed-form input[type=\"text\"] {\n    width: 300px;\n    padding: 10px;\n    margin: 10px 0;\n    border: 1px solid #ccc;\n    border-radius: 4px;\n}\n\n.embed-form button {\n    padding: 10px 20px;\n    border: none;\n    background-color: #4CAF50;\n    color: white;\n    cursor: pointer;\n    border-radius: 5px;\n    transition: background-color 0.3s ease;\n}\n\n.embed-form button:hover {\n    background-color: #8BC34A;\n}\n\n.input-success {\n    border-color: limegreen;\n    animation: flash-green 0.5s;\n}\n\n@keyframes flash-green {\n    0% {\n        background-color: limegreen;\n    }\n    100% {\n        background-color: transparent;\n    }\n}\n\n.shake-button {\n    animation: shake 0.5s;\n}\n\n@keyframes shake {\n    0% { transform: translate(1px, 1px) rotate(0deg); }\n    10% { transform: translate(-1px, -2px) rotate(-1deg); }\n    20% { transform: translate(-3px, 0px) rotate(1deg); }\n    30% { transform: translate(3px, 2px) rotate(0deg); }\n    40% { transform: translate(1px, -1px) rotate(1deg); }\n    50% { transform: translate(-1px, 2px) rotate(-1deg); }\n    60% { transform: translate(-3px, 1px) rotate(0deg); }\n    70% { transform: translate(3px, 1px) rotate(-1deg); }\n    80% { transform: translate(-1px, -1px) rotate(1deg); }\n    90% { transform: translate(1px, 2px) rotate(0deg); }\n    100% { transform: translate(1px, -2px) rotate(-1deg); }\n}\n/* Animation for URL submission */\n@keyframes submitSuccess {\n    0% { transform: scale(1); }\n    50% { transform: scale(1.1); }\n    100% { transform: scale(1); }\n  }\n  \n  @keyframes hoverButton {\n    0% { transform: scale(1); }\n    100% { transform: scale(1.1); }\n  }\n  \n  /* Animation for saved URL */\n  @keyframes bounceSavedUrl {\n    0% { transform: translateY(-10px); opacity: 0; }\n    30% { transform: translateY(-5px); opacity: 1; }\n    100% { transform: translateY(0); opacity: 1; }\n  }\n  \n  /* Style the input field */\n  .juicy-input {\n    padding: 8px;\n    border: 2px solid #00b4d8;\n    border-radius: 4px;\n    transition: all 0.3s ease;\n  }\n  \n  /* Enlarge and highlight the input field on focus */\n  .juicy-input:focus {\n    outline: none;\n    box-shadow: 0 0 0 2px rgba(0, 180, 216, 0.3);\n    transform: scale(1.05);\n  }\n  \n  /* Style the submit button */\n  .juicy-button {\n    padding: 8px 16px;\n    margin-left: 8px;\n    border: none;\n    border-radius: 4px;\n    background-color: #00b4d8;\n    color: #ffffff;\n    cursor: pointer;\n    transition: all 0.3s ease;\n  }\n  \n  /* Animate the button on successful submission and hover */\n  .juicy-button:active {\n    animation: submitSuccess 0.3s ease;\n  }\n  .juicy-button:hover {\n    transform: scale(1.1);\n  }\n  \n  /* Style the saved URL animation */\n  .saved-url-animation {\n    animation: bounceSavedUrl 0.6s ease;\n    margin-top: 16px;\n    color: #0077b6;\n  }", ""]);
 // Exports
 /* harmony default export */ const __WEBPACK_DEFAULT_EXPORT__ = (___CSS_LOADER_EXPORT___);
 
@@ -4382,6 +4382,22 @@ function EmbedForm() {
     _useState2 = _slicedToArray(_useState, 2),
     url = _useState2[0],
     setUrl = _useState2[1];
+  var _useState3 = (0,react.useState)(null),
+    _useState4 = _slicedToArray(_useState3, 2),
+    recentlySavedUrl = _useState4[0],
+    setRecentlySavedUrl = _useState4[1];
+  var inputRef = (0,react.useRef)(); // Create a ref to access the input element
+
+  (0,react.useEffect)(function () {
+    if (recentlySavedUrl) {
+      setTimeout(function () {
+        setRecentlySavedUrl(null);
+      }, 3000); // Hide the saved URL after 3 seconds
+    }
+
+    // Set the focus on the input field when the page loads
+    // inputRef.current.focus();
+  }, [recentlySavedUrl]);
   var handleSubmit = /*#__PURE__*/function () {
     var _ref = _asyncToGenerator( /*#__PURE__*/_regeneratorRuntime().mark(function _callee(event) {
       var formData;
@@ -4396,7 +4412,7 @@ function EmbedForm() {
             _context.next = 7;
             return lib_axios.post('/embed', formData);
           case 7:
-            alert('URL submitted successfully!');
+            setRecentlySavedUrl(url); // Display the saved URL
             setUrl('');
             _context.next = 14;
             break;
@@ -4414,19 +4430,37 @@ function EmbedForm() {
       return _ref.apply(this, arguments);
     };
   }();
+
+  // Set the focus on the input field when the page is clicked (except for the submit button)
+  var handlePageClick = function handlePageClick(event) {
+    if (event.target !== document.querySelector('.juicy-button')) {
+      inputRef.current.focus();
+    }
+  };
   return /*#__PURE__*/react.createElement("div", {
-    className: "embed-form"
+    className: "embed-form",
+    onClick: handlePageClick
   }, /*#__PURE__*/react.createElement("form", {
     onSubmit: handleSubmit
-  }, /*#__PURE__*/react.createElement("label", null, "URL:", /*#__PURE__*/react.createElement("input", {
+  }, /*#__PURE__*/react.createElement("label", null, /*#__PURE__*/react.createElement("input", {
+    ref: inputRef // Attach the ref to the input element
+    ,
+    className: "juicy-input" // Add a class to the input
+    ,
     type: "text",
+    placeholder: "grow what you know",
     value: url,
     onChange: function onChange(event) {
       return setUrl(event.target.value);
     }
   })), /*#__PURE__*/react.createElement("button", {
+    className: "juicy-button",
     type: "submit"
-  }, "Submit")));
+  }, "grow"), " "), recentlySavedUrl && /*#__PURE__*/react.createElement("div", {
+    className: "saved-url-animation"
+  }, "Saved: ", /*#__PURE__*/react.createElement("a", {
+    href: recentlySavedUrl
+  }, recentlySavedUrl)));
 }
 /* harmony default export */ const components_EmbedForm = (EmbedForm);
 ;// CONCATENATED MODULE: ./src/components/app.js
@@ -4435,7 +4469,7 @@ function EmbedForm() {
 function App() {
   return /*#__PURE__*/react.createElement("div", {
     className: "app-container"
-  }, /*#__PURE__*/react.createElement("h1", null, "Embed a URL"), /*#__PURE__*/react.createElement(components_EmbedForm, null));
+  }, /*#__PURE__*/react.createElement("h1", null, "tend"), /*#__PURE__*/react.createElement(components_EmbedForm, null));
 }
 /* harmony default export */ const app = (App);
 // EXTERNAL MODULE: ./node_modules/style-loader/dist/runtime/injectStylesIntoStyleTag.js

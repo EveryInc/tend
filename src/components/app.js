@@ -4,7 +4,7 @@ import React from 'react';
 function App() {
   return (
     <div className="app-container">
-      <h1>Embed a URL</h1>
+    <h1>tend</h1>
       <EmbedForm />
     </div>
   );
