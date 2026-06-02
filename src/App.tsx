@@ -1297,7 +1297,6 @@ export default function App({ feedId, screen, workspaceTab = "feed" }: { feedId:
           <Fragment key={card.id}>
             {tab === "review" && index === updated.length && fresh.length > 0 && <div className="section-label" key={`${card.id}-label`}>New <span>{fresh.length}</span></div>}
             <CardView key={card.id} card={card} active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()} onAction={(action) => runCardAction(card, action)} />
-            <CardView card={card} active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()} onAction={(action) => runCardAction(card, action)} />
           </Fragment>
         ))}
         {feedWork.map((work) => (
