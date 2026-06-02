@@ -8,23 +8,40 @@
     "dev": "vite --host 127.0.0.1",
     "start": "concurrently -k -n api,web -c brown,blue \"bun run api\" \"pnpm dev\"",
     "build": "tsc && vite build",
+    "hosted:dev": "vite --config vite.hosted.config.ts",
+    "hosted:migrate": "wrangler d1 migrations apply attention-control-plane --local",
+    "hosted:migrate:remote": "wrangler d1 migrations apply attention-control-plane --remote",
+    "hosted:build": "tsc -p tsconfig.hosted.json && vite build --config vite.hosted.config.ts",
+    "hosted:types": "tsc -p tsconfig.hosted.json --noEmit",
     "test": "bun test",
     "cli": "bun run cli.ts",
     "seed:demo": "bun run cli.ts demo:seed"
   },
   "dependencies": {
+    "@better-auth/oauth-provider": "^1.6.13",
+    "@cloudflare/vite-plugin": "^1.39.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@tanstack/react-query": "^5.100.14",
+    "@tanstack/react-router": "^1.170.10",
     "@vitejs/plugin-react": "^5.1.1",
+    "agents": "^0.14.0",
+    "better-auth": "^1.6.13",
+    "better-auth-cloudflare": "^0.3.0",
     "concurrently": "^9.2.1",
-    "hono": "^4.10.7",
-    "vite": "^7.2.7",
-    "typescript": "^5.9.3",
+    "hono": "^4.12.23",
+    "kysely": "0.28.17",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.7",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260602.1",
     "@types/node": "^24.10.2",
     "@types/react": "^18.3.27",
-    "@types/react-dom": "^18.3.7"
+    "@types/react-dom": "^18.3.7",
+    "wrangler": "^4.97.0"
   },
   "packageManager": "pnpm@9.15.4"
 }

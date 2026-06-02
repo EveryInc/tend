@@ -1,0 +1,28 @@
+name = "attention-hosted"
+main = "src/hosted/worker.ts"
+compatibility_date = "2026-06-02"
+compatibility_flags = ["nodejs_compat"]
+
+[assets]
+directory = "./dist/client"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/mcp", "/mcp/*", "/.well-known/*", "/attention-agent/*"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "attention-control-plane"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[durable_objects.bindings]]
+name = "ACCOUNT_DO"
+class_name = "AccountDO"
+
+[[durable_objects.bindings]]
+name = "FEED_DO"
+class_name = "FeedDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["AccountDO", "FeedDO"]

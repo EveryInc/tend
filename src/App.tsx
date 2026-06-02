@@ -1,23 +1,54 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import type { Card, CardAction, CardBlock, FeedView, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkspaceRevision, WorkspaceView } from "./types";
 import { useActiveCard } from "./state/activeCard";
 import { usePushToTalk } from "./state/pushToTalk";
+import { FeedRealtimeProvider, useFeedRealtime, type ConnectionState } from "./state/realtime";
 import { preferredTarget, sameTarget } from "./state/voiceTarget";
 
 type Tab = "review" | "queued" | "working" | "done";
 type Inspector = "new-feed" | "add-source" | null;
-type Screen = "feed" | "workspace" | "learnings";
 type WorkspaceTab = "feed" | "global";
+type AuthSession = { user: { id: string; email: string; name?: string | null }; session: unknown };
+type OAuthConsentResponse = { redirect?: boolean; url?: string; redirect_uri?: string };
+export type AttentionRouteScreen = "feed" | "workspace" | "agents" | "learnings";
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
-  const value = await response.json();
+  const response = await fetch(url, { credentials: "same-origin", ...init });
+  const value = await response.json() as { error?: string };
   if (!response.ok) throw new Error(value.error ?? `Request failed: ${response.status}`);
   return value as T;
 }
 
 function post<T>(url: string, value: unknown = {}): Promise<T> {
   return api<T>(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(value) });
+}
+
+async function authRequest<T>(path: string, value?: unknown): Promise<T> {
+  const response = await fetch(`/api/auth${path}`, {
+    method: value === undefined ? "GET" : "POST",
+    credentials: "same-origin",
+    headers: value === undefined ? undefined : { "content-type": "application/json" },
+    body: value === undefined ? undefined : JSON.stringify(value),
+  });
+  const text = await response.text();
+  const body = text ? JSON.parse(text) as { message?: string; error?: { message?: string } } : null;
+  if (!response.ok) throw new Error(body?.error?.message ?? body?.message ?? `Auth request failed: ${response.status}`);
+  return body as T;
+}
+
+function getAuthSession(): Promise<AuthSession | null> {
+  return authRequest<AuthSession | null>("/get-session");
+}
+
+function isOAuthSignInPage() {
+  const params = new URLSearchParams(location.search);
+  return location.pathname === "/sign-in" && params.has("client_id") && params.has("response_type");
+}
+
+function resumeOAuthAuthorize() {
+  location.assign(`/api/auth/oauth2/authorize${location.search}`);
 }
 
 function targetLabel(target: VoiceTarget, state: WorkspaceView): string {
@@ -373,7 +404,31 @@ function RoutineActionGroupView({ group, onApprove }: { group: RoutineActionGrou
   );
 }
 
-function TopBar({ state, onFeed, onInspector, onWorkspace }: { state: WorkspaceView; onFeed: (id: string) => void; onInspector: (value: Inspector) => void; onWorkspace: (tab?: WorkspaceTab) => void }) {
+function connectionLabel(state: ConnectionState) {
+  if (state === "live") return "Live";
+  if (state === "reconnecting") return "Reconnecting";
+  if (state === "offline") return "Offline";
+  return "Connecting";
+}
+
+function TopBar({
+  state,
+  user,
+  onFeed,
+  onInspector,
+  onWorkspace,
+  onAgents,
+  onSignOut,
+}: {
+  state: WorkspaceView;
+  user: AuthSession["user"];
+  onFeed: (id: string) => void;
+  onInspector: (value: Inspector) => void;
+  onWorkspace: (tab?: WorkspaceTab) => void;
+  onAgents: () => void;
+  onSignOut: () => void;
+}) {
+  const { state: connectionState } = useFeedRealtime();
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -388,7 +443,14 @@ function TopBar({ state, onFeed, onInspector, onWorkspace }: { state: WorkspaceV
     <>
       <div className="feed-bar" ref={menuRef}>
         <button className="menu-trigger" onClick={() => setOpen(!open)} aria-label="Open feed navigation">☰</button>
-        <strong>{state.active.config.name}</strong>
+        <div className="feed-title">
+          <strong>{state.active.config.name}</strong>
+          <span className={`connection-indicator ${connectionState}`} title={`Realtime connection: ${connectionLabel(connectionState)}`} aria-label={`Realtime connection: ${connectionLabel(connectionState)}`}>
+            <span />
+            {connectionLabel(connectionState)}
+          </span>
+        </div>
+        <div className="feed-auth"><span>{user.email}</span><button onClick={onSignOut}>Sign out</button></div>
         {open && (
           <div className="feed-menu">
             <div className="menu-title">Feeds</div>
@@ -402,11 +464,199 @@ function TopBar({ state, onFeed, onInspector, onWorkspace }: { state: WorkspaceV
             <button onClick={() => { onInspector("add-source"); setOpen(false); }}>＋ Add a source</button>
             <button onClick={() => { onWorkspace("feed"); setOpen(false); }}>⌘ Feed setup</button>
             <button onClick={() => { onWorkspace("global"); setOpen(false); }}>⌘ Global prompts</button>
+            <button onClick={() => { onAgents(); setOpen(false); }}>⌘ Connect your agent</button>
           </div>
         )}
       </div>
     </>
   );
+}
+
+function CopyButton({ value, onCopied }: { value: string; onCopied: () => void }) {
+  const copy = async () => {
+    await navigator.clipboard?.writeText(value);
+    onCopied();
+  };
+  return <button className="button ghost" onClick={() => void copy()}>Copy</button>;
+}
+
+function AgentSetupPage({ state, onBack, onCopied }: { state: WorkspaceView; onBack: () => void; onCopied: () => void }) {
+  const origin = location.origin;
+  const mcpUrl = `${origin}/mcp`;
+  const skillUrl = `${origin}/attention-agent/SKILL.md`;
+  const setupPrompt = `Connect this Codex Desktop thread to Hosted Attention.
+
+MCP server: ${mcpUrl}
+Skill: ${skillUrl}
+Feed: ${state.active.config.id}
+
+After connecting, read the skill, inspect the feed, and bind this local thread as the feed home thread with bind_feed_thread.
+
+Create or update one heartbeat automation on this same thread. On each wakeup it should inspect the feed, list queued work first, claim before using local connectors for queued instructions, execute and complete/fail each claim through Attention MCP, include done: true when closing/ignoring/already-handled cards, then refresh configured sources opportunistically only when no queued work is being handled. Use run_feed for the work-drain phase.`;
+
+  return (
+    <main className="workspace-page agents-page">
+      <button className="workspace-back" onClick={onBack}>← Back to feed</button>
+      <div className="workspace-title">
+        <div>
+          <div className="panel-kicker">Agents</div>
+          <h1>Connect your agent</h1>
+        </div>
+        <a className="button ghost link-button" href={skillUrl} target="_blank" rel="noreferrer">Open SKILL.md</a>
+      </div>
+      <div className="agent-grid">
+        <section className="agent-panel">
+          <div className="workspace-editor-head">
+            <h2>MCP server</h2>
+            <CopyButton value={mcpUrl} onCopied={onCopied} />
+          </div>
+          <p>Use this endpoint when adding the hosted Attention MCP server to your local Codex Desktop thread.</p>
+          <code className="copy-block">{mcpUrl}</code>
+        </section>
+        <section className="agent-panel">
+          <div className="workspace-editor-head">
+            <h2>Skill file</h2>
+            <CopyButton value={skillUrl} onCopied={onCopied} />
+          </div>
+          <p>Install or reference this skill so the local thread knows feed ownership and work-drain rules.</p>
+          <code className="copy-block">{skillUrl}</code>
+        </section>
+      </div>
+      <section className="workspace-section">
+        <div className="workspace-section-head">
+          <h2>Setup prompt</h2>
+          <CopyButton value={setupPrompt} onCopied={onCopied} />
+        </div>
+        <textarea className="setup-prompt" readOnly value={setupPrompt} rows={9} />
+      </section>
+    </main>
+  );
+}
+
+function AuthScreen({ onAuthenticated }: { onAuthenticated: (session: AuthSession) => void }) {
+  const [mode, setMode] = useState<"sign-in" | "sign-up">("sign-in");
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      if (mode === "sign-up") {
+        await authRequest("/sign-up/email", { name: name.trim() || email, email, password });
+      } else {
+        await authRequest("/sign-in/email", { email, password });
+      }
+      const session = await getAuthSession();
+      if (!session) throw new Error("Session was not created.");
+      if (isOAuthSignInPage()) {
+        resumeOAuthAuthorize();
+        return;
+      }
+      onAuthenticated(session);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <main className="auth-page">
+      <form className="auth-panel" onSubmit={submit}>
+        <div className="panel-kicker">Hosted Attention</div>
+        <h1>{mode === "sign-in" ? "Sign in" : "Create account"}</h1>
+        {mode === "sign-up" && <label>Name<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" /></label>}
+        <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} autoComplete="email" required /></label>
+        <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} autoComplete={mode === "sign-in" ? "current-password" : "new-password"} required /></label>
+        {error && <p className="auth-error">{error}</p>}
+        <button className="button primary large" type="submit" disabled={busy}>{busy ? "Working..." : mode === "sign-in" ? "Sign in" : "Sign up"}</button>
+        <button className="auth-switch" type="button" onClick={() => { setMode(mode === "sign-in" ? "sign-up" : "sign-in"); setError(""); }}>
+          {mode === "sign-in" ? "Need an account? Sign up" : "Already have an account? Sign in"}
+        </button>
+      </form>
+    </main>
+  );
+}
+
+function OAuthConsentScreen({ user }: { user: AuthSession["user"] }) {
+  const [busy, setBusy] = useState<"accept" | "deny" | null>(null);
+  const [error, setError] = useState("");
+  const params = new URLSearchParams(location.search);
+  const scopes = (params.get("scope") ?? "").split(/\s+/).filter(Boolean);
+
+  const submit = async (accept: boolean) => {
+    setBusy(accept ? "accept" : "deny");
+    setError("");
+    try {
+      const response = await authRequest<OAuthConsentResponse>("/oauth2/consent", {
+        accept,
+        oauth_query: location.search.slice(1),
+      });
+      const nextUrl = response.url ?? response.redirect_uri;
+      if (!nextUrl) throw new Error("Consent did not return a redirect URL.");
+      location.assign(nextUrl);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+      setBusy(null);
+    }
+  };
+
+  return (
+    <main className="auth-page">
+      <section className="auth-panel">
+        <div className="panel-kicker">Hosted Attention</div>
+        <h1>Connect agent</h1>
+        <p className="auth-note">{user.email} is granting Codex access to the Attention MCP server.</p>
+        <div className="scope-list">
+          {scopes.map((scope) => <span key={scope}>{scope}</span>)}
+        </div>
+        {error && <p className="auth-error">{error}</p>}
+        <button className="button primary large" type="button" disabled={busy !== null} onClick={() => void submit(true)}>
+          {busy === "accept" ? "Connecting..." : "Allow"}
+        </button>
+        <button className="auth-switch" type="button" disabled={busy !== null} onClick={() => void submit(false)}>
+          Deny
+        </button>
+      </section>
+    </main>
+  );
+}
+
+export function SignInPage() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const authQuery = useQuery({ queryKey: ["auth-session"], queryFn: getAuthSession });
+  useEffect(() => {
+    if (authQuery.data && isOAuthSignInPage()) resumeOAuthAuthorize();
+  }, [authQuery.data]);
+  if (authQuery.isPending) return <main className="loading">Loading attention…</main>;
+  if (authQuery.data && isOAuthSignInPage()) return <main className="loading">Continuing OAuth…</main>;
+  if (authQuery.data) {
+    void navigate({ to: "/feed/$feedId", params: { feedId: "inbox" } });
+    return <main className="loading">Loading attention…</main>;
+  }
+  return (
+    <AuthScreen
+      onAuthenticated={(session) => {
+        queryClient.setQueryData(["auth-session"], session);
+        if (!isOAuthSignInPage()) void navigate({ to: "/feed/$feedId", params: { feedId: "inbox" } });
+      }}
+    />
+  );
+}
+
+export function OAuthConsentPage() {
+  const queryClient = useQueryClient();
+  const authQuery = useQuery({ queryKey: ["auth-session"], queryFn: getAuthSession });
+  const auth = authQuery.isPending ? undefined : authQuery.data ?? null;
+  if (auth === undefined) return <main className="loading">Loading attention…</main>;
+  if (auth === null) return <AuthScreen onAuthenticated={(session) => queryClient.setQueryData(["auth-session"], session)} />;
+  return <OAuthConsentScreen user={auth.user} />;
 }
 
 function WorkspaceEditor({
@@ -693,14 +943,17 @@ function Dock({
   );
 }
 
-export default function App() {
-  const [state, setState] = useState<WorkspaceView | null>(null);
-  const [feedId, setFeedId] = useState(new URLSearchParams(location.search).get("feed") ?? "inbox");
-  const [screen, setScreen] = useState<Screen>(() => {
-    const value = new URLSearchParams(location.search).get("screen");
-    return value === "workspace" || value === "learnings" ? value : "feed";
+export default function App({ feedId, screen, workspaceTab = "feed" }: { feedId: string; screen: AttentionRouteScreen; workspaceTab?: WorkspaceTab }) {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const authQuery = useQuery({ queryKey: ["auth-session"], queryFn: getAuthSession });
+  const auth = authQuery.isPending ? undefined : authQuery.data ?? null;
+  const stateQuery = useQuery({
+    queryKey: ["workspace", feedId],
+    queryFn: () => api<WorkspaceView>(`/api/state?feed=${encodeURIComponent(feedId)}`),
+    enabled: !!auth,
   });
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(new URLSearchParams(location.search).get("workspace") === "global" ? "global" : "feed");
+  const state = stateQuery.data ?? null;
   const [tab, setTab] = useState<Tab>("review");
   const [inspector, setInspector] = useState<Inspector>(null);
   const [toast, setToast] = useState("");
@@ -723,17 +976,9 @@ export default function App() {
   const toastTimerRef = useRef<number | null>(null);
   const knownCompoundProposalIdsRef = useRef(new Map<string, Set<string>>());
 
-  const refresh = useCallback(async (nextFeed = feedId) => setState(await api(`/api/state?feed=${encodeURIComponent(nextFeed)}`)), [feedId]);
-  useEffect(() => { void refresh(); }, [refresh]);
-  useEffect(() => {
-    const events = new EventSource("/api/events");
-    events.addEventListener("change", () => void refresh());
-    return () => events.close();
-  }, [refresh]);
-  useEffect(() => {
-    const timer = window.setInterval(() => void refresh(), 1_200);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+  const refresh = useCallback(async (nextFeed = feedId) => {
+    await queryClient.invalidateQueries({ queryKey: ["workspace", nextFeed] });
+  }, [feedId, queryClient]);
 
   const feed = state?.active;
   const cards = useMemo(() => feed ? visibleCards(feed, tab) : [], [feed, tab]);
@@ -759,41 +1004,36 @@ export default function App() {
   }, [activeCard, feed, screen, workspaceFocus, workspaceTab]);
 
   const changeFeed = (id: string) => {
-    setFeedId(id);
     setTab("review");
     setWorkspaceFocus(null);
-    const url = new URL(location.href);
-    url.searchParams.set("feed", id);
-    history.replaceState({}, "", url);
+    void navigate({ to: "/feed/$feedId", params: { feedId: id } });
   };
 
   const openWorkspace = (nextTab: WorkspaceTab = "feed") => {
-    setWorkspaceTab(nextTab);
-    setScreen("workspace");
     setWorkspaceFocus(null);
-    const url = new URL(location.href);
-    url.searchParams.set("screen", "workspace");
-    url.searchParams.set("workspace", nextTab);
-    history.replaceState({}, "", url);
+    void navigate({ to: "/workspace/$feedId", params: { feedId }, search: { tab: nextTab } });
   };
 
   const closeWorkspace = () => {
-    setScreen("feed");
     setWorkspaceFocus(null);
-    const url = new URL(location.href);
-    url.searchParams.delete("screen");
-    url.searchParams.delete("workspace");
-    history.replaceState({}, "", url);
+    void navigate({ to: "/feed/$feedId", params: { feedId } });
   };
 
   const openLearningReview = useCallback(() => {
-    setScreen("learnings");
     setWorkspaceFocus(null);
-    const url = new URL(location.href);
-    url.searchParams.set("screen", "learnings");
-    url.searchParams.delete("workspace");
-    history.replaceState({}, "", url);
-  }, []);
+    void navigate({ to: "/learnings/$feedId", params: { feedId } });
+  }, [feedId, navigate]);
+
+  const openAgents = () => {
+    void navigate({ to: "/agents/$feedId", params: { feedId } });
+  };
+
+  const signOut = () => {
+    void authRequest("/sign-out", {}).finally(() => {
+      queryClient.setQueryData(["auth-session"], null);
+      queryClient.removeQueries({ queryKey: ["workspace"] });
+    });
+  };
 
   const showToast = (message: string, duration = 2_400) => {
     setToast(message);
@@ -983,37 +1223,54 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   });
 
+  if (auth === undefined) return <main className="loading">Loading attention…</main>;
+  if (auth === null) return <AuthScreen onAuthenticated={(session) => queryClient.setQueryData(["auth-session"], session)} />;
   if (!state || !feed) return <main className="loading">Loading attention…</main>;
+
+  const withRealtime = (content: ReactNode) => (
+    <FeedRealtimeProvider feedId={feedId} enabled={!!auth} onChange={() => void refresh()}>
+      {content}
+    </FeedRealtimeProvider>
+  );
+
   const resolvedDockTarget = dockTarget ?? ladder[0];
   const compoundProposals = state.proposals.filter((proposal) => proposal.anchorFeedId === feed.config.id && proposal.source === "compound");
 
   if (screen === "workspace") return (
-    <>
-      <TopBar state={state} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
+    withRealtime(<>
+      <TopBar state={state} user={auth.user} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} onAgents={openAgents} onSignOut={signOut} />
       <div className="workspace-proposals"><RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} /></div>
-      <PromptWorkspace state={state} tab={workspaceTab} onTab={(nextTab) => { setWorkspaceTab(nextTab); setWorkspaceFocus(null); const url = new URL(location.href); url.searchParams.set("workspace", nextTab); history.replaceState({}, "", url); }} onBack={closeWorkspace} onInspector={setInspector} onSaved={showToast} onTargetFocus={(target) => { setWorkspaceFocus(target); selectDockTarget(target); }} />
+      <PromptWorkspace state={state} tab={workspaceTab} onTab={(nextTab) => openWorkspace(nextTab)} onBack={closeWorkspace} onInspector={setInspector} onSaved={showToast} onTargetFocus={(target) => { setWorkspaceFocus(target); selectDockTarget(target); }} />
       <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
-    </>
+    </>)
   );
 
   if (screen === "learnings") return (
-    <>
-      <TopBar state={state} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
+    withRealtime(<>
+      <TopBar state={state} user={auth.user} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} onAgents={openAgents} onSignOut={signOut} />
       <LearningReview feed={feed} proposals={compoundProposals} onBack={closeWorkspace} onApply={applyLearningProposal} onReject={rejectLearningProposal} />
       <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
-    </>
+    </>)
+  );
+
+  if (screen === "agents") return (
+    withRealtime(<>
+      <TopBar state={state} user={auth.user} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} onAgents={openAgents} onSignOut={signOut} />
+      <AgentSetupPage state={state} onBack={closeWorkspace} onCopied={() => showToast("Copied")} />
+      {toast && <div className="toast">{toast}</div>}
+    </>)
   );
 
   const updated = cards.filter((card) => card.status === "to_review_updated");
   const fresh = cards.filter((card) => card.status !== "to_review_updated");
   const feedWork = feed.work.filter((work) => work.cardId === "__feed__" && work.status === tab);
   return (
-    <>
-      <TopBar state={state} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
+    withRealtime(<>
+      <TopBar state={state} user={auth.user} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} onAgents={openAgents} onSignOut={signOut} />
       <nav className="tabs">
         {(["review", "queued", "working", "done"] as Tab[]).map((item) => (
           <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>
@@ -1021,7 +1278,8 @@ export default function App() {
             <span>{countFor(feed, item)}</span>
           </button>
         ))}
-        <button className="tab-quiet" onClick={() => openWorkspace("feed")}>Prompts & sources</button>
+        <button className="tab-quiet tab-spacer" onClick={() => openWorkspace("feed")}>Prompts & sources</button>
+        <button className="tab-quiet" onClick={openAgents}>Agents</button>
       </nav>
       <main className="page" ref={pageRef}>
         <RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} />
@@ -1058,6 +1316,6 @@ export default function App() {
       <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoCleanup && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoCleanup.feedId}/cards/${undoCleanup.cardId}/undo-dismiss`), "Cleanup undone").then(() => setUndoCleanup(null))}>Undo</button>}{undoQueuedWork && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoQueuedWork.feedId}/work/${undoQueuedWork.workId}/cancel`), "Instruction cancelled").then(() => setUndoQueuedWork(null))}>Undo</button>}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
-    </>
+    </>)
   );
 }

@@ -10,5 +10,6 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src", "server", "server.ts", "cli.ts", "vite.config.ts"]
+  "include": ["src", "server", "server.ts", "cli.ts", "vite.config.ts"],
+  "exclude": ["src/hosted"]
 }

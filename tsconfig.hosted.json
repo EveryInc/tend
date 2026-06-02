@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": ["@cloudflare/workers-types/latest", "node"]
+  },
+  "include": [
+    "src",
+    "server/templates.ts",
+    "server/util.ts",
+    "vite.hosted.config.ts",
+    "wrangler.toml"
+  ],
+  "exclude": []
+}
