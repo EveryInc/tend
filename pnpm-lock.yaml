@@ -41,6 +41,9 @@ importers:
       hono:
         specifier: ^4.12.23
         version: 4.12.23
+      jose:
+        specifier: 6.2.3
+        version: 6.2.3
       kysely:
         specifier: 0.28.17
         version: 0.28.17

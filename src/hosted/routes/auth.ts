@@ -17,6 +17,11 @@ async function authResponse(c: { env: HostedEnv; req: { raw: Request; method: st
   return Response.redirect(new URL(body.url, c.req.raw.url).href, 302);
 }
 
+authRoutes.get("/api/auth/jwks/", (c) => {
+  const url = new URL(c.req.raw.url);
+  url.pathname = url.pathname.replace(/\/+$/, "");
+  return createAuth(c.env, c.req.raw).handler(new Request(url, c.req.raw));
+});
 authRoutes.all("/api/auth/*", authResponse);
 authRoutes.get("/.well-known/oauth-authorization-server", (c) =>
   oauthProviderAuthServerMetadata(createAuth(c.env, c.req.raw))(c.req.raw),
