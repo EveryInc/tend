@@ -1,7 +1,7 @@
 import type { Card, CardBlock, FeedConfig, FeedEvent, PolicyRevision, ProposedAction, SourceRecipe, ThreadBinding, WorkItem } from "../../types";
 import type { FeedState, HostedCardInput } from "../env";
 import { digest, isoNow, makeId, makeToken } from "../util";
-import { sourceRecipeFromBrief } from "./feed-state-service";
+import { normalizeCardBlocks, sourceRecipeFromBrief } from "./feed-state-service";
 
 export interface FeedMutation<T> {
   state: FeedState;
@@ -209,7 +209,7 @@ export class FeedService {
         appendHistory(card, "codex.stale_approval", work.id);
         return { state: this.state, result: work, event: event(this.state, { cardId: card.id, workId, type: "action.stale" }) };
       }
-      if (result.blocks) card.blocks = result.blocks;
+      if ("blocks" in result) card.blocks = normalizeCardBlocks((result as { blocks?: unknown }).blocks, card.blocks);
       if (result.proposedAction) card.proposedAction = result.proposedAction;
       const done = Boolean(result.done || work.kind === "default_cleanup" || card.status === "done");
       card.status = done ? "done" : "to_review_updated";
@@ -264,7 +264,7 @@ export class FeedService {
       eyebrow: input.eyebrow ?? existing?.eyebrow ?? this.state.config.name,
       title: input.title,
       why: input.why,
-      blocks: input.blocks,
+      blocks: normalizeCardBlocks((input as HostedCardInput & { blocks?: unknown }).blocks, existing?.blocks),
       proposedAction: input.proposedAction,
       readyForPass: input.readyForPass ?? existing?.readyForPass ?? this.state.config.currentPass,
       createdAt: existing?.createdAt ?? now,

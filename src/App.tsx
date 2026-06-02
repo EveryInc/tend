@@ -321,6 +321,7 @@ function CardView({
   onAction: (action: CardAction) => void;
 }) {
   const actions = visibleCardActions(card);
+  const blocks = Array.isArray(card.blocks) ? card.blocks : [];
   const nextThing = card.proposedAction?.label === "Decide disposition"
     ? "Archive, or tell Codex what to do"
     : card.proposedAction?.label ?? actions.find((action) => action.variant === "primary")?.label ?? actions[0]?.label;
@@ -336,7 +337,7 @@ function CardView({
       </header>
       <p className="why"><FormattedText text={card.why} /></p>
       <div className="blocks">
-        {card.blocks.map((block) => <Block key={block.id} feedId={card.feedId} cardId={card.id} block={block} onChanged={onChanged} />)}
+        {blocks.map((block) => <Block key={block.id} feedId={card.feedId} cardId={card.id} block={block} onChanged={onChanged} />)}
       </div>
       <CardHistory card={card} />
       {card.status === "approved_blocked" && (
@@ -1294,6 +1295,7 @@ export default function App({ feedId, screen, workspaceTab = "feed" }: { feedId:
           <Fragment key={card.id}>
             {tab === "review" && index === updated.length && fresh.length > 0 && <div className="section-label" key={`${card.id}-label`}>New <span>{fresh.length}</span></div>}
             <CardView key={card.id} card={card} active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()} onAction={(action) => runCardAction(card, action)} />
+            <CardView card={card} active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()} onAction={(action) => runCardAction(card, action)} />
           </Fragment>
         ))}
         {feedWork.map((work) => (

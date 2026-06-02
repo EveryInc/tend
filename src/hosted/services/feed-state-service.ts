@@ -1,4 +1,4 @@
-import type { FeedConfig, FeedView, SourceRecipe } from "../../types";
+import type { Card, CardBlock, FeedConfig, FeedView, SourceRecipe } from "../../types";
 import {
   companyRecipe,
   feedConfig,
@@ -8,6 +8,25 @@ import {
 } from "../../../server/templates";
 import type { FeedState } from "../env";
 import { isoNow, slugify } from "../util";
+
+export function normalizeCardBlocks(blocks: unknown, fallback: CardBlock[] = []): CardBlock[] {
+  const value = Array.isArray(blocks) ? blocks : fallback;
+  return value.map((block, index): CardBlock => {
+    if (block && typeof block === "object") {
+      const item = block as Partial<CardBlock>;
+      return {
+        ...item,
+        id: typeof item.id === "string" && item.id.trim() ? item.id : `block-${index + 1}`,
+        type: typeof item.type === "string" && item.type.trim() ? item.type as CardBlock["type"] : "memo",
+      };
+    }
+    return { id: `block-${index + 1}`, type: "memo", text: String(block ?? "") };
+  });
+}
+
+export function normalizeCard(card: Card): Card {
+  return { ...card, blocks: normalizeCardBlocks((card as Card & { blocks?: unknown }).blocks) };
+}
 
 export function defaultFeedState(feedId: string): FeedState {
   const inbox = feedId === "inbox";
@@ -36,7 +55,7 @@ export function defaultFeedState(feedId: string): FeedState {
 }
 
 export function feedView(state: FeedState): FeedView {
-  const cards = Object.values(state.cards).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const cards = Object.values(state.cards).map(normalizeCard).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const work = Object.values(state.work).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   return {
     config: state.config,
