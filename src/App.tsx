@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import type { Card, CardAction, CardBlock, FeedView, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkspaceRevision, WorkspaceView } from "./types";
 import { useActiveCard } from "./state/activeCard";
 import { usePushToTalk } from "./state/pushToTalk";
-import { closestTarget, sameTarget } from "./state/voiceTarget";
+import { preferredTarget, sameTarget } from "./state/voiceTarget";
 
 type Tab = "review" | "queued" | "working" | "done";
 type Inspector = "new-feed" | "add-source" | null;
@@ -718,6 +718,8 @@ export default function App() {
   const [targetVersion, setTargetVersion] = useState(0);
   const pageRef = useRef<HTMLElement>(null);
   const dockTargetRef = useRef<VoiceTarget | null>(dockTarget);
+  const dockContextRef = useRef("");
+  const dockScopeExplicitlyChangedRef = useRef(false);
   const toastTimerRef = useRef<number | null>(null);
   const knownCompoundProposalIdsRef = useRef(new Map<string, Set<string>>());
 
@@ -817,13 +819,27 @@ export default function App() {
     }).catch((error) => showToast(error instanceof Error ? error.message : String(error)));
   }, [feed?.config.id, feedId]);
 
+  const selectDockTarget = useCallback((next: VoiceTarget) => {
+    dockScopeExplicitlyChangedRef.current = true;
+    changeDockTarget(next);
+  }, [changeDockTarget]);
+
   useEffect(() => {
     if (!feed) return;
-    const next = screen === "feed" && dockTarget?.kind === "card" && activeCard
+    const context = `${screen}:${feed.config.id}:${screen === "workspace" ? workspaceTab : ""}`;
+    if (dockContextRef.current !== context) {
+      dockContextRef.current = context;
+      dockScopeExplicitlyChangedRef.current = false;
+    }
+    if (screen === "feed" && dockTarget?.kind === "card" && !activeCard) {
+      dockScopeExplicitlyChangedRef.current = false;
+    }
+    const candidate = screen === "feed" && dockScopeExplicitlyChangedRef.current && dockTarget?.kind === "card" && activeCard
       ? { kind: "card" as const, feedId: feed.config.id, cardId: activeCard.id }
-      : closestTarget(dockTarget, ladder);
+      : dockTarget;
+    const next = preferredTarget(candidate, ladder, dockScopeExplicitlyChangedRef.current);
     if (!sameTarget(next, dockTarget)) changeDockTarget(next);
-  }, [activeCard, changeDockTarget, dockTarget, feed, ladder, screen]);
+  }, [activeCard, changeDockTarget, dockTarget, feed, ladder, screen, workspaceTab]);
 
   const withRefresh = async (callback: () => Promise<unknown>, message: string) => {
     try {
@@ -975,8 +991,8 @@ export default function App() {
     <>
       <TopBar state={state} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
       <div className="workspace-proposals"><RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} /></div>
-      <PromptWorkspace state={state} tab={workspaceTab} onTab={(nextTab) => { setWorkspaceTab(nextTab); setWorkspaceFocus(null); const url = new URL(location.href); url.searchParams.set("workspace", nextTab); history.replaceState({}, "", url); }} onBack={closeWorkspace} onInspector={setInspector} onSaved={showToast} onTargetFocus={(target) => { setWorkspaceFocus(target); changeDockTarget(target); }} />
-      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={changeDockTarget} onSubmit={instruct} onRecollect={recollect} />
+      <PromptWorkspace state={state} tab={workspaceTab} onTab={(nextTab) => { setWorkspaceTab(nextTab); setWorkspaceFocus(null); const url = new URL(location.href); url.searchParams.set("workspace", nextTab); history.replaceState({}, "", url); }} onBack={closeWorkspace} onInspector={setInspector} onSaved={showToast} onTargetFocus={(target) => { setWorkspaceFocus(target); selectDockTarget(target); }} />
+      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
     </>
@@ -986,7 +1002,7 @@ export default function App() {
     <>
       <TopBar state={state} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
       <LearningReview feed={feed} proposals={compoundProposals} onBack={closeWorkspace} onApply={applyLearningProposal} onReject={rejectLearningProposal} />
-      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={changeDockTarget} onSubmit={instruct} onRecollect={recollect} />
+      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
     </>
@@ -1039,7 +1055,7 @@ export default function App() {
           </div>
         </section>}
       </main>
-      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={changeDockTarget} onSubmit={instruct} onRecollect={recollect} />
+      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoCleanup && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoCleanup.feedId}/cards/${undoCleanup.cardId}/undo-dismiss`), "Cleanup undone").then(() => setUndoCleanup(null))}>Undo</button>}{undoQueuedWork && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoQueuedWork.feedId}/work/${undoQueuedWork.workId}/cancel`), "Instruction cancelled").then(() => setUndoQueuedWork(null))}>Undo</button>}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
     </>

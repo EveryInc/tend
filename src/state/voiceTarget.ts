@@ -24,3 +24,7 @@ export function closestTarget(target: VoiceTarget | null, ladder: VoiceTarget[])
   }
   return ladder[ladder.length - 1];
 }
+
+export function preferredTarget(target: VoiceTarget | null, ladder: VoiceTarget[], explicitlyChanged: boolean): VoiceTarget {
+  return explicitlyChanged ? closestTarget(target, ladder) : ladder[0];
+}

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { AttentionDomain } from "../server/domain";
 import { AttentionStore } from "../server/store";
-import { closestTarget } from "../src/state/voiceTarget";
+import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
 
 const roots: string[] = [];
 
@@ -456,6 +456,63 @@ describe("approval, learning, and heartbeat safety", () => {
     expect((await store.readWork("inbox", first.id)).status).toBe("stale");
   });
 
+  test("quarantines legacy mutation work without an approval digest and continues draining", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const legacy = await domain.dismissCard("inbox", "inbox-ready-to-collect");
+    legacy.approvalDigest = undefined;
+    await store.writeWork(legacy);
+    const next = await domain.queueFeedInstruction("inbox", "Process the next safe item.");
+
+    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(next.id);
+    expect((await store.readWork("inbox", legacy.id)).status).toBe("stale");
+    expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("to_review_updated");
+  });
+
+  test("quarantines claimed legacy approval work and continues draining", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    await domain.upsertCard("inbox", {
+      id: "legacy-approved-action",
+      title: "Publish the approved artifact.",
+      why: "Legacy claimed work must not wedge newer safe work.",
+      blocks: [{ id: "brief", type: "memo", text: "The exact visible artifact." }],
+      proposedAction: { label: "Publish", instruction: "Publish the exact approved artifact.", externalMutation: true },
+    });
+    const legacy = await domain.approveAction("inbox", "legacy-approved-action");
+    legacy.approvalDigest = undefined;
+    legacy.status = "working";
+    await store.writeWork(legacy);
+    const next = await domain.queueFeedInstruction("inbox", "Process the next safe item.");
+
+    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(next.id);
+    expect((await store.readWork("inbox", legacy.id)).status).toBe("stale");
+    expect((await store.readCard("inbox", "legacy-approved-action")).status).toBe("to_review_updated");
+  });
+
+  test("quarantines legacy routine batches and restores their cards for review", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    await domain.upsertRoutineActionGroup("inbox", {
+      id: "legacy-routine-cleanup",
+      label: "Likely archive",
+      summary: "Low-attention threads with an obvious shared cleanup.",
+      proposedAction: { label: "Archive all", instruction: "Reread and archive each listed Gmail thread.", externalMutation: true },
+      items: [{ id: "setup-noise", cardId: "inbox-ready-to-collect", title: "Routine notice", reason: "No reply or decision is needed." }],
+    });
+    const legacy = await domain.approveRoutineActionGroup("inbox", "legacy-routine-cleanup");
+    legacy.approvalDigest = undefined;
+    await store.writeWork(legacy);
+    const next = await domain.queueFeedInstruction("inbox", "Process the next safe item.");
+
+    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(next.id);
+    expect((await store.readWork("inbox", legacy.id)).status).toBe("stale");
+    expect((await store.readRoutineActionGroup("inbox", "legacy-routine-cleanup")).status).toBe("stale");
+    const card = await store.readCard("inbox", "inbox-ready-to-collect");
+    expect(card.status).toBe("to_review_updated");
+    expect(card.routineActionGroupId).toBeUndefined();
+  });
+
   test("clears visual QA demo cards without touching setup cards", async () => {
     const { store, domain } = await setup();
     await domain.seedDemo();
@@ -494,6 +551,16 @@ describe("approval, learning, and heartbeat safety", () => {
 });
 
 describe("scoped persistent voice dock routing", () => {
+  test("returns to the narrowest live dock target after an automatic fallback", () => {
+    const sweep = { kind: "sweep" as const, feedId: "inbox", batchId: "batch-current" };
+    const card = { kind: "card" as const, feedId: "inbox", cardId: "card-current" };
+    const broadLadder = [sweep, { kind: "feed" as const, feedId: "inbox" }, { kind: "attention" as const }];
+    const narrowLadder = [card, ...broadLadder];
+
+    expect(preferredTarget(sweep, narrowLadder, false)).toEqual(card);
+    expect(preferredTarget(sweep, narrowLadder, true)).toEqual(sweep);
+  });
+
   test("rebinds stale client card and sweep targets to the live sweep rung", () => {
     const sweep = { kind: "sweep" as const, feedId: "inbox", batchId: "batch-current" };
     const ladder = [sweep, { kind: "feed" as const, feedId: "inbox" }, { kind: "attention" as const }];

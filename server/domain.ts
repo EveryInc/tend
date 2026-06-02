@@ -5,6 +5,7 @@ import type {
   CardAction,
   CardBlock,
   FeedConfig,
+  FeedView,
   PolicyRevision,
   ProposedAction,
   RevisionProposal,
@@ -184,6 +185,33 @@ export class AttentionDomain {
       }
       await this.store.writeCard(card);
     }
+  }
+
+  private async quarantineLegacyMutationWork(feed: FeedView, work: WorkItem): Promise<boolean> {
+    if (
+      work.approvalDigest ||
+      (work.kind !== "execute_approved_action" && work.kind !== "default_cleanup" && work.kind !== "routine_action_batch")
+    ) {
+      return false;
+    }
+    work.status = "stale";
+    work.error = "Approval stale - this action predates digest-bound approval. Review and approve it again.";
+    await this.store.writeWork(work);
+    if (work.kind === "routine_action_batch" && work.routineActionGroupId) {
+      const group = await this.store.readRoutineActionGroup(feed.config.id, work.routineActionGroupId);
+      group.status = "stale";
+      group.error = work.error;
+      await this.releaseRoutineActionCards(group, true);
+      await this.store.writeRoutineActionGroup(group);
+    } else if (work.cardId !== "__feed__") {
+      const card = await this.store.readCard(feed.config.id, work.cardId);
+      card.status = "to_review_updated";
+      card.readyForPass = feed.config.currentPass;
+      appendHistory(card, "codex.stale_approval", work.id);
+      await this.store.writeCard(card);
+    }
+    await this.store.appendEvent({ feedId: feed.config.id, cardId: work.cardId, workId: work.id, type: "action.stale", detail: { reason: work.error } });
+    return true;
   }
 
   async detectLocalMonologue(options: { appPath?: string; settingsPath?: string } = {}) {
@@ -695,8 +723,11 @@ export class AttentionDomain {
     return this.store.serialize(async () => {
       const feed = await this.store.readFeed(feedId);
       const existing = feed.work.find((work) => work.status === "working");
-      if (existing) return existing;
-      const work = feed.work.find((item) => item.status === "queued");
+      if (existing && !(await this.quarantineLegacyMutationWork(feed, existing))) return existing;
+      let work = feed.work.find((item) => item.status === "queued");
+      while (work && await this.quarantineLegacyMutationWork(feed, work)) {
+        work = feed.work.find((item) => item.status === "queued");
+      }
       if (!work) return null;
       work.status = "working";
       work.claimedAt = isoNow();
