@@ -87,6 +87,10 @@ pnpm cli -- sweep:rejudge \
   --removed-cards '["<removed-card-id>"]'
 ```
 
+The ledger refuses to complete `sweep_rejudge` work until that feedback trace has a recorded
+rejudgment. It also refuses to complete `recollect_sources` work until a new sweep batch has been
+recorded after the recollection request. Referenced source runs must already exist in the same feed.
+
 For an existing local JSON artifact, import it without passing private payload text through the
 shell:
 

@@ -379,6 +379,14 @@ export class AttentionStore {
     await writeJson(this.feedPath(feedId, "runs", `${runId}.json`), value);
   }
 
+  async readRun(feedId: string, runId: string): Promise<{ id: string; feedId: string }> {
+    return readJson<{ id: string; feedId: string }>(this.feedPath(feedId, "runs", `${runId}.json`));
+  }
+
+  async readSweepBatch(feedId: string, batchId: string): Promise<SweepBatch> {
+    return readJson<SweepBatch>(this.feedPath(feedId, "sweeps", `${batchId}.json`));
+  }
+
   async createFeed(config: FeedConfig, homeThreadId: string | null = null): Promise<FeedView> {
     return this.serialize(async () => {
       const workspace = await readJson<{ version: number; feedIds: string[]; createdAt: string }>(this.path("workspace.json"));

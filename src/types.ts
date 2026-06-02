@@ -118,6 +118,8 @@ export interface WorkItem {
   instruction: string;
   target?: VoiceTarget;
   intent?: "voice_instruction" | "sweep_rejudge" | "recollect_sources";
+  feedbackId?: string;
+  startingBatchId?: string | null;
   status: WorkStatus;
   capabilityToken: string;
   approvalDigest?: string;

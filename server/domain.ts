@@ -65,7 +65,7 @@ function revisionLabel(target: VoiceTarget): string {
   return "Attention policy";
 }
 
-function queuedWork(feedId: string, cardId: string, instruction: string, extra: Pick<WorkItem, "kind"> & Partial<Pick<WorkItem, "target" | "intent">>): WorkItem {
+function queuedWork(feedId: string, cardId: string, instruction: string, extra: Pick<WorkItem, "kind"> & Partial<Pick<WorkItem, "target" | "intent" | "feedbackId" | "startingBatchId">>): WorkItem {
   const now = isoNow();
   return {
     id: makeId("work"),
@@ -119,7 +119,13 @@ export class AttentionDomain {
           removedCardIds: [],
           createdAt: isoNow(),
         };
-        const work = queuedWork(target.feedId, "__feed__", instruction, { kind: "scoped_instruction", target, intent: "sweep_rejudge" });
+        const work = queuedWork(target.feedId, "__feed__", instruction, {
+          kind: "scoped_instruction",
+          target,
+          intent: "sweep_rejudge",
+          feedbackId: trace.id,
+          startingBatchId: target.batchId ?? null,
+        });
         await this.store.writeSweepFeedback(trace);
         await this.store.writeWork(work);
         await this.store.writeSweepState(target.feedId, {
@@ -154,7 +160,7 @@ export class AttentionDomain {
       const trace = await this.store.readSweepFeedback(feedId, feedbackId);
       if (trace.rejudgedAt) throw new Error("Sweep feedback has already been rejudged.");
       const sweep = await this.store.readSweepState(feedId);
-      if (trace.batchId && trace.batchId !== sweep.currentBatchId) throw new Error("Sweep feedback is stale because a newer batch is active.");
+      if ((trace.batchId ?? null) !== sweep.currentBatchId) throw new Error("Sweep feedback is stale because a newer batch is active.");
       const combined = [...orderedCardIds, ...removedCardIds];
       const expected = new Set(trace.visibleCardIds);
       if (new Set(combined).size !== combined.length || combined.length !== expected.size || combined.some((cardId) => !expected.has(cardId))) {
@@ -196,6 +202,8 @@ export class AttentionDomain {
         kind: "scoped_instruction",
         target,
         intent: "recollect_sources",
+        ...(sweep.lastFeedbackId ? { feedbackId: sweep.lastFeedbackId } : {}),
+        startingBatchId: sweep.currentBatchId,
       });
       await this.store.writeWork(work);
       await this.store.writeSweepState(feedId, { ...sweep, recollectionOffered: false, statusMessage: "Source search queued" });
@@ -493,6 +501,20 @@ export class AttentionDomain {
       if (work.status !== "working") throw new Error("Work item is not currently claimed.");
       if (work.capabilityToken !== token) throw new Error("Invalid scoped work capability token.");
       if (!result.response?.trim()) throw new Error("A work response is required.");
+      if (work.intent === "sweep_rejudge") {
+        if (!work.feedbackId) throw new Error("Sweep rejudgment work is missing its feedback trace.");
+        const trace = await this.store.readSweepFeedback(feedId, work.feedbackId);
+        if (!trace.rejudgedAt) throw new Error("Sweep rejudgment must be recorded before this work can complete.");
+      }
+      if (work.intent === "recollect_sources") {
+        if (work.startingBatchId === undefined) throw new Error("Source recollection work is missing its starting sweep batch.");
+        const sweep = await this.store.readSweepState(feedId);
+        if (!sweep.currentBatchId || sweep.currentBatchId === work.startingBatchId) {
+          throw new Error("A new sweep batch must be recorded before source recollection can complete.");
+        }
+        const batch = await this.store.readSweepBatch(feedId, sweep.currentBatchId);
+        if (batch.createdAt < work.createdAt) throw new Error("Source recollection completed with a sweep batch that predates the request.");
+      }
       if (work.cardId !== "__feed__") {
         const card = await this.store.readCard(feedId, work.cardId);
         if (work.approvalDigest && work.approvalDigest !== actionDigest(card)) {
@@ -553,6 +575,12 @@ export class AttentionDomain {
         card.readyForPass = config.currentPass + 1;
         appendHistory(card, "codex.failed", work.error);
         await this.store.writeCard(card);
+      } else if (work.intent === "recollect_sources") {
+        const sweep = await this.store.readSweepState(feedId);
+        if (sweep.currentBatchId === work.startingBatchId) {
+          await this.store.writeSweepState(feedId, { ...sweep, recollectionOffered: true, statusMessage: "Source search failed" });
+          await this.store.appendEvent({ feedId, workId, type: "sweep.recollection_offered", detail: { feedbackId: work.feedbackId, reason: "recollection_failed" } });
+        }
       }
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.failed", detail: { error: work.error } });
       return work;
@@ -698,6 +726,19 @@ export class AttentionDomain {
 
   async recordSweepBatch(feedId: string, sourceRunIds: string[]): Promise<string> {
     return this.store.serialize(async () => {
+      if (!Array.isArray(sourceRunIds) || sourceRunIds.some((runId) => typeof runId !== "string" || !runId.trim())) {
+        throw new Error("Sweep batch source run IDs must be non-empty strings.");
+      }
+      if (new Set(sourceRunIds).size !== sourceRunIds.length) throw new Error("Sweep batch source run IDs must be unique.");
+      for (const runId of sourceRunIds) {
+        let run: { id: string; feedId: string };
+        try {
+          run = await this.store.readRun(feedId, runId);
+        } catch {
+          throw new Error(`Source run not found for this feed: ${runId}`);
+        }
+        if (run.id !== runId || run.feedId !== feedId) throw new Error(`Source run does not belong to this feed: ${runId}`);
+      }
       const batchId = makeId("batch");
       await this.store.writeSweepBatch({ id: batchId, feedId, sourceRunIds, createdAt: isoNow() });
       await this.store.writeSweepState(feedId, { currentBatchId: batchId, lastFeedbackId: null, recollectionOffered: false, statusMessage: null });

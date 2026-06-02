@@ -263,6 +263,8 @@ describe("scoped persistent voice dock routing", () => {
     expect(feed.sweep.recollectionOffered).toBe(false);
     expect(feed.work).toHaveLength(1);
     expect(feed.work[0].intent).toBe("sweep_rejudge");
+    expect(feed.work[0].feedbackId).toBe(result.trace.id);
+    expect(feed.work[0].startingBatchId).toBe(null);
     expect(feed.cards.filter((card) => card.sweep?.hidden)).toHaveLength(0);
 
     const removedCardIds = ["demo-company-q3"];
@@ -295,11 +297,57 @@ describe("scoped persistent voice dock routing", () => {
   test("rejects a rejudgment write-back after a newer sweep batch becomes active", async () => {
     const { domain } = await setup();
     await domain.seedDemo();
-    await domain.recordSweepBatch("company-attention", ["run-1"]);
+    const firstRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "first" });
+    await domain.recordSweepBatch("company-attention", [firstRun]);
     const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Prefer more product evidence.");
     if (!("trace" in result)) throw new Error("Expected sweep trace");
-    await domain.recordSweepBatch("company-attention", ["run-2"]);
+    const secondRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "second" });
+    await domain.recordSweepBatch("company-attention", [secondRun]);
     await expect(domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, [])).rejects.toThrow("newer batch");
+  });
+
+  test("rejects pre-batch feedback after the first sweep batch becomes active", async () => {
+    const { domain } = await setup();
+    await domain.seedDemo();
+    const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Prefer more product evidence.");
+    if (!("trace" in result)) throw new Error("Expected sweep trace");
+    const run = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "first" });
+    await domain.recordSweepBatch("company-attention", [run]);
+    await expect(domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, [])).rejects.toThrow("newer batch");
+  });
+
+  test("requires sweep write-backs before specialized feed work can complete and reopens failed recollection", async () => {
+    const { store, domain } = await setup();
+    await domain.seedDemo();
+    await domain.bindFeed("company-attention", "thread-company");
+    const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Prefer more product evidence.");
+    if (!("trace" in result)) throw new Error("Expected sweep trace");
+
+    const claimedRejudge = await domain.claimWork("company-attention", "thread-company");
+    expect(claimedRejudge?.id).toBe(result.work.id);
+    await expect(domain.completeWork("company-attention", result.work.id, result.work.capabilityToken, { response: "Rejudged." })).rejects.toThrow("must be recorded");
+    await domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, []);
+    expect((await domain.completeWork("company-attention", result.work.id, result.work.capabilityToken, { response: "Rejudged." })).status).toBe("completed");
+
+    const firstRecollection = await domain.requestSweepRecollection("company-attention");
+    expect(firstRecollection.feedbackId).toBe(result.trace.id);
+    expect(firstRecollection.startingBatchId).toBe(null);
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(firstRecollection.id);
+    await expect(domain.completeWork("company-attention", firstRecollection.id, firstRecollection.capabilityToken, { response: "Collected." })).rejects.toThrow("new sweep batch");
+    await domain.failWork("company-attention", firstRecollection.id, firstRecollection.capabilityToken, "Transient connector failure.");
+    expect((await store.readSweepState("company-attention")).recollectionOffered).toBe(true);
+
+    const retry = await domain.requestSweepRecollection("company-attention");
+    expect(retry.id).not.toBe(firstRecollection.id);
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(retry.id);
+    const run = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "retry" });
+    await domain.recordSweepBatch("company-attention", [run]);
+    expect((await domain.completeWork("company-attention", retry.id, retry.capabilityToken, { response: "Collected and judged." })).status).toBe("completed");
+  });
+
+  test("rejects sweep batches that reference missing source runs", async () => {
+    const { domain } = await setup();
+    await expect(domain.recordSweepBatch("inbox", ["run-does-not-exist"])).rejects.toThrow("Source run not found");
   });
 
   test("queues broader voice intent for Codex and preserves approval-gated revision history", async () => {
