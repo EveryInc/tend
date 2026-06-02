@@ -56,6 +56,8 @@ describe("hosted feed card normalization", () => {
       provenance: { query: "Dictly -in:spam -in:trash", resultCount: 40 },
     } as any);
 
+    expect((state.cards["gmail-search:dictly"] as any).summary).toBe("Found 40 recent Dictly messages across support, admin, and outreach.");
+    expect((state.cards["gmail-search:dictly"] as any).evidence).toHaveLength(2);
     const card = feedView(state).cards.find((item) => item.id === "gmail-search:dictly");
     expect(card?.status).toBe("done");
     expect(card?.why).toBe("Found 40 recent Dictly messages across support, admin, and outreach.");
