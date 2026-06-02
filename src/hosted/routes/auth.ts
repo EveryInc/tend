@@ -17,13 +17,14 @@ async function authResponse(c: { env: HostedEnv; req: { raw: Request; method: st
   return Response.redirect(new URL(body.url, c.req.raw.url).href, 302);
 }
 
-async function normalizeAuthRequest(env: HostedEnv, request: Request): Promise<Request> {
+export async function normalizeAuthRequest(env: HostedEnv, request: Request): Promise<Request> {
   const url = new URL(request.url);
   if (request.method !== "POST" || !url.pathname.endsWith("/oauth2/token")) return request;
   if (!request.headers.get("content-type")?.includes("application/x-www-form-urlencoded")) return request;
 
   const params = new URLSearchParams(await request.clone().text());
-  if (params.get("grant_type") !== "refresh_token" || params.has("resource")) return request;
+  const grantType = params.get("grant_type");
+  if (!["authorization_code", "refresh_token"].includes(grantType ?? "") || params.has("resource")) return request;
 
   params.set("resource", mcpResourceUrlFor(env, request));
 
@@ -50,11 +51,23 @@ authRoutes.get("/.well-known/oauth-authorization-server", (c) =>
 authRoutes.get("/.well-known/oauth-authorization-server/api/auth", (c) =>
   oauthProviderAuthServerMetadata(createAuth(c.env, c.req.raw))(c.req.raw),
 );
+authRoutes.get("/.well-known/oauth-authorization-server/mcp", (c) =>
+  oauthProviderAuthServerMetadata(createAuth(c.env, c.req.raw))(c.req.raw),
+);
 authRoutes.get("/.well-known/openid-configuration", (c) =>
   oauthProviderOpenIdConfigMetadata(createAuth(c.env, c.req.raw))(c.req.raw),
 );
 authRoutes.get("/.well-known/openid-configuration/api/auth", (c) =>
   oauthProviderOpenIdConfigMetadata(createAuth(c.env, c.req.raw))(c.req.raw),
+);
+authRoutes.get("/.well-known/openid-configuration/mcp", (c) =>
+  oauthProviderOpenIdConfigMetadata(createAuth(c.env, c.req.raw))(c.req.raw),
+);
+authRoutes.get("/mcp/.well-known/openid-configuration", (c) =>
+  oauthProviderOpenIdConfigMetadata(createAuth(c.env, c.req.raw))(c.req.raw),
+);
+authRoutes.get("/mcp/.well-known/oauth-authorization-server", (c) =>
+  oauthProviderAuthServerMetadata(createAuth(c.env, c.req.raw))(c.req.raw),
 );
 
 async function protectedResourceMetadata(c: { env: HostedEnv; req: { raw: Request } }) {
