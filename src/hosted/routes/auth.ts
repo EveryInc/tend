@@ -8,13 +8,34 @@ import { createAuth } from "../auth";
 export const authRoutes = new Hono<{ Bindings: HostedEnv }>();
 
 async function authResponse(c: { env: HostedEnv; req: { raw: Request; method: string } }) {
-  const response = await createAuth(c.env, c.req.raw).handler(c.req.raw);
+  const response = await createAuth(c.env, c.req.raw).handler(await normalizeAuthRequest(c.env, c.req.raw));
   if (c.req.method !== "GET" || !response.headers.get("content-type")?.includes("application/json")) return response;
 
   const body = await response.clone().json().catch(() => null) as { redirect?: boolean; url?: string } | null;
   if (!body?.redirect || !body.url) return response;
 
   return Response.redirect(new URL(body.url, c.req.raw.url).href, 302);
+}
+
+async function normalizeAuthRequest(env: HostedEnv, request: Request): Promise<Request> {
+  const url = new URL(request.url);
+  if (request.method !== "POST" || !url.pathname.endsWith("/oauth2/token")) return request;
+  if (!request.headers.get("content-type")?.includes("application/x-www-form-urlencoded")) return request;
+
+  const params = new URLSearchParams(await request.clone().text());
+  if (params.get("grant_type") !== "refresh_token" || params.has("resource")) return request;
+
+  params.set("resource", mcpResourceUrlFor(env, request));
+
+  const headers = new Headers(request.headers);
+  headers.set("content-type", "application/x-www-form-urlencoded");
+
+  return new Request(request.url, {
+    method: request.method,
+    headers,
+    body: params.toString(),
+    redirect: request.redirect,
+  });
 }
 
 authRoutes.get("/api/auth/jwks/", (c) => {
