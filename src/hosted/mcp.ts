@@ -15,7 +15,7 @@ const cardBlockItemSchema = z.union([
 
 const cardBlockSchema = z.object({
   id: z.string(),
-  type: z.enum(["rich_text", "evidence", "editable_text", "memo", "options", "checklist", "diff", "clarification", "profile", "receipt"]),
+  type: z.enum(["rich_text", "evidence", "editable_text", "memo", "options", "checklist", "diff", "clarification", "email_thread", "profile", "receipt"]),
   label: z.string().optional(),
   title: z.string().optional(),
   text: z.string().optional(),
@@ -39,17 +39,38 @@ const proposedActionSchema = z.object({
   instruction: z.string(),
   artifactBlockId: z.string().optional(),
   externalMutation: z.boolean().optional(),
+  mailboxPolicy: z.enum(["reply_from_source"]).optional(),
+}).strict();
+
+const cardActionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  behavior: z.enum(["queue_instruction", "approve_action", "default_cleanup"]),
+  instruction: z.string().optional(),
+  artifactBlockId: z.string().optional(),
+  externalMutation: z.boolean().optional(),
+  mailboxPolicy: z.enum(["reply_from_source"]).optional(),
+  variant: z.enum(["primary", "secondary"]).optional(),
+  shortcut: z.string().optional(),
 }).strict();
 
 const cardInputSchema = z.object({
   id: z.string(),
   kind: z.enum(["attention", "feed_improvement"]).optional(),
-  status: z.enum(["to_review_new", "to_review_updated", "queued", "working", "done"]).optional(),
+  status: z.enum(["to_review_new", "to_review_updated", "queued", "working", "approved_blocked", "done"]).optional(),
   eyebrow: z.string().optional(),
   title: z.string(),
   why: z.string(),
+  sourceMailbox: z.string().optional(),
   blocks: z.array(cardBlockSchema),
   proposedAction: proposedActionSchema.optional(),
+  actions: z.array(cardActionSchema).optional(),
+  routineActionGroupId: z.string().optional(),
+  sweep: z.object({
+    rank: z.number().int(),
+    hidden: z.boolean(),
+    feedbackId: z.string(),
+  }).strict().optional(),
   readyForPass: z.number().int().optional(),
   completedAt: z.string().optional(),
 }).strict();
@@ -58,7 +79,33 @@ const completeWorkResultSchema = z.object({
   response: z.string(),
   blocks: z.array(cardBlockSchema).optional(),
   proposedAction: proposedActionSchema.optional(),
+  actions: z.array(cardActionSchema).optional(),
   done: z.boolean().optional(),
+}).strict();
+
+const voiceTargetSchema = z.union([
+  z.object({ kind: z.literal("card"), feedId: z.string(), cardId: z.string() }).strict(),
+  z.object({ kind: z.literal("sweep"), feedId: z.string(), batchId: z.string().optional() }).strict(),
+  z.object({ kind: z.literal("feed"), feedId: z.string() }).strict(),
+  z.object({ kind: z.literal("source_recipe"), feedId: z.string(), sourceId: z.string() }).strict(),
+  z.object({ kind: z.literal("prompt_layer"), feedId: z.string(), promptId: z.string() }).strict(),
+  z.object({ kind: z.literal("global_prompt"), promptId: z.string() }).strict(),
+  z.object({ kind: z.literal("attention") }).strict(),
+]);
+
+const routineActionGroupSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  summary: z.string(),
+  proposedAction: proposedActionSchema,
+  items: z.array(z.object({
+    id: z.string(),
+    cardId: z.string().optional(),
+    title: z.string(),
+    detail: z.string().optional(),
+    reason: z.string(),
+    sourceRefs: z.array(z.object({ label: z.string(), href: z.string() }).strict()).optional(),
+  }).strict()),
 }).strict();
 
 function text(value: unknown) {
@@ -140,8 +187,8 @@ export function createAttentionMcpServer(env: HostedEnv, session: HostedSession)
   server.registerTool("verify_action", {
     title: "Verify approved action",
     description: "Reread and verify an approved action digest immediately before external mutation.",
-    inputSchema: { feedId: z.string(), workId: z.string(), token: z.string() },
-  }, async ({ feedId, workId, token }) => text(await callFeed(env, session, feedId, `/work/${encodeURIComponent(workId)}/verify`, { method: "POST", body: JSON.stringify({ token }) })));
+    inputSchema: { feedId: z.string(), workId: z.string(), token: z.string(), mailbox: z.string().optional() },
+  }, async ({ feedId, workId, token, mailbox }) => text(await callFeed(env, session, feedId, `/work/${encodeURIComponent(workId)}/verify`, { method: "POST", body: JSON.stringify({ token, mailbox }) })));
 
   server.registerTool("complete_work", {
     title: "Complete work",
@@ -155,6 +202,24 @@ export function createAttentionMcpServer(env: HostedEnv, session: HostedSession)
     inputSchema: { feedId: z.string(), workId: z.string(), token: z.string(), error: z.string() },
   }, async ({ feedId, workId, token, error }) => text(await callFeed(env, session, feedId, `/work/${encodeURIComponent(workId)}/fail`, { method: "POST", body: JSON.stringify({ token, error }) })));
 
+  server.registerTool("block_work", {
+    title: "Block approved work",
+    description: "Mark claimed approved action work as blocked while preserving approval for retry.",
+    inputSchema: { feedId: z.string(), workId: z.string(), token: z.string(), error: z.string() },
+  }, async ({ feedId, workId, token, error }) => text(await callFeed(env, session, feedId, `/work/${encodeURIComponent(workId)}/block`, { method: "POST", body: JSON.stringify({ token, error }) })));
+
+  server.registerTool("retry_work", {
+    title: "Retry approved work",
+    description: "Requeue a blocked approved action work item after the user fixes the local issue.",
+    inputSchema: { feedId: z.string(), workId: z.string() },
+  }, async ({ feedId, workId }) => text(await callFeed(env, session, feedId, `/work/${encodeURIComponent(workId)}/retry`, { method: "POST" })));
+
+  server.registerTool("cancel_work", {
+    title: "Cancel queued work",
+    description: "Cancel a queued work item before Codex claims it.",
+    inputSchema: { feedId: z.string(), workId: z.string(), reason: z.string().optional() },
+  }, async ({ feedId, workId, reason }) => text(await callFeed(env, session, feedId, `/work/${encodeURIComponent(workId)}/cancel`, { method: "POST", body: JSON.stringify({ reason }) })));
+
   server.registerTool("upsert_card", {
     title: "Upsert card",
     description: "Create or update a structured Attention card. Required card fields match the local implementation: id, title, why, and blocks.",
@@ -164,8 +229,55 @@ export function createAttentionMcpServer(env: HostedEnv, session: HostedSession)
   server.registerTool("record_source_run", {
     title: "Record source run",
     description: "Record source evidence snapshots, judgments, and checkpoint for a completed collection run.",
-    inputSchema: { feedId: z.string(), sourceId: z.string(), snapshots: z.array(z.unknown()), judgments: z.array(z.unknown()), checkpoint: z.unknown() },
-  }, async ({ feedId, sourceId, snapshots, judgments, checkpoint }) => text(await callFeed(env, session, feedId, "/record-run", { method: "POST", body: JSON.stringify({ sourceId, snapshots, judgments, checkpoint }) })));
+    inputSchema: { feedId: z.string(), sourceId: z.string(), snapshots: z.array(z.unknown()), judgments: z.array(z.unknown()), checkpoint: z.unknown(), workId: z.string().optional() },
+  }, async ({ feedId, sourceId, snapshots, judgments, checkpoint, workId }) => text(await callFeed(env, session, feedId, "/record-run", { method: "POST", body: JSON.stringify({ sourceId, snapshots, judgments, checkpoint, workId }) })));
+
+  server.registerTool("record_sweep_batch", {
+    title: "Record sweep batch",
+    description: "Record the current sweep batch from one or more source runs.",
+    inputSchema: { feedId: z.string(), runIds: z.array(z.string()), workId: z.string().optional() },
+  }, async ({ feedId, runIds, workId }) => text(await callFeed(env, session, feedId, "/record-sweep-batch", { method: "POST", body: JSON.stringify({ runIds, workId }) })));
+
+  server.registerTool("record_sweep_rejudgment", {
+    title: "Record sweep rejudgment",
+    description: "Write back the ordered and removed card ids after claimed sweep feedback work.",
+    inputSchema: { feedId: z.string(), feedbackId: z.string(), orderedCardIds: z.array(z.string()), removedCardIds: z.array(z.string()) },
+  }, async ({ feedId, feedbackId, orderedCardIds, removedCardIds }) => text(await callFeed(env, session, feedId, "/record-sweep-rejudgment", { method: "POST", body: JSON.stringify({ feedbackId, orderedCardIds, removedCardIds }) })));
+
+  server.registerTool("upsert_routine_action_group", {
+    title: "Upsert routine action group",
+    description: "Create or update a user-reviewable batch of routine actions.",
+    inputSchema: { feedId: z.string(), group: routineActionGroupSchema },
+  }, async ({ feedId, group }) => text(await callFeed(env, session, feedId, "/routine-actions", { method: "POST", body: JSON.stringify({ group }) })));
+
+  server.registerTool("approve_routine_action_group", {
+    title: "Approve routine action group",
+    description: "Queue a proposed routine action batch after user approval.",
+    inputSchema: { feedId: z.string(), groupId: z.string() },
+  }, async ({ feedId, groupId }) => text(await callFeed(env, session, feedId, `/routine-actions/${encodeURIComponent(groupId)}/approve`, { method: "POST" })));
+
+  server.registerTool("propose_revision", {
+    title: "Propose revision",
+    description: "Create an editable revision proposal for feed policy, source recipe, or prompt content.",
+    inputSchema: { feedId: z.string(), target: voiceTargetSchema, instruction: z.string(), content: z.string(), source: z.enum(["voice", "compound"]).optional() },
+  }, async ({ feedId, target, instruction, content, source }) => {
+    if (target.kind === "attention" || target.kind === "global_prompt") {
+      return text(await callAccount(env, session, "/revision-proposals", { method: "POST", body: JSON.stringify({ feedId, target, instruction, content, source }) }));
+    }
+    return text(await callFeed(env, session, feedId, "/revision-proposals", { method: "POST", body: JSON.stringify({ target, instruction, content, source }) }));
+  });
+
+  server.registerTool("update_revision", {
+    title: "Update revision proposal",
+    description: "Update the content of a pending revision proposal.",
+    inputSchema: { feedId: z.string(), proposalId: z.string(), content: z.string() },
+  }, async ({ feedId, proposalId, content }) => text(await callFeed(env, session, feedId, `/revision-proposals/${encodeURIComponent(proposalId)}`, { method: "POST", body: JSON.stringify({ content }) })));
+
+  server.registerTool("request_learning", {
+    title: "Request learning pass",
+    description: "Queue a compound-learning pass for the feed.",
+    inputSchema: { feedId: z.string() },
+  }, async ({ feedId }) => text(await callFeed(env, session, feedId, "/compound", { method: "POST" })));
 
   server.registerTool("update_feed_policy", {
     title: "Update feed policy",

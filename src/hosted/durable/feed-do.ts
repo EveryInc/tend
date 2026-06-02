@@ -20,6 +20,7 @@ export class FeedDO extends DurableObject<HostedEnv> {
       await this.ensure(request.headers.get("x-attention-feed-id") || url.searchParams.get("feedId") || "inbox");
       if (request.method === "GET" && url.pathname === "/state") return json(feedView(await this.state()));
       if (request.method === "GET" && url.pathname === "/how") return json(inspectFeed(await this.state()));
+      if (request.method === "GET" && url.pathname === "/proposals") return json(new FeedService(await this.state()).listRevisionProposals());
       return this.mutateOrRead(request, url);
     } catch (error) {
       return errorResponse(error);
@@ -36,10 +37,17 @@ export class FeedDO extends DurableObject<HostedEnv> {
     if (request.method === "POST" && url.pathname === "/policy") return json(await this.commit(service.applyPolicy(String(body.content ?? ""), "Edited in the feed workspace.", "user_instruction")));
     if (request.method === "POST" && url.pathname === "/sources") return json(await this.commit(service.addSource(String(body.brief ?? ""))));
     if (request.method === "POST" && url.pathname === "/instructions") return json(await this.commit(service.queueFeedInstruction(String(body.instruction ?? ""))));
+    if (request.method === "POST" && url.pathname === "/voice/target-change") return json(await this.commit(service.recordVoiceTargetChange(body.target as any)));
+    if (request.method === "POST" && url.pathname === "/voice/instructions") return json(await this.commit(service.submitVoiceInstruction(body.target as any, String(body.instruction ?? ""))));
     if (request.method === "POST" && url.pathname === "/next-pass") return json(await this.commit(service.beginNextPass()));
     if (request.method === "POST" && url.pathname === "/compound") return json(await this.commit(service.queueCompound()));
-    if (request.method === "POST" && url.pathname === "/record-run") return json(await this.commit(service.recordSourceRun(String(body.sourceId ?? ""), (body.snapshots ?? []) as unknown[], (body.judgments ?? []) as unknown[], body.checkpoint)));
+    if (request.method === "POST" && url.pathname === "/recollect") return json(await this.commit(service.requestSweepRecollection()));
+    if (request.method === "POST" && url.pathname === "/record-run") return json(await this.commit(service.recordSourceRun(String(body.sourceId ?? ""), (body.snapshots ?? []) as unknown[], (body.judgments ?? []) as unknown[], body.checkpoint, typeof body.workId === "string" ? body.workId : undefined)));
+    if (request.method === "POST" && url.pathname === "/record-sweep-batch") return json(await this.commit(service.recordSweepBatch((body.runIds ?? body.sourceRunIds ?? []) as string[], typeof body.workId === "string" ? body.workId : undefined)));
+    if (request.method === "POST" && url.pathname === "/record-sweep-rejudgment") return json(await this.commit(service.recordSweepRejudgment(String(body.feedbackId ?? ""), (body.orderedCardIds ?? []) as string[], (body.removedCardIds ?? []) as string[])));
     if (request.method === "POST" && url.pathname === "/card") return json(await this.commit(service.upsertCard(body.card as any)));
+    if (request.method === "POST" && url.pathname === "/routine-actions") return json(await this.commit(service.upsertRoutineActionGroup(body.group as any)));
+    if (request.method === "POST" && url.pathname === "/revision-proposals") return json(await this.commit(service.proposeRevision(body.target as any, String(body.instruction ?? ""), String(body.content ?? body.next ?? ""), body.source === "compound" ? "compound" : "voice")));
     if (request.method === "GET" && url.pathname === "/work") return json(service.listWork(url.searchParams.get("threadId") ?? "", url.searchParams.get("crossFeed") === "true"));
     if (request.method === "POST" && url.pathname === "/work/claim") return json(await this.commit(service.claimWork(String(body.threadId ?? ""), Boolean(body.crossFeed))));
 
@@ -49,6 +57,8 @@ export class FeedDO extends DurableObject<HostedEnv> {
     if (request.method === "POST" && cardInstructionMatch) return json(await this.commit(service.queueInstruction(decodeURIComponent(cardInstructionMatch[1]), String(body.instruction ?? ""))));
     const approveMatch = url.pathname.match(/^\/cards\/([^/]+)\/approve$/);
     if (request.method === "POST" && approveMatch) return json(await this.commit(service.approveAction(decodeURIComponent(approveMatch[1]))));
+    const actionMatch = url.pathname.match(/^\/cards\/([^/]+)\/actions\/([^/]+)$/);
+    if (request.method === "POST" && actionMatch) return json(await this.commit(service.runCardAction(decodeURIComponent(actionMatch[1]), decodeURIComponent(actionMatch[2]))));
     const dismissMatch = url.pathname.match(/^\/cards\/([^/]+)\/dismiss$/);
     if (request.method === "POST" && dismissMatch) return json(await this.commit(service.dismissCard(decodeURIComponent(dismissMatch[1]))));
     const undoMatch = url.pathname.match(/^\/cards\/([^/]+)\/undo-dismiss$/);
@@ -57,12 +67,26 @@ export class FeedDO extends DurableObject<HostedEnv> {
     if (request.method === "POST" && blockMatch) return json(await this.commit(service.updateBlock(decodeURIComponent(blockMatch[1]), decodeURIComponent(blockMatch[2]), String(body.value ?? ""))));
     const cancelMatch = url.pathname.match(/^\/work\/([^/]+)\/cancel$/);
     if (request.method === "POST" && cancelMatch) return json(await this.commit(service.cancelQueuedWork(decodeURIComponent(cancelMatch[1]), String(body.reason ?? "Cancelled from the browser before Codex started work."))));
+    const retryMatch = url.pathname.match(/^\/work\/([^/]+)\/retry$/);
+    if (request.method === "POST" && retryMatch) return json(await this.commit(service.retryApprovedWork(decodeURIComponent(retryMatch[1]))));
     const completeMatch = url.pathname.match(/^\/work\/([^/]+)\/complete$/);
     if (request.method === "POST" && completeMatch) return json(await this.commit(service.completeWork(decodeURIComponent(completeMatch[1]), String(body.token ?? ""), body.result as any)));
     const failMatch = url.pathname.match(/^\/work\/([^/]+)\/fail$/);
     if (request.method === "POST" && failMatch) return json(await this.commit(service.failWork(decodeURIComponent(failMatch[1]), String(body.token ?? ""), String(body.error ?? ""))));
+    const blockWorkMatch = url.pathname.match(/^\/work\/([^/]+)\/block$/);
+    if (request.method === "POST" && blockWorkMatch) return json(await this.commit(service.blockApprovedWork(decodeURIComponent(blockWorkMatch[1]), String(body.token ?? ""), String(body.error ?? ""))));
     const verifyMatch = url.pathname.match(/^\/work\/([^/]+)\/verify$/);
-    if (request.method === "POST" && verifyMatch) return json(service.verifyApprovedAction(decodeURIComponent(verifyMatch[1]), String(body.token ?? "")));
+    if (request.method === "POST" && verifyMatch) return json(await this.commit({ state, result: service.verifyApprovedAction(decodeURIComponent(verifyMatch[1]), String(body.token ?? ""), typeof body.mailbox === "string" ? body.mailbox : undefined) }));
+    const routineApproveMatch = url.pathname.match(/^\/routine-actions\/([^/]+)\/approve$/);
+    if (request.method === "POST" && routineApproveMatch) return json(await this.commit(service.approveRoutineActionGroup(decodeURIComponent(routineApproveMatch[1]))));
+    const proposalApplyMatch = url.pathname.match(/^\/revision-proposals\/([^/]+)\/apply$/);
+    if (request.method === "POST" && proposalApplyMatch) return json(await this.commit(service.applyRevisionProposal(decodeURIComponent(proposalApplyMatch[1]))));
+    const proposalRejectMatch = url.pathname.match(/^\/revision-proposals\/([^/]+)\/reject$/);
+    if (request.method === "POST" && proposalRejectMatch) return json(await this.commit(service.rejectRevisionProposal(decodeURIComponent(proposalRejectMatch[1]))));
+    const proposalUpdateMatch = url.pathname.match(/^\/revision-proposals\/([^/]+)$/);
+    if (request.method === "POST" && proposalUpdateMatch) return json(await this.commit(service.updateRevisionProposal(decodeURIComponent(proposalUpdateMatch[1]), String(body.content ?? ""))));
+    const revisionRevertMatch = url.pathname.match(/^\/revisions\/([^/]+)\/revert$/);
+    if (request.method === "POST" && revisionRevertMatch) return json(await this.commit(service.revertWorkspaceRevision(decodeURIComponent(revisionRevertMatch[1]))));
     return notFound();
   }
 

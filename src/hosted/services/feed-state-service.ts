@@ -20,7 +20,23 @@ type AgentCardShape = Partial<Card> & {
   summary?: unknown;
 };
 
-const CARD_STATUSES: CardStatus[] = ["to_review_new", "to_review_updated", "queued", "working", "done"];
+const CARD_STATUSES: CardStatus[] = ["to_review_new", "to_review_updated", "queued", "working", "approved_blocked", "done"];
+
+export const FEED_PROMPT_DEFAULTS: Record<string, string> = {
+  "judge.md": "# Feed judge prompt layer\n\nAdd feed-specific judging refinements here. Global policy and the global judge prompt remain in force.\n",
+  "compose-card.md": "# Feed card prompt layer\n\nAdd feed-specific card composition refinements here. Keep the outer card calm and compact.\n",
+};
+
+export const FEED_PROMPT_NAMES = Object.keys(FEED_PROMPT_DEFAULTS);
+
+function defaultSweepState() {
+  return {
+    currentBatchId: null,
+    lastFeedbackId: null,
+    recollectionOffered: false,
+    statusMessage: null,
+  };
+}
 
 function text(value: unknown): string | undefined {
   if (typeof value === "string") return value.trim() || undefined;
@@ -106,11 +122,18 @@ export function defaultFeedState(feedId: string): FeedState {
     policy: `# ${config.name} policy\n\n- Start with a high attention bar.\n- Preserve provenance and do not pad.\n`,
     sources: [{ ...source.recipe, content: source.markdown } as SourceRecipe],
     cards: { [card.id]: card },
+    routineActions: {},
     work: {},
     events: [],
     policyRevisions: {},
     checkpoints: { [source.recipe.id]: { sourceId: source.recipe.id, updatedAt: null, cursor: null } },
     runs: {},
+    sweep: defaultSweepState(),
+    sweepFeedback: {},
+    sweepBatches: {},
+    revisionProposals: {},
+    workspaceRevisions: {},
+    prompts: { ...FEED_PROMPT_DEFAULTS },
     createdAt: now,
     updatedAt: now,
   };
@@ -118,6 +141,7 @@ export function defaultFeedState(feedId: string): FeedState {
 
 export function feedView(state: FeedState): FeedView {
   const cards = Object.values(state.cards).map(normalizeCard).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  const routineActions = Object.values(state.routineActions ?? {}).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const work = Object.values(state.work).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   return {
     config: state.config,
@@ -125,14 +149,9 @@ export function feedView(state: FeedState): FeedView {
     sources: state.sources,
     policy: state.policy,
     cards,
-    routineActions: [],
+    routineActions,
     work,
-    sweep: {
-      currentBatchId: null,
-      lastFeedbackId: null,
-      recollectionOffered: false,
-      statusMessage: null,
-    },
+    sweep: state.sweep ?? defaultSweepState(),
     readyNextPass: cards.filter((card) => card.status === "to_review_updated" && card.readyForPass > state.config.currentPass).length,
   };
 }
@@ -143,6 +162,7 @@ export function inspectFeed(state: FeedState) {
     thread: state.thread,
     policy: state.policy,
     runner: feedRunnerSetup(state),
+    prompts: FEED_PROMPT_NAMES.map((name) => ({ name, content: state.prompts?.[name] ?? FEED_PROMPT_DEFAULTS[name] ?? "" })),
     sources: state.sources.map((source) => ({
       ...source,
       content: (source as SourceRecipe & { content?: string }).content ?? source.summary,
@@ -184,6 +204,13 @@ export function createCustomFeedState(config: FeedConfig, brief: string, current
     policyRevisions: {},
     checkpoints: {},
     runs: {},
+    routineActions: {},
+    sweep: defaultSweepState(),
+    sweepFeedback: {},
+    sweepBatches: {},
+    revisionProposals: {},
+    workspaceRevisions: {},
+    prompts: { ...FEED_PROMPT_DEFAULTS },
     createdAt: now,
     updatedAt: now,
   };

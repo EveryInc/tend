@@ -1,4 +1,19 @@
-import type { Card, CardBlock, FeedConfig, ProposedAction, SourceRecipe, ThreadBinding, WorkItem } from "../types";
+import type {
+  Card,
+  CardBlock,
+  FeedConfig,
+  ProposedAction,
+  RevisionProposal,
+  RoutineActionGroup,
+  SourceRecipe,
+  SweepBatch,
+  SweepFeedbackTrace,
+  SweepState,
+  ThreadBinding,
+  VoiceTarget,
+  WorkItem,
+  WorkspaceRevision,
+} from "../types";
 
 export interface HostedEnv {
   DB: D1Database;
@@ -33,6 +48,8 @@ export interface AccountWorkspaceState {
   feedIds: string[];
   globalPolicy: string;
   prompts: Record<string, string>;
+  revisionProposals: Record<string, RevisionProposal>;
+  workspaceRevisions: Record<string, WorkspaceRevision>;
   createdAt: string;
   updatedAt: string;
 }
@@ -43,11 +60,18 @@ export interface FeedState {
   policy: string;
   sources: SourceRecipe[];
   cards: Record<string, Card>;
+  routineActions: Record<string, RoutineActionGroup>;
   work: Record<string, WorkItem>;
   events: Array<{ id: string; at: string; type: string; feedId: string; cardId?: string; workId?: string; detail?: unknown }>;
   policyRevisions: Record<string, unknown>;
   checkpoints: Record<string, unknown>;
   runs: Record<string, unknown>;
+  sweep: SweepState;
+  sweepFeedback: Record<string, SweepFeedbackTrace>;
+  sweepBatches: Record<string, SweepBatch>;
+  revisionProposals: Record<string, RevisionProposal>;
+  workspaceRevisions: Record<string, WorkspaceRevision>;
+  prompts: Record<string, string>;
   createdAt: string;
   updatedAt: string;
 }
@@ -61,6 +85,12 @@ export interface HostedCardInput {
   why: string;
   blocks: CardBlock[];
   proposedAction?: ProposedAction;
+  actions?: Card["actions"];
+  sourceMailbox?: string;
+  routineActionGroupId?: string;
+  sweep?: Card["sweep"];
   readyForPass?: number;
   completedAt?: string;
 }
+
+export type HostedRevisionTarget = VoiceTarget;
