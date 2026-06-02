@@ -980,6 +980,17 @@ export default function App({ feedId, screen, workspaceTab = "feed" }: { feedId:
     await queryClient.invalidateQueries({ queryKey: ["workspace", nextFeed] });
   }, [feedId, queryClient]);
 
+  useEffect(() => {
+    if (!auth || !state) return;
+    for (const feed of state.feeds) {
+      if (feed.id === feedId) continue;
+      void queryClient.prefetchQuery({
+        queryKey: ["workspace", feed.id],
+        queryFn: () => api<WorkspaceView>(`/api/state?feed=${encodeURIComponent(feed.id)}`),
+      });
+    }
+  }, [auth, feedId, queryClient, state]);
+
   const feed = state?.active;
   const cards = useMemo(() => feed ? visibleCards(feed, tab) : [], [feed, tab]);
   const routineActions = useMemo(() => feed ? visibleRoutineActions(feed, tab) : [], [feed, tab]);
