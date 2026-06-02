@@ -1,4 +1,4 @@
-name = "attention-hosted"
+name = "attention"
 main = "src/hosted/worker.ts"
 compatibility_date = "2026-06-02"
 compatibility_flags = ["nodejs_compat"]
@@ -11,8 +11,8 @@ run_worker_first = ["/api/*", "/mcp", "/mcp/*", "/.well-known/*", "/attention-ag
 
 [[d1_databases]]
 binding = "DB"
-database_name = "attention-control-plane"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_name = "attention"
+database_id = "2125c5d8-1d04-4eb8-afb9-191158cd8f26"
 migrations_dir = "migrations"
 
 [[durable_objects.bindings]]
