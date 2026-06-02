@@ -22,7 +22,9 @@ Use this skill when working with a hosted Attention feed from Codex Desktop.
 - Before external mutation, call `verify_action` for approved action work.
 - Treat queued work as the primary loop. If `list_work` returns queued items, call `claim_work` before using Gmail, Slack, GitHub, browser, file, or other local connectors for that instruction.
 - Complete claimed work with the scoped capability token returned by `claim_work`.
-- When the claimed instruction closes, ignores, dismisses, or confirms an item is already handled, update the card to `done` and include `done: true` in `complete_work`.
+- Upsert cards with the canonical Attention card shape: `id`, `title`, `why`, and `blocks` with stable block `id` and `type` values.
+- Put summaries, evidence, provenance, drafts, options, and receipts inside `blocks`; do not send them as top-level card fields.
+- When the claimed instruction closes, ignores, dismisses, or confirms an item is already handled, update the card to `done` and include `response` plus `done: true` in `complete_work`.
 - Fail work with a clear error if local connectors, credentials, or evidence are missing.
 - Do not invent external source access. Hosted Attention stores recipes; connector access lives in the local Codex runtime.
 - Keep source refresh and queue execution in the same feed-bound thread unless the user explicitly asks for a different topology.
@@ -38,11 +40,11 @@ On each wakeup:
 2. Read the feed setup/state and configured source recipes.
 3. List queued work for this feed and thread.
 4. If queued work exists, claim one item before doing any connector-backed work for that instruction.
-5. Execute the claimed item with local tools/connectors, upserting result cards or updating cards only after the claim is held.
+5. Execute the claimed item with local tools/connectors, upserting canonical cards or updating cards only after the claim is held.
 6. Call `verify_action` immediately before any approved external mutation.
-7. Complete or fail the claim with evidence and uncertainty.
+7. Complete or fail the claim with a response, evidence, and uncertainty.
 8. Repeat claim/execute/complete until `claim_work` returns null or the small-batch limit is reached.
-9. Only when no queued work is being handled, refresh configured sources opportunistically, upsert useful cards with clear provenance, and record source runs/checkpoints when the evidence supports it.
+9. Only when no queued work is being handled, refresh configured sources opportunistically, upsert useful cards with clear provenance in blocks, and record source runs/checkpoints when the evidence supports it.
 
 ## Core Tools
 
@@ -63,4 +65,4 @@ On each wakeup:
 
 ## Default Loop
 
-Inspect the feed, then list queued work. If work is queued, claim the next item before using local connectors or upserting cards for that instruction. Do the claimed work using local Codex tools/connectors, verify approved external actions immediately before mutation, complete or fail the claim, and repeat until no claim is returned. Refresh configured sources opportunistically only after the queue is drained or when the claimed item explicitly asks for source collection.
+Inspect the feed, then list queued work. If work is queued, claim the next item before using local connectors or upserting cards for that instruction. Do the claimed work using local Codex tools/connectors, upsert canonical cards with `why` and `blocks`, verify approved external actions immediately before mutation, complete or fail the claim with a `response`, and repeat until no claim is returned. Refresh configured sources opportunistically only after the queue is drained or when the claimed item explicitly asks for source collection.

@@ -161,12 +161,13 @@ function feedRunnerSetup(state: FeedState) {
       "Confirm this Codex thread is bound to the feed.",
       "List queued work for this feed and thread.",
       "Claim queued work before using local connectors for that instruction.",
-      "Execute claimed work, upsert result cards only after the claim is held, and complete or fail each item with evidence.",
-      "Include done: true when completing close, ignore, dismiss, or already-handled instructions.",
+      "Execute claimed work, upsert canonical cards only after the claim is held, and complete or fail each item with a response and evidence.",
+      "Use id, title, why, and blocks with stable block ids/types when upserting cards.",
+      "Include response plus done: true when completing close, ignore, dismiss, or already-handled instructions.",
       "Call verify_action immediately before approved external mutations.",
       "Refresh configured sources opportunistically only when no queued work is being handled.",
     ],
-    heartbeatPrompt: `Run the Attention feed ${state.config.id} as its local feed runner. Use threadId ${threadId}. Confirm binding, inspect feed setup/state, then list queued work before using local connectors. If queued work exists, claim a small batch first; for each claimed instruction, execute allowed work with local tools/connectors, upsert result cards only after the relevant claim is held, verify approved external mutations immediately before acting, and complete or fail the claim with evidence. For close, ignore, dismiss, or already-handled instructions, update the card to done and include done: true in complete_work. When no queued work is being handled, refresh configured sources with local Codex connectors when available, upsert only useful cards with provenance, and record source runs/checkpoints when supported. Do not create a second runner thread unless the user explicitly asks.`,
+    heartbeatPrompt: `Run the Attention feed ${state.config.id} as its local feed runner. Use threadId ${threadId}. Confirm binding, inspect feed setup/state, then list queued work before using local connectors. If queued work exists, claim a small batch first; for each claimed instruction, execute allowed work with local tools/connectors, upsert cards only after the relevant claim is held, and use the canonical card shape: id, title, why, and blocks with stable block ids/types. Verify approved external mutations immediately before acting, and complete or fail the claim with response and evidence. For close, ignore, dismiss, or already-handled instructions, update the card to status "done" and include response plus done: true in complete_work. When no queued work is being handled, refresh configured sources with local Codex connectors when available, upsert only useful cards with provenance in blocks, and record source runs/checkpoints when supported. Do not create a second runner thread unless the user explicitly asks.`,
   };
 }
 

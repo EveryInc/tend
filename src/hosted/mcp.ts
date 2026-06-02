@@ -4,6 +4,63 @@ import { z } from "zod";
 import type { HostedEnv, HostedSession } from "./env";
 import { callAccount, callFeed } from "./identity";
 
+const cardBlockItemSchema = z.union([
+  z.string(),
+  z.object({
+    label: z.string(),
+    detail: z.string().optional(),
+    checked: z.boolean().optional(),
+  }).strict(),
+]);
+
+const cardBlockSchema = z.object({
+  id: z.string(),
+  type: z.enum(["rich_text", "evidence", "editable_text", "memo", "options", "checklist", "diff", "clarification", "profile", "receipt"]),
+  label: z.string().optional(),
+  title: z.string().optional(),
+  text: z.string().optional(),
+  value: z.string().optional(),
+  items: z.array(cardBlockItemSchema).optional(),
+  before: z.string().optional(),
+  after: z.string().optional(),
+  editable: z.boolean().optional(),
+  profile: z.object({
+    name: z.string(),
+    subtitle: z.string().optional(),
+    href: z.string(),
+    imageUrl: z.string(),
+    fallbackImageUrl: z.string().optional(),
+    links: z.array(z.object({ label: z.string(), href: z.string() }).strict()).optional(),
+  }).strict().optional(),
+}).strict();
+
+const proposedActionSchema = z.object({
+  label: z.string(),
+  instruction: z.string(),
+  artifactBlockId: z.string().optional(),
+  externalMutation: z.boolean().optional(),
+}).strict();
+
+const cardInputSchema = z.object({
+  id: z.string(),
+  kind: z.enum(["attention", "feed_improvement"]).optional(),
+  status: z.enum(["to_review_new", "to_review_updated", "queued", "working", "done"]).optional(),
+  eyebrow: z.string().optional(),
+  title: z.string(),
+  why: z.string(),
+  blocks: z.array(cardBlockSchema),
+  proposedAction: proposedActionSchema.optional(),
+  readyForPass: z.number().int().optional(),
+  completedAt: z.string().optional(),
+}).strict();
+
+const completeWorkResultSchema = z.object({
+  response: z.string(),
+  blocks: z.array(cardBlockSchema).optional(),
+  proposedAction: proposedActionSchema.optional(),
+  done: z.boolean().optional(),
+}).strict();
+
 function text(value: unknown) {
   return { content: [{ type: "text" as const, text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }] };
 }
@@ -37,7 +94,7 @@ export function createAttentionMcpServer(env: HostedEnv, session: HostedSession)
       role: "user",
       content: {
         type: "text",
-        text: `Deal with the Attention feed ${feedId}. Use threadId ${threadId}. Inspect the feed and confirm this thread is bound. List queued work for this thread before using local connectors. If queued work exists, call claim_work first and only then use Gmail, Slack, GitHub, browser, file, or other local tools for that claimed instruction. Upsert result cards or update cards only after the relevant claim is held, preserving provenance. When a claimed instruction closes, ignores, dismisses, or confirms an item is already handled, update the card to done and include done: true in complete_work. Complete or fail each claimed item with the scoped token and evidence, verifying approved external actions immediately before mutation, and repeat until claim_work returns null or the small-batch limit is reached. Only after the queue is drained, or when the claimed item explicitly asks for source collection, refresh configured source recipes opportunistically and upsert useful cards with provenance.`,
+        text: `Deal with the Attention feed ${feedId}. Use threadId ${threadId}. Inspect the feed and confirm this thread is bound. List queued work for this thread before using local connectors. If queued work exists, call claim_work first and only then use Gmail, Slack, GitHub, browser, file, or other local tools for that claimed instruction. Upsert cards only after the relevant claim is held, using the canonical card shape: id, title, why, and blocks with stable block ids/types. When a claimed instruction closes, ignores, dismisses, or confirms an item is already handled, update the card to status "done" and include response plus done: true in complete_work. Complete or fail each claimed item with the scoped token and evidence, verifying approved external actions immediately before mutation, and repeat until claim_work returns null or the small-batch limit is reached. Only after the queue is drained, or when the claimed item explicitly asks for source collection, refresh configured source recipes opportunistically and upsert useful cards with provenance in blocks.`,
       },
     }],
   }));
@@ -51,7 +108,7 @@ export function createAttentionMcpServer(env: HostedEnv, session: HostedSession)
       role: "user",
       content: {
         type: "text",
-        text: `Set up this Codex thread as the local runner for Attention feed ${feedId}. Use threadId ${threadId}. Bind the feed with bind_feed_thread, inspect the feed setup/state, and create or update one heartbeat automation on this same thread with cadence "${cadence || "every 30 minutes"}". The automation should confirm binding, list queued work first, claim a small batch before using any local connector for queued instructions, execute allowed claimed work, upsert result cards only after the relevant claim is held, verify approved external mutations immediately before acting, and complete or fail each claim with evidence. For close/ignore/already-handled instructions, it should update the card to done and include done: true in complete_work. When no queued work is being handled, it may refresh configured sources with local connectors and upsert only useful cards with provenance. Do not create a second runner thread unless the user explicitly asks.`,
+        text: `Set up this Codex thread as the local runner for Attention feed ${feedId}. Use threadId ${threadId}. Bind the feed with bind_feed_thread, inspect the feed setup/state, and create or update one heartbeat automation on this same thread with cadence "${cadence || "every 30 minutes"}". The automation should confirm binding, list queued work first, claim a small batch before using any local connector for queued instructions, execute allowed claimed work, upsert cards only after the relevant claim is held, and use the canonical card shape: id, title, why, and blocks with stable block ids/types. It should verify approved external mutations immediately before acting and complete or fail each claim with a response and evidence. For close/ignore/already-handled instructions, it should update the card to status "done" and include response plus done: true in complete_work. When no queued work is being handled, it may refresh configured sources with local connectors and upsert only useful cards with provenance in blocks. Do not create a second runner thread unless the user explicitly asks.`,
       },
     }],
   }));
@@ -89,7 +146,7 @@ export function createAttentionMcpServer(env: HostedEnv, session: HostedSession)
   server.registerTool("complete_work", {
     title: "Complete work",
     description: "Complete a claimed work item with the scoped capability token.",
-    inputSchema: { feedId: z.string(), workId: z.string(), token: z.string(), result: z.record(z.string(), z.unknown()) },
+    inputSchema: { feedId: z.string(), workId: z.string(), token: z.string(), result: completeWorkResultSchema },
   }, async ({ feedId, workId, token, result }) => text(await callFeed(env, session, feedId, `/work/${encodeURIComponent(workId)}/complete`, { method: "POST", body: JSON.stringify({ token, result }) })));
 
   server.registerTool("fail_work", {
@@ -100,8 +157,8 @@ export function createAttentionMcpServer(env: HostedEnv, session: HostedSession)
 
   server.registerTool("upsert_card", {
     title: "Upsert card",
-    description: "Create or update a structured Attention card for a feed.",
-    inputSchema: { feedId: z.string(), card: z.record(z.string(), z.unknown()) },
+    description: "Create or update a structured Attention card. Required card fields match the local implementation: id, title, why, and blocks.",
+    inputSchema: { feedId: z.string(), card: cardInputSchema },
   }, async ({ feedId, card }) => text(await callFeed(env, session, feedId, "/card", { method: "POST", body: JSON.stringify({ card }) })));
 
   server.registerTool("record_source_run", {
