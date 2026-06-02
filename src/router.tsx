@@ -1,5 +1,7 @@
-import { createRootRoute, createRoute, createRouter, Outlet } from "@tanstack/react-router";
-import App, { OAuthConsentPage, SignInPage, type AttentionRouteScreen } from "./App";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { createRootRoute, createRoute, createRouter, Outlet, useRouterState } from "@tanstack/react-router";
+import App, { OAuthConsentPage, SignInPage, getAuthSession, type AttentionRouteScreen } from "./App";
+import { FeedRealtimeProvider } from "./state/realtime";
 
 function feedSearch(search: Record<string, unknown>): { feed: string } {
   return { feed: typeof search.feed === "string" && search.feed.length ? search.feed : "inbox" };
@@ -9,12 +11,42 @@ function workspaceSearch(search: Record<string, unknown>): { tab: "feed" | "glob
   return { tab: search.tab === "global" ? "global" : "feed" };
 }
 
+function activeFeedFromLocation(location: { pathname: string; search: Record<string, unknown> }) {
+  const match = location.pathname.match(/^\/(?:feed|workspace|agents|learnings)\/([^/?#]+)/);
+  if (match) return decodeURIComponent(match[1]);
+  if (location.pathname === "/") {
+    return typeof location.search.feed === "string" && location.search.feed.length ? location.search.feed : "inbox";
+  }
+  return null;
+}
+
+function RootShell() {
+  const queryClient = useQueryClient();
+  const location = useRouterState({ select: (state) => state.location });
+  const authQuery = useQuery({ queryKey: ["auth-session"], queryFn: getAuthSession });
+  const feedId = activeFeedFromLocation(location);
+  const outlet = <Outlet />;
+
+  if (!feedId) return outlet;
+
+  return (
+    <FeedRealtimeProvider
+      key={feedId}
+      feedId={feedId}
+      enabled={Boolean(authQuery.data)}
+      onChange={() => void queryClient.invalidateQueries({ queryKey: ["workspace", feedId] })}
+    >
+      {outlet}
+    </FeedRealtimeProvider>
+  );
+}
+
 function RoutedAttentionApp({ feedId, screen, workspaceTab }: { feedId: string; screen: AttentionRouteScreen; workspaceTab?: "feed" | "global" }) {
   return <App feedId={feedId} screen={screen} workspaceTab={workspaceTab} />;
 }
 
 const rootRoute = createRootRoute({
-  component: Outlet,
+  component: RootShell,
 });
 
 const indexRoute = createRoute({

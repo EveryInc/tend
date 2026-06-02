@@ -1,16 +1,16 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import type { Card, CardAction, CardBlock, FeedView, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkspaceRevision, WorkspaceView } from "./types";
 import { useActiveCard } from "./state/activeCard";
 import { usePushToTalk } from "./state/pushToTalk";
-import { FeedRealtimeProvider, useFeedRealtime, type ConnectionState } from "./state/realtime";
+import { useFeedRealtime, type ConnectionState } from "./state/realtime";
 import { preferredTarget, sameTarget } from "./state/voiceTarget";
 
 type Tab = "review" | "queued" | "working" | "done";
 type Inspector = "new-feed" | "add-source" | null;
 type WorkspaceTab = "feed" | "global";
-type AuthSession = { user: { id: string; email: string; name?: string | null }; session: unknown };
+export type AuthSession = { user: { id: string; email: string; name?: string | null }; session: unknown };
 type OAuthConsentResponse = { redirect?: boolean; url?: string; redirect_uri?: string };
 export type AttentionRouteScreen = "feed" | "workspace" | "agents" | "learnings";
 
@@ -38,7 +38,7 @@ async function authRequest<T>(path: string, value?: unknown): Promise<T> {
   return body as T;
 }
 
-function getAuthSession(): Promise<AuthSession | null> {
+export function getAuthSession(): Promise<AuthSession | null> {
   return authRequest<AuthSession | null>("/get-session");
 }
 
@@ -1227,49 +1227,43 @@ export default function App({ feedId, screen, workspaceTab = "feed" }: { feedId:
   if (auth === null) return <AuthScreen onAuthenticated={(session) => queryClient.setQueryData(["auth-session"], session)} />;
   if (!state || !feed) return <main className="loading">Loading attention…</main>;
 
-  const withRealtime = (content: ReactNode) => (
-    <FeedRealtimeProvider feedId={feedId} enabled={!!auth} onChange={() => void refresh()}>
-      {content}
-    </FeedRealtimeProvider>
-  );
-
   const resolvedDockTarget = dockTarget ?? ladder[0];
   const compoundProposals = state.proposals.filter((proposal) => proposal.anchorFeedId === feed.config.id && proposal.source === "compound");
 
   if (screen === "workspace") return (
-    withRealtime(<>
+    <>
       <TopBar state={state} user={auth.user} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} onAgents={openAgents} onSignOut={signOut} />
       <div className="workspace-proposals"><RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} /></div>
       <PromptWorkspace state={state} tab={workspaceTab} onTab={(nextTab) => openWorkspace(nextTab)} onBack={closeWorkspace} onInspector={setInspector} onSaved={showToast} onTargetFocus={(target) => { setWorkspaceFocus(target); selectDockTarget(target); }} />
       <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
-    </>)
+    </>
   );
 
   if (screen === "learnings") return (
-    withRealtime(<>
+    <>
       <TopBar state={state} user={auth.user} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} onAgents={openAgents} onSignOut={signOut} />
       <LearningReview feed={feed} proposals={compoundProposals} onBack={closeWorkspace} onApply={applyLearningProposal} onReject={rejectLearningProposal} />
       <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
-    </>)
+    </>
   );
 
   if (screen === "agents") return (
-    withRealtime(<>
+    <>
       <TopBar state={state} user={auth.user} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} onAgents={openAgents} onSignOut={signOut} />
       <AgentSetupPage state={state} onBack={closeWorkspace} onCopied={() => showToast("Copied")} />
       {toast && <div className="toast">{toast}</div>}
-    </>)
+    </>
   );
 
   const updated = cards.filter((card) => card.status === "to_review_updated");
   const fresh = cards.filter((card) => card.status !== "to_review_updated");
   const feedWork = feed.work.filter((work) => work.cardId === "__feed__" && work.status === tab);
   return (
-    withRealtime(<>
+    <>
       <TopBar state={state} user={auth.user} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} onAgents={openAgents} onSignOut={signOut} />
       <nav className="tabs">
         {(["review", "queued", "working", "done"] as Tab[]).map((item) => (
@@ -1316,6 +1310,6 @@ export default function App({ feedId, screen, workspaceTab = "feed" }: { feedId:
       <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoCleanup && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoCleanup.feedId}/cards/${undoCleanup.cardId}/undo-dismiss`), "Cleanup undone").then(() => setUndoCleanup(null))}>Undo</button>}{undoQueuedWork && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoQueuedWork.feedId}/work/${undoQueuedWork.workId}/cancel`), "Instruction cancelled").then(() => setUndoQueuedWork(null))}>Undo</button>}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
-    </>)
+    </>
   );
 }
