@@ -491,9 +491,11 @@ MCP server: ${mcpUrl}
 Skill: ${skillUrl}
 Feed: ${state.active.config.id}
 
-After connecting, read the skill, inspect the feed, and bind this local thread as the feed home thread with bind_feed_thread.
+Authenticate the MCP server with OAuth scopes attention:read and attention:write. If the attention MCP tools are still not exposed after OAuth, create a fresh Codex thread for this feed and continue setup there.
 
-Create or update one heartbeat automation on this same thread. On each wakeup it should inspect the feed, list queued work first, claim before using local connectors for queued instructions, execute and complete/fail each claim through Attention MCP, include done: true when closing/ignoring/already-handled cards, then refresh configured sources opportunistically only when no queued work is being handled. Use run_feed for the work-drain phase.`;
+Read the skill, inspect the feed, and bind this local thread as the feed home thread with bind_feed_thread. Use one runner thread per feed; when connecting another feed, repeat setup in a separate Codex thread with a separate heartbeat automation.
+
+Create or update one heartbeat automation on this same thread. On each wakeup it should inspect the feed, list queued work first, claim before using local connectors for queued instructions, execute and complete/fail/block/retry/cancel each claim through Attention MCP, verify approved external actions immediately before mutation, include done: true when closing/ignoring/already-handled cards, then refresh configured sources opportunistically only when no queued work is being handled. Use run_feed for the work-drain phase.`;
 
   return (
     <main className="workspace-page agents-page">
@@ -528,7 +530,7 @@ Create or update one heartbeat automation on this same thread. On each wakeup it
           <h2>Setup prompt</h2>
           <CopyButton value={setupPrompt} onCopied={onCopied} />
         </div>
-        <textarea className="setup-prompt" readOnly value={setupPrompt} rows={9} />
+        <textarea className="setup-prompt" readOnly value={setupPrompt} rows={14} />
       </section>
     </main>
   );

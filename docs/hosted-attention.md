@@ -25,6 +25,8 @@ The hosted environment cannot wake a Codex thread by itself. The local thread au
 
 Each feed should normally have one local feed-runner thread and one heartbeat automation. On every wakeup, that same thread inspects the feed, lists queued work, and claims before using local connector access for a queued instruction. It executes the claimed item, writes result cards with provenance only after holding the claim, and completes or fails the claim with evidence. Opportunistic source refresh happens after the queue is drained or when the claimed work explicitly asks for collection. Keeping source refresh and queue execution in one bound thread avoids scheduler races while the feed's Durable Object remains the source of truth for queue leases and state.
 
+When connecting a new feed, start from a fresh or dedicated Codex thread, authenticate the hosted `attention` MCP server with `attention:read` and `attention:write`, bind that thread with `bind_feed_thread`, and install/update one heartbeat automation targeting the same thread. If OAuth succeeds but the `mcp__attention` tools are not visible, create a fresh thread after the OAuth refresh and continue setup there; tool exposure is resolved at thread startup in Codex Desktop.
+
 ## Local Commands
 
 ```sh
