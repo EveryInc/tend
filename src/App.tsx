@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Card, CardBlock, FeedView, WorkspaceView } from "./types";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Card, CardAction, CardBlock, FeedView, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkspaceRevision, WorkspaceView } from "./types";
 import { useActiveCard } from "./state/activeCard";
 import { usePushToTalk } from "./state/pushToTalk";
+import { preferredTarget, sameTarget } from "./state/voiceTarget";
 
 type Tab = "review" | "queued" | "working" | "done";
 type Inspector = "new-feed" | "add-source" | null;
-type Screen = "feed" | "workspace";
+type Screen = "feed" | "workspace" | "learnings";
 type WorkspaceTab = "feed" | "global";
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
@@ -19,12 +20,40 @@ function post<T>(url: string, value: unknown = {}): Promise<T> {
   return api<T>(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(value) });
 }
 
+function targetLabel(target: VoiceTarget, state: WorkspaceView): string {
+  if (target.kind === "attention") return "Attention";
+  if (target.kind === "feed") return state.feeds.find((feed) => feed.id === target.feedId)?.name ?? target.feedId;
+  if (target.kind === "sweep") return "This sweep";
+  if (target.kind === "card") return state.active.cards.find((card) => card.id === target.cardId)?.title ?? "Active card";
+  if (target.kind === "source_recipe") return state.active.sources.find((source) => source.id === target.sourceId)?.name ?? target.sourceId;
+  if (target.kind === "prompt_layer") return `Prompt layer · ${target.promptId}`;
+  return `Global prompt · ${target.promptId}`;
+}
+
+function targetScopeTone(target: VoiceTarget): string {
+  if (target.kind === "card") return "card";
+  if (target.kind === "sweep") return "sweep";
+  if (target.kind === "feed" || target.kind === "source_recipe" || target.kind === "prompt_layer") return "feed";
+  return "attention";
+}
+
+function decodeTextEntities(text: string): string {
+  return text
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;|&#x27;/g, "'")
+    .replace(/&nbsp;/g, "\u00a0")
+    .replace(/&amp;/g, "&");
+}
+
 function FormattedText({ text = "" }: { text?: string }) {
-  const parts = text.split(/(\[[^\]]+\]\(https?:\/\/[^)]+\)|https?:\/\/[^\s<]+|`[^`]+`|\n)/g);
+  const decoded = decodeTextEntities(text);
+  const parts = decoded.split(/(\[[^\]]+\]\((?:https?:\/\/|\/api\/artifacts\/)[^)]+\)|https?:\/\/[^\s<]+|`[^`]+`|\n)/g);
   return (
     <>
       {parts.map((part, index) => {
-        const link = part.match(/^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/);
+        const link = part.match(/^\[([^\]]+)\]\(((?:https?:\/\/|\/api\/artifacts\/)[^)]+)\)$/);
         if (link) return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a>;
         if (part === "\n") return <br key={index} />;
         if (/^https?:\/\//.test(part)) return <a key={index} href={part} target="_blank" rel="noreferrer">{part}</a>;
@@ -39,22 +68,116 @@ function visibleCards(feed: FeedView, tab: Tab): Card[] {
   const pass = feed.config.currentPass;
   if (tab === "review") {
     return feed.cards
-      .filter((card) => (card.status === "to_review_new" || card.status === "to_review_updated") && card.readyForPass <= pass)
+      .filter((card) => (card.status === "to_review_new" || card.status === "to_review_updated") && card.readyForPass <= pass && !card.sweep?.hidden && !card.routineActionGroupId)
       .sort((left, right) => {
+        if (left.sweep?.rank !== undefined || right.sweep?.rank !== undefined) return (left.sweep?.rank ?? Number.MAX_SAFE_INTEGER) - (right.sweep?.rank ?? Number.MAX_SAFE_INTEGER);
         if (left.status !== right.status) return left.status === "to_review_updated" ? -1 : 1;
         return (right.completedAt ?? right.updatedAt).localeCompare(left.completedAt ?? left.updatedAt);
       });
   }
-  if (tab === "queued") return feed.cards.filter((card) => card.status === "queued");
-  if (tab === "working") return feed.cards.filter((card) => card.status === "working");
-  return feed.cards.filter((card) => card.status === "done");
+  if (tab === "queued") return feed.cards.filter((card) => (card.status === "queued" || card.status === "approved_blocked") && !card.routineActionGroupId);
+  if (tab === "working") return feed.cards.filter((card) => card.status === "working" && !card.routineActionGroupId);
+  return feed.cards.filter((card) => card.status === "done" && !card.routineActionGroupId);
+}
+
+function visibleRoutineActions(feed: FeedView, tab: Tab): RoutineActionGroup[] {
+  const status = tab === "review" ? "proposed" : tab === "done" ? "completed" : tab;
+  return feed.routineActions.filter((group) => group.status === status);
 }
 
 function countFor(feed: FeedView, tab: Tab): number {
   const feedWork = tab === "queued" || tab === "working"
     ? feed.work.filter((work) => work.cardId === "__feed__" && work.status === tab).length
     : 0;
-  return visibleCards(feed, tab).length + feedWork;
+  return visibleCards(feed, tab).length + visibleRoutineActions(feed, tab).length + feedWork;
+}
+
+function visibleCardActions(card: Card): CardAction[] {
+  if (card.actions?.length) return card.actions;
+  const archive: CardAction = { id: "default-cleanup", label: "Archive", behavior: "default_cleanup", variant: "secondary", shortcut: "x" };
+  if (!card.proposedAction || card.proposedAction.label === "Decide disposition") return [archive];
+  if (card.proposedAction.label === "Archive" || card.proposedAction.label === "Archive this thread") {
+    return [{ ...archive, variant: "primary" }];
+  }
+  return [
+    archive,
+    {
+      id: "proposed-action",
+      label: card.proposedAction.label,
+      behavior: "approve_action",
+      instruction: card.proposedAction.instruction,
+      artifactBlockId: card.proposedAction.artifactBlockId,
+      externalMutation: card.proposedAction.externalMutation,
+      mailboxPolicy: card.proposedAction.mailboxPolicy,
+      variant: "primary",
+      shortcut: "a",
+    },
+  ];
+}
+
+function readableHistory(card: Card): Array<{ at: string; label: string; detail: string; tone?: "attention" }> {
+  return card.history.flatMap((entry) => {
+    if (entry.type === "user.scoped_instruction" || entry.type === "user.instruction") {
+      return [{ at: entry.at, label: "You asked", detail: entry.detail ?? "Handle this card." }];
+    }
+    if (entry.type === "user.approved_action") {
+      return [{ at: entry.at, label: "You approved", detail: "The previous next step." }];
+    }
+    if (entry.type === "user.default_cleanup_approved") {
+      return [{ at: entry.at, label: "You approved", detail: "Archive this thread." }];
+    }
+    if (entry.type === "user.default_cleanup_undone") {
+      return [{ at: entry.at, label: "You undid", detail: "The archive instruction." }];
+    }
+    if (entry.type === "user.edited_artifact") {
+      return [{ at: entry.at, label: "You edited", detail: "The proposed artifact." }];
+    }
+    if (entry.type === "user.cancelled_queued_work") {
+      return [{ at: entry.at, label: "You cancelled", detail: "The queued instruction." }];
+    }
+    if (entry.type === "codex.completed") {
+      return [{ at: entry.at, label: "Codex did", detail: entry.detail ?? "Finished the requested work." }];
+    }
+    if (entry.type === "codex.stale_approval") {
+      return [{ at: entry.at, label: "Needs review", detail: "The previous approval expired because the card changed. Review the current next step.", tone: "attention" as const }];
+    }
+    if (entry.type === "codex.failed") {
+      return [{ at: entry.at, label: "Codex could not finish", detail: entry.detail ?? "The attempted work needs another look.", tone: "attention" as const }];
+    }
+    if (entry.type === "codex.approved_action_blocked") {
+      return [{ at: entry.at, label: "Still approved", detail: entry.detail ?? "Codex needs to retry the approved action.", tone: "attention" as const }];
+    }
+    if (entry.type === "codex.approved_action_retry_queued") {
+      return [{ at: entry.at, label: "Codex retrying", detail: "Your existing approval is still bound to the unchanged artifact." }];
+    }
+    if (entry.type === "routine_action.completed") {
+      return [{ at: entry.at, label: "Codex did", detail: "Completed the approved routine cleanup." }];
+    }
+    return [];
+  });
+}
+
+function CardHistory({ card }: { card: Card }) {
+  const [expanded, setExpanded] = useState(false);
+  const entries = readableHistory(card);
+  if (!entries.length) return null;
+  const visible = expanded ? entries : entries.slice(-3);
+  return (
+    <section className="card-history">
+      <header>
+        <span className="action-label">History</span>
+        {entries.length > 3 && <button className="history-toggle" onClick={(event) => { event.stopPropagation(); setExpanded((value) => !value); }}>{expanded ? "Show less" : `Show all ${entries.length}`}</button>}
+      </header>
+      <ol>
+        {visible.map((entry, index) => (
+          <li className={entry.tone === "attention" ? "needs-attention" : ""} key={`${entry.at}-${index}`}>
+            <b>{entry.label}</b>
+            <span>{entry.detail}</span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
 }
 
 function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: string; block: CardBlock; onChanged: () => void }) {
@@ -71,7 +194,7 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
     return (
       <section className="block block-editor">
         {block.label && <h3>{block.label}</h3>}
-        <textarea value={value} onChange={(event) => setValue(event.target.value)} onBlur={() => void save()} rows={Math.max(4, value.split("\n").length + 1)} />
+        <textarea data-block-id={block.id} value={value} onChange={(event) => setValue(event.target.value)} onBlur={() => void save()} rows={Math.max(4, value.split("\n").length + 1)} />
       </section>
     );
   }
@@ -142,6 +265,14 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
   if (block.type === "receipt") {
     return <section className="block block-receipt"><h3>{block.label ?? "Done"}</h3><p><FormattedText text={block.text} /></p></section>;
   }
+  if (block.type === "email_thread") {
+    return (
+      <details className="block email-thread">
+        <summary>Read full email <kbd>O</kbd></summary>
+        <div className="email-thread-body"><FormattedText text={block.text} /></div>
+      </details>
+    );
+  }
   return <section className={`block block-${block.type}`}>{block.label && <h3>{block.label}</h3>}<p><FormattedText text={block.text} /></p></section>;
 }
 
@@ -150,16 +281,18 @@ function CardView({
   active,
   onActivate,
   onChanged,
-  onApprove,
-  onDismiss,
+  onAction,
 }: {
   card: Card;
   active: boolean;
   onActivate: () => void;
   onChanged: () => void;
-  onApprove: () => void;
-  onDismiss: () => void;
+  onAction: (action: CardAction) => void;
 }) {
+  const actions = visibleCardActions(card);
+  const nextThing = card.proposedAction?.label === "Decide disposition"
+    ? "Archive, or tell Codex what to do"
+    : card.proposedAction?.label ?? actions.find((action) => action.variant === "primary")?.label ?? actions[0]?.label;
   return (
     <article className={`attention-card ${active ? "is-active" : ""}`} data-card-id={card.id} onClick={onActivate} onMouseEnter={onActivate}>
       <div className="card-rule" />
@@ -170,22 +303,72 @@ function CardView({
           <h2>{card.title}</h2>
         </div>
       </header>
-      <p className="why">{card.why}</p>
+      <p className="why"><FormattedText text={card.why} /></p>
       <div className="blocks">
         {card.blocks.map((block) => <Block key={block.id} feedId={card.feedId} cardId={card.id} block={block} onChanged={onChanged} />)}
       </div>
-      {card.proposedAction && (card.status === "to_review_new" || card.status === "to_review_updated") && (
+      <CardHistory card={card} />
+      {card.status === "approved_blocked" && (
         <footer className="card-action">
           <div>
-            <span className="action-label">Proposed next move</span>
-            <b>{card.proposedAction.label}</b>
-          </div>
-          <div className="action-buttons">
-            <button className="button ghost" onClick={(event) => { event.stopPropagation(); onDismiss(); }}>Dismiss <kbd>X</kbd></button>
-            <button className="button primary" onClick={(event) => { event.stopPropagation(); onApprove(); }}>Approve <kbd>A</kbd></button>
+            <span className="action-label">Already approved</span>
+            <b>Waiting for Codex to retry</b>
+            {card.sourceMailbox && <small className="reply-mailbox">Reply from {card.sourceMailbox}</small>}
           </div>
         </footer>
       )}
+      {actions.length > 0 && (card.status === "to_review_new" || card.status === "to_review_updated") && (
+        <footer className="card-action">
+          <div>
+            <span className="action-label">Next thing</span>
+            {nextThing && <b>{nextThing}</b>}
+            {card.sourceMailbox && <small className="reply-mailbox">Reply from {card.sourceMailbox}</small>}
+          </div>
+          <div className="action-buttons">
+            {actions.map((action) => (
+              <button
+                className={`button ${action.variant === "primary" ? "primary" : "ghost"}`}
+                key={action.id}
+                onPointerDown={(event) => event.preventDefault()}
+                onClick={(event) => { event.stopPropagation(); onAction(action); }}
+              >
+                {action.label}{action.shortcut && <kbd>{action.shortcut.toUpperCase()}</kbd>}
+              </button>
+            ))}
+          </div>
+        </footer>
+      )}
+    </article>
+  );
+}
+
+function RoutineActionGroupView({ group, onApprove }: { group: RoutineActionGroup; onApprove: () => void }) {
+  return (
+    <article className={`routine-group routine-${group.status}`}>
+      <header className="routine-group-head">
+        <div>
+          <div className="panel-kicker">{group.status === "proposed" ? "Suggested routine action" : `Routine action · ${group.status}`}</div>
+          <h2>{group.label}</h2>
+          <p>{group.summary}</p>
+        </div>
+        {group.status === "proposed" && <button className="button primary" onClick={onApprove}>{group.proposedAction.label}</button>}
+      </header>
+      <details>
+        <summary>{group.items.length} item{group.items.length === 1 ? "" : "s"} <span>{group.status === "proposed" ? "Review before approving" : "Show details"}</span></summary>
+        <ul className="routine-items">
+          {group.items.map((item) => (
+            <li key={item.id}>
+              <div>
+                <b>{item.title}</b>
+                {item.detail && <span>{item.detail}</span>}
+                <small>{item.reason}</small>
+              </div>
+              {item.sourceRefs?.map((ref) => <a key={ref.href} href={ref.href} target="_blank" rel="noreferrer">{ref.label}</a>)}
+            </li>
+          ))}
+        </ul>
+      </details>
+      {group.error && <p className="routine-error">{group.error}</p>}
     </article>
   );
 }
@@ -226,32 +409,59 @@ function TopBar({ state, onFeed, onInspector, onWorkspace }: { state: WorkspaceV
   );
 }
 
-function WorkspaceEditor({ label, content, onSave }: { label: string; content: string; onSave: (content: string) => Promise<unknown> }) {
+function WorkspaceEditor({
+  label,
+  content,
+  onFocus,
+  onSave,
+  onUndo,
+}: {
+  label: string;
+  content: string;
+  onFocus: () => void;
+  onSave: (content: string) => Promise<WorkspaceRevision>;
+  onUndo: (revisionId: string) => Promise<unknown>;
+}) {
   const [value, setValue] = useState(content);
   const [saving, setSaving] = useState(false);
+  const [undoRevision, setUndoRevision] = useState<string | null>(null);
   useEffect(() => setValue(content), [content]);
   const changed = value.trimEnd() !== content.trimEnd();
   return (
     <section className="workspace-editor">
       <div className="workspace-editor-head">
         <h3>{label}</h3>
-        <button className="button ghost" disabled={!changed || saving} onClick={() => void (async () => {
-          setSaving(true);
-          try {
-            await onSave(value);
-          } catch {
-            // The workspace surfaces the API error in its toast.
-          } finally {
-            setSaving(false);
-          }
-        })()}>{saving ? "Saving…" : "Save"}</button>
+        <div className="workspace-editor-actions">
+          {undoRevision && <button className="button text" onClick={() => void (async () => {
+            setSaving(true);
+            try {
+              await onUndo(undoRevision);
+              setUndoRevision(null);
+            } catch {
+              // The workspace surfaces the API error in its toast.
+            } finally {
+              setSaving(false);
+            }
+          })()}>Undo last save</button>}
+          <button className="button ghost" disabled={!changed || saving} onClick={() => void (async () => {
+            setSaving(true);
+            try {
+              const revision = await onSave(value);
+              setUndoRevision(revision.id);
+            } catch {
+              // The workspace surfaces the API error in its toast.
+            } finally {
+              setSaving(false);
+            }
+          })()}>{saving ? "Saving…" : "Save"}</button>
+        </div>
       </div>
-      <textarea value={value} onChange={(event) => setValue(event.target.value)} rows={Math.max(7, Math.min(20, value.split("\n").length + 2))} />
+      <textarea value={value} onFocus={onFocus} onClick={onFocus} onChange={(event) => setValue(event.target.value)} rows={Math.max(7, Math.min(20, value.split("\n").length + 2))} />
     </section>
   );
 }
 
-function PromptWorkspace({ state, tab, onTab, onBack, onInspector, onSaved }: { state: WorkspaceView; tab: WorkspaceTab; onTab: (tab: WorkspaceTab) => void; onBack: () => void; onInspector: (value: Inspector) => void; onSaved: (message: string) => void }) {
+function PromptWorkspace({ state, tab, onTab, onBack, onInspector, onSaved, onTargetFocus }: { state: WorkspaceView; tab: WorkspaceTab; onTab: (tab: WorkspaceTab) => void; onBack: () => void; onInspector: (value: Inspector) => void; onSaved: (message: string) => void; onTargetFocus: (target: VoiceTarget) => void }) {
   const [feedWorkspace, setFeedWorkspace] = useState<any>(null);
   const [globalWorkspace, setGlobalWorkspace] = useState<any>(null);
   const feedId = state.active.config.id;
@@ -259,11 +469,12 @@ function PromptWorkspace({ state, tab, onTab, onBack, onInspector, onSaved }: { 
   const reloadGlobal = useCallback(async () => setGlobalWorkspace(await api("/api/global-prompts")), []);
   useEffect(() => { void reloadFeed(); }, [reloadFeed]);
   useEffect(() => { if (tab === "global") void reloadGlobal(); }, [reloadGlobal, tab]);
-  const save = async (callback: () => Promise<unknown>, message: string, reload: () => Promise<void>) => {
+  const save = async <T,>(callback: () => Promise<T>, message: string, reload: () => Promise<void>): Promise<T> => {
     try {
-      await callback();
+      const result = await callback();
       await reload();
       onSaved(message);
+      return result;
     } catch (error) {
       onSaved(error instanceof Error ? error.message : String(error));
       throw error;
@@ -285,10 +496,14 @@ function PromptWorkspace({ state, tab, onTab, onBack, onInspector, onSaved }: { 
       </nav>
       {tab === "feed" ? !feedWorkspace ? <p>Loading feed setup…</p> : (
         <div className="workspace-stack">
-          <WorkspaceEditor label="Feed policy" content={feedWorkspace.policy} onSave={(content) => save(() => post(`/api/feeds/${feedId}/policy`, { content }), "Feed policy saved", reloadFeed)} />
+          <WorkspaceEditor label="Feed policy" content={feedWorkspace.policy} onFocus={() => onTargetFocus({ kind: "feed", feedId })} onSave={(content) => save(() => post(`/api/feeds/${feedId}/policy`, { content }), "Feed policy saved", reloadFeed)} onUndo={(revisionId) => save(() => post(`/api/revisions/${revisionId}/revert`), "Feed policy restored", reloadFeed)} />
           <section className="workspace-section">
             <div className="workspace-section-head"><h2>Source recipes</h2><span>{feedWorkspace.sources.length}</span></div>
-            {feedWorkspace.sources.map((source: any) => <WorkspaceEditor key={source.id} label={source.name} content={source.content} onSave={(content) => save(() => post(`/api/feeds/${feedId}/sources/${encodeURIComponent(source.id)}`, { content }), "Source recipe saved", reloadFeed)} />)}
+            {feedWorkspace.sources.map((source: any) => <WorkspaceEditor key={source.id} label={source.name} content={source.content} onFocus={() => onTargetFocus({ kind: "source_recipe", feedId, sourceId: source.id })} onSave={(content) => save(() => post(`/api/feeds/${feedId}/sources/${encodeURIComponent(source.id)}`, { content }), "Source recipe saved", reloadFeed)} onUndo={(revisionId) => save(() => post(`/api/revisions/${revisionId}/revert`), "Source recipe restored", reloadFeed)} />)}
+          </section>
+          <section className="workspace-section">
+            <div className="workspace-section-head"><h2>Prompt layers</h2><span>{feedWorkspace.prompts.length}</span></div>
+            {feedWorkspace.prompts.map((prompt: any) => <WorkspaceEditor key={prompt.name} label={prompt.name} content={prompt.content} onFocus={() => onTargetFocus({ kind: "prompt_layer", feedId, promptId: prompt.name })} onSave={(content) => save(() => post(`/api/feeds/${feedId}/prompts/${encodeURIComponent(prompt.name)}`, { content }), "Feed prompt saved", reloadFeed)} onUndo={(revisionId) => save(() => post(`/api/revisions/${revisionId}/revert`), "Feed prompt restored", reloadFeed)} />)}
           </section>
           <section className="workspace-section">
             <h2>Home thread</h2>
@@ -297,10 +512,10 @@ function PromptWorkspace({ state, tab, onTab, onBack, onInspector, onSaved }: { 
         </div>
       ) : !globalWorkspace ? <p>Loading global prompts…</p> : (
         <div className="workspace-stack">
-          <WorkspaceEditor label="Global policy" content={globalWorkspace.globalPolicy} onSave={(content) => save(() => post("/api/global-policy", { content }), "Global policy saved", reloadGlobal)} />
+          <WorkspaceEditor label="Global policy" content={globalWorkspace.globalPolicy} onFocus={() => onTargetFocus({ kind: "attention" })} onSave={(content) => save(() => post("/api/global-policy", { feedId, content }), "Global policy saved", reloadGlobal)} onUndo={(revisionId) => save(() => post(`/api/revisions/${revisionId}/revert`), "Global policy restored", reloadGlobal)} />
           <section className="workspace-section">
             <div className="workspace-section-head"><h2>Prompt layers</h2><span>{globalWorkspace.prompts.length}</span></div>
-            {globalWorkspace.prompts.map((prompt: any) => <WorkspaceEditor key={prompt.name} label={prompt.name} content={prompt.content} onSave={(content) => save(() => post(`/api/global-prompts/${encodeURIComponent(prompt.name)}`, { content }), "Global prompt saved", reloadGlobal)} />)}
+            {globalWorkspace.prompts.map((prompt: any) => <WorkspaceEditor key={prompt.name} label={prompt.name} content={prompt.content} onFocus={() => onTargetFocus({ kind: "global_prompt", promptId: prompt.name })} onSave={(content) => save(() => post(`/api/global-prompts/${encodeURIComponent(prompt.name)}`, { feedId, content }), "Global prompt saved", reloadGlobal)} onUndo={(revisionId) => save(() => post(`/api/revisions/${revisionId}/revert`), "Global prompt restored", reloadGlobal)} />)}
           </section>
         </div>
       )}
@@ -343,25 +558,136 @@ function InspectorPanel({ value, state, onClose, onChanged }: { value: Inspector
   );
 }
 
-function Dock({ feed, card, onSubmit, dictation }: { feed: FeedView; card?: Card; onSubmit: (instruction: string) => void; dictation: WorkspaceView["dictation"] }) {
+function RevisionProposals({ proposals, onApply, onReject, onReviewLearning }: { proposals: RevisionProposal[]; onApply: (proposal: RevisionProposal) => void; onReject: (proposal: RevisionProposal) => void; onReviewLearning: () => void }) {
+  if (!proposals.length) return null;
+  return (
+    <section className="proposal-stack">
+      <div className="section-label">Waiting for approval <span>{proposals.length}</span></div>
+      {proposals.map((proposal) => (
+        <article className="revision-proposal" key={proposal.id}>
+          <div className="panel-kicker">{proposal.label}</div>
+          <h2>Proposed revision</h2>
+          <p>{proposal.instruction}</p>
+          <div className="proposal-diff">
+            <div><span>Before</span><pre>{proposal.previous}</pre></div>
+            <div><span>After</span><pre>{proposal.next}</pre></div>
+          </div>
+          <div className="proposal-actions">
+            {proposal.source === "compound"
+              ? <button className="button primary" onClick={onReviewLearning}>Review compounded learnings</button>
+              : <button className="button primary" onClick={() => onApply(proposal)}>Apply revision</button>}
+            <button className="button" onClick={() => onReject(proposal)}>Reject</button>
+          </div>
+        </article>
+      ))}
+    </section>
+  );
+}
+
+function LearningReview({ feed, proposals, onBack, onApply, onReject }: { feed: FeedView; proposals: RevisionProposal[]; onBack: () => void; onApply: (proposal: RevisionProposal, content: string) => void; onReject: (proposal: RevisionProposal) => void }) {
+  const proposal = proposals.find((item) => item.source === "compound");
+  const [value, setValue] = useState(proposal?.next ?? "");
+  useEffect(() => setValue(proposal?.next ?? ""), [proposal?.id, proposal?.next]);
+  if (!proposal) return (
+    <main className="learning-page">
+      <button className="workspace-back" onClick={onBack}>← Back to feed</button>
+      <div className="learning-empty">
+        <div className="panel-kicker">Learning pass</div>
+        <h1>No learning proposal is waiting.</h1>
+        <p>When you finish a sweep, Codex can ask whether you want to compound what it learned. If you say yes, the editable proposal will appear here before anything changes.</p>
+      </div>
+    </main>
+  );
+  return (
+    <main className="learning-page">
+      <button className="workspace-back" onClick={onBack}>← Back to feed</button>
+      <div className="learning-title">
+        <div className="panel-kicker">Learning pass · {feed.config.name}</div>
+        <h1>Review what Codex learned.</h1>
+        <p>Keep this compact. Edit the proposed feed policy directly, then apply it only when it captures the judgment you want to preserve.</p>
+      </div>
+      <section className="learning-review">
+        <details>
+          <summary>Current feed policy</summary>
+          <pre>{proposal.previous}</pre>
+        </details>
+        <label htmlFor={`learning-${proposal.id}`}>Proposed feed policy</label>
+        <textarea id={`learning-${proposal.id}`} value={value} onChange={(event) => setValue(event.target.value)} rows={Math.max(14, Math.min(30, value.split("\n").length + 3))} />
+        <div className="learning-actions">
+          <button className="button primary" disabled={!value.trim()} onClick={() => onApply(proposal, value)}>Apply learning</button>
+          <button className="button ghost" onClick={() => onReject(proposal)}>Reject</button>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+function Dock({
+  state,
+  feed,
+  target,
+  ladder,
+  targetVersion,
+  onTarget,
+  onSubmit,
+  onRecollect,
+}: {
+  state: WorkspaceView;
+  feed: FeedView;
+  target: VoiceTarget;
+  ladder: VoiceTarget[];
+  targetVersion: number;
+  onTarget: (target: VoiceTarget) => void;
+  onSubmit: (instruction: string) => void;
+  onRecollect: () => void;
+}) {
   const [value, setValue] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const targetIndex = Math.max(0, ladder.findIndex((item) => sameTarget(item, target)));
+  const zoom = (offset: number) => {
+    const next = ladder[Math.max(0, Math.min(ladder.length - 1, targetIndex + offset))];
+    if (next && !sameTarget(next, target)) onTarget(next);
+  };
   const submit = () => {
     const instruction = inputRef.current?.value.trim();
     if (!instruction) return;
     onSubmit(instruction);
     setValue("");
   };
-  const { isPushingToTalk } = usePushToTalk(inputRef, submit, dictation.activationCode);
+  const { isPushingToTalk } = usePushToTalk(inputRef, submit, state.dictation.activationCode);
+  const scopeTone = targetScopeTone(target);
+  const onDockKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      submit();
+      return;
+    }
+    const arrow = event.key === "ArrowUp" || event.key === "ArrowDown";
+    const unmodified = !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+    if (!arrow || !unmodified || value.trim() || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    zoom(event.key === "ArrowUp" ? 1 : -1);
+  };
   return (
     <div className="dock">
-      <form className="dock-inner" onSubmit={(event) => { event.preventDefault(); submit(); }}>
-        <div className="dock-context"><span>{isPushingToTalk ? "Listening to" : "Speaking to"}</span><b>{card?.title ?? feed.config.name}</b></div>
+      <form className={`dock-inner scope-${scopeTone}`} onSubmit={(event) => { event.preventDefault(); submit(); }}>
+        <div className="dock-context">
+          {isPushingToTalk && <span className="listening-dot" />}
+          <span>Talking to:</span>
+          <b className="dock-target" key={targetVersion}>{targetLabel(target, state)}</b>
+          <div className="scope-buttons" aria-label="Change scope">
+            <button type="button" aria-label="Broader scope" title="Broader scope" disabled={targetIndex >= ladder.length - 1} onPointerDown={(event) => event.preventDefault()} onClick={() => zoom(1)}><b>↑</b><span>Broader</span></button>
+            <button type="button" aria-label="Narrower scope" title="Narrower scope" disabled={targetIndex <= 0} onPointerDown={(event) => event.preventDefault()} onClick={() => zoom(-1)}><b>↓</b><span>Narrower</span></button>
+          </div>
+        </div>
         <div className="dock-row">
-          <textarea ref={inputRef} value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submit(); } }} rows={1} placeholder={card ? "Tell Codex what to do with this card…" : "Tell Codex what to do with this feed…"} />
+          <textarea ref={inputRef} value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={onDockKeyDown} rows={1} placeholder="Tell Codex what to notice, change, or do…" />
           <button className="button primary" type="submit">Send</button>
         </div>
-        <div className="dock-hints"><kbd>J</kbd>/<kbd>K</kbd> move · <kbd>A</kbd> approve · <kbd>X</kbd> dismiss · hold <kbd>{dictation.activationLabel}</kbd> to dictate · <kbd>Enter</kbd> send</div>
+        <div className="dock-footer">
+          <div className="dock-hints"><kbd>↑</kbd>/<kbd>↓</kbd> change scope when empty · hold <kbd>{state.dictation.activationLabel}</kbd> to dictate · <kbd>Enter</kbd> send</div>
+          {feed.sweep.recollectionOffered && <div className="recollection-status"><span>{feed.sweep.statusMessage}</span><button type="button" onClick={onRecollect}>Search sources again</button></div>}
+        </div>
       </form>
     </div>
   );
@@ -370,14 +696,32 @@ function Dock({ feed, card, onSubmit, dictation }: { feed: FeedView; card?: Card
 export default function App() {
   const [state, setState] = useState<WorkspaceView | null>(null);
   const [feedId, setFeedId] = useState(new URLSearchParams(location.search).get("feed") ?? "inbox");
-  const [screen, setScreen] = useState<Screen>(new URLSearchParams(location.search).get("screen") === "workspace" ? "workspace" : "feed");
+  const [screen, setScreen] = useState<Screen>(() => {
+    const value = new URLSearchParams(location.search).get("screen");
+    return value === "workspace" || value === "learnings" ? value : "feed";
+  });
   const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(new URLSearchParams(location.search).get("workspace") === "global" ? "global" : "feed");
   const [tab, setTab] = useState<Tab>("review");
   const [inspector, setInspector] = useState<Inspector>(null);
   const [toast, setToast] = useState("");
   const [undoCleanup, setUndoCleanup] = useState<{ feedId: string; cardId: string } | null>(null);
   const [undoQueuedWork, setUndoQueuedWork] = useState<{ feedId: string; workId: string } | null>(null);
+  const [undoRevision, setUndoRevision] = useState<string | null>(null);
+  const [workspaceFocus, setWorkspaceFocus] = useState<VoiceTarget | null>(null);
+  const [dockTarget, setDockTarget] = useState<VoiceTarget | null>(() => {
+    try {
+      return JSON.parse(sessionStorage.getItem("attention.voiceTarget") ?? "null") as VoiceTarget | null;
+    } catch {
+      return null;
+    }
+  });
+  const [targetVersion, setTargetVersion] = useState(0);
   const pageRef = useRef<HTMLElement>(null);
+  const dockTargetRef = useRef<VoiceTarget | null>(dockTarget);
+  const dockContextRef = useRef("");
+  const dockScopeExplicitlyChangedRef = useRef(false);
+  const toastTimerRef = useRef<number | null>(null);
+  const knownCompoundProposalIdsRef = useRef(new Map<string, Set<string>>());
 
   const refresh = useCallback(async (nextFeed = feedId) => setState(await api(`/api/state?feed=${encodeURIComponent(nextFeed)}`)), [feedId]);
   useEffect(() => { void refresh(); }, [refresh]);
@@ -393,13 +737,31 @@ export default function App() {
 
   const feed = state?.active;
   const cards = useMemo(() => feed ? visibleCards(feed, tab) : [], [feed, tab]);
+  const routineActions = useMemo(() => feed ? visibleRoutineActions(feed, tab) : [], [feed, tab]);
   const cardIds = useMemo(() => cards.map((card) => card.id), [cards]);
   const { activeCardId, setActiveCardId, navTo } = useActiveCard(pageRef, cardIds);
   const activeCard = cards.find((card) => card.id === activeCardId) ?? cards[0];
+  const ladder = useMemo<VoiceTarget[]>(() => {
+    if (!feed) return [{ kind: "attention" }];
+    if (screen === "feed") return [
+      ...(activeCard ? [{ kind: "card" as const, feedId: feed.config.id, cardId: activeCard.id }] : []),
+      { kind: "sweep", feedId: feed.config.id, ...(feed.sweep.currentBatchId ? { batchId: feed.sweep.currentBatchId } : {}) },
+      { kind: "feed", feedId: feed.config.id },
+      { kind: "attention" },
+    ];
+    if (workspaceTab === "global") return workspaceFocus?.kind === "global_prompt"
+      ? [workspaceFocus, { kind: "attention" }]
+      : [{ kind: "attention" }];
+    const focus = workspaceFocus && "feedId" in workspaceFocus && workspaceFocus.feedId === feed.config.id
+      ? workspaceFocus
+      : { kind: "feed" as const, feedId: feed.config.id };
+    return focus.kind === "feed" ? [focus, { kind: "attention" }] : [focus, { kind: "feed", feedId: feed.config.id }, { kind: "attention" }];
+  }, [activeCard, feed, screen, workspaceFocus, workspaceTab]);
 
   const changeFeed = (id: string) => {
     setFeedId(id);
     setTab("review");
+    setWorkspaceFocus(null);
     const url = new URL(location.href);
     url.searchParams.set("feed", id);
     history.replaceState({}, "", url);
@@ -408,6 +770,7 @@ export default function App() {
   const openWorkspace = (nextTab: WorkspaceTab = "feed") => {
     setWorkspaceTab(nextTab);
     setScreen("workspace");
+    setWorkspaceFocus(null);
     const url = new URL(location.href);
     url.searchParams.set("screen", "workspace");
     url.searchParams.set("workspace", nextTab);
@@ -416,16 +779,67 @@ export default function App() {
 
   const closeWorkspace = () => {
     setScreen("feed");
+    setWorkspaceFocus(null);
     const url = new URL(location.href);
     url.searchParams.delete("screen");
     url.searchParams.delete("workspace");
     history.replaceState({}, "", url);
   };
 
-  const showToast = (message: string) => {
+  const openLearningReview = useCallback(() => {
+    setScreen("learnings");
+    setWorkspaceFocus(null);
+    const url = new URL(location.href);
+    url.searchParams.set("screen", "learnings");
+    url.searchParams.delete("workspace");
+    history.replaceState({}, "", url);
+  }, []);
+
+  const showToast = (message: string, duration = 2_400) => {
     setToast(message);
-    window.setTimeout(() => setToast(""), 2400);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast("");
+      toastTimerRef.current = null;
+    }, duration);
   };
+
+  const changeDockTarget = useCallback((next: VoiceTarget) => {
+    if (sameTarget(dockTargetRef.current, next)) return;
+    dockTargetRef.current = next;
+    setDockTarget(next);
+    sessionStorage.setItem("attention.voiceTarget", JSON.stringify(next));
+    setTargetVersion((current) => current + 1);
+    void post<VoiceTarget>("/api/voice/target-change", { feedId: feed?.config.id ?? feedId, target: next }).then((validated) => {
+      if (sameTarget(validated, next) || !sameTarget(dockTargetRef.current, next)) return;
+      dockTargetRef.current = validated;
+      setDockTarget(validated);
+      sessionStorage.setItem("attention.voiceTarget", JSON.stringify(validated));
+      setTargetVersion((current) => current + 1);
+    }).catch((error) => showToast(error instanceof Error ? error.message : String(error)));
+  }, [feed?.config.id, feedId]);
+
+  const selectDockTarget = useCallback((next: VoiceTarget) => {
+    dockScopeExplicitlyChangedRef.current = true;
+    changeDockTarget(next);
+  }, [changeDockTarget]);
+
+  useEffect(() => {
+    if (!feed) return;
+    const context = `${screen}:${feed.config.id}:${screen === "workspace" ? workspaceTab : ""}`;
+    if (dockContextRef.current !== context) {
+      dockContextRef.current = context;
+      dockScopeExplicitlyChangedRef.current = false;
+    }
+    if (screen === "feed" && dockTarget?.kind === "card" && !activeCard) {
+      dockScopeExplicitlyChangedRef.current = false;
+    }
+    const candidate = screen === "feed" && dockScopeExplicitlyChangedRef.current && dockTarget?.kind === "card" && activeCard
+      ? { kind: "card" as const, feedId: feed.config.id, cardId: activeCard.id }
+      : dockTarget;
+    const next = preferredTarget(candidate, ladder, dockScopeExplicitlyChangedRef.current);
+    if (!sameTarget(next, dockTarget)) changeDockTarget(next);
+  }, [activeCard, changeDockTarget, dockTarget, feed, ladder, screen, workspaceTab]);
 
   const withRefresh = async (callback: () => Promise<unknown>, message: string) => {
     try {
@@ -438,60 +852,159 @@ export default function App() {
   };
 
   const instruct = (instruction: string) => {
-    if (!feed) return;
-    const url = activeCard
-      ? `/api/feeds/${feed.config.id}/cards/${activeCard.id}/instructions`
-      : `/api/feeds/${feed.config.id}/instructions`;
+    if (!feed || !dockTarget) return;
     void (async () => {
       try {
-        const work = await post<{ id: string }>(url, { instruction });
+        const result = await post<any>("/api/voice/instructions", { feedId: feed.config.id, target: dockTarget, instruction });
+        if (result.kind === "scoped_work") {
+          const queued = { feedId: feed.config.id, workId: result.work.id };
+          setUndoQueuedWork(queued);
+          window.setTimeout(() => setUndoQueuedWork((current) => current?.workId === queued.workId ? null : current), 5_000);
+          showToast(result.work.intent === "sweep_rejudge" ? "Feedback queued for Codex" : "Queued for Codex");
+        } else {
+          showToast("Revision proposal ready for approval");
+        }
+        await refresh();
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : String(error));
+      }
+    })();
+  };
+  const applyProposal = (proposal: RevisionProposal) => void (async () => {
+    try {
+      const revision = await post<WorkspaceRevision>(`/api/revision-proposals/${proposal.id}/apply`);
+      setUndoRevision(revision.id);
+      showToast("Revision applied", 8_000);
+      await refresh();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error));
+    }
+  })();
+  const rejectProposal = (proposal: RevisionProposal) => void withRefresh(() => post(`/api/revision-proposals/${proposal.id}/reject`), "Revision rejected");
+  const applyLearningProposal = (proposal: RevisionProposal, content: string) => void (async () => {
+    try {
+      if (content.trimEnd() !== proposal.next.trimEnd()) await post(`/api/revision-proposals/${proposal.id}`, { content });
+      const revision = await post<WorkspaceRevision>(`/api/revision-proposals/${proposal.id}/apply`);
+      setUndoRevision(revision.id);
+      showToast("Learning applied", 8_000);
+      closeWorkspace();
+      await refresh();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error));
+    }
+  })();
+  const rejectLearningProposal = (proposal: RevisionProposal) => void (async () => {
+    await withRefresh(() => post(`/api/revision-proposals/${proposal.id}/reject`), "Learning proposal rejected");
+    closeWorkspace();
+  })();
+  useEffect(() => {
+    if (!state || !feed) return;
+    const ids = state.proposals
+      .filter((proposal) => proposal.anchorFeedId === feed.config.id && proposal.source === "compound")
+      .map((proposal) => proposal.id);
+    const known = knownCompoundProposalIdsRef.current.get(feed.config.id);
+    if (!known) {
+      knownCompoundProposalIdsRef.current.set(feed.config.id, new Set(ids));
+      return;
+    }
+    const unseen = ids.find((id) => !known.has(id));
+    ids.forEach((id) => known.add(id));
+    if (unseen && screen === "feed") openLearningReview();
+  }, [feed, openLearningReview, screen, state]);
+  const recollect = () => void withRefresh(() => post(`/api/feeds/${feed?.config.id}/recollect`), "Source search queued");
+  const flushVisibleCardEdits = async (card: Card) => {
+    const textareas = document.querySelectorAll<HTMLTextAreaElement>(`[data-card-id="${CSS.escape(card.id)}"] textarea[data-block-id]`);
+    await Promise.all(Array.from(textareas).map(async (textarea) => {
+      const blockId = textarea.dataset.blockId;
+      const block = card.blocks.find((item) => item.id === blockId);
+      if (!blockId || block?.type !== "editable_text" || textarea.value === (block.value ?? "")) return;
+      await post(`/api/feeds/${card.feedId}/cards/${card.id}/blocks/${blockId}`, { value: textarea.value });
+    }));
+  };
+  const runCardAction = (card: Card, action: CardAction) => {
+    if (!feed) return;
+    void (async () => {
+      try {
+        await flushVisibleCardEdits(card);
+        const work = await post<{ id: string }>(`/api/feeds/${feed.config.id}/cards/${card.id}/actions/${encodeURIComponent(action.id)}`);
+        if (action.behavior === "default_cleanup") {
+          const cleanup = { feedId: feed.config.id, cardId: card.id };
+          setUndoCleanup(cleanup);
+          window.setTimeout(() => setUndoCleanup((current) => current?.cardId === cleanup.cardId ? null : current), 5_000);
+        } else {
+          const queued = { feedId: feed.config.id, workId: work.id };
+          setUndoQueuedWork(queued);
+          window.setTimeout(() => setUndoQueuedWork((current) => current?.workId === queued.workId ? null : current), 5_000);
+        }
+        showToast(`${action.label} queued for Codex`);
+        await refresh();
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : String(error));
+      }
+    })();
+  };
+  const approveRoutineAction = (group: RoutineActionGroup) => {
+    if (!feed) return;
+    void (async () => {
+      try {
+        const work = await post<{ id: string }>(`/api/feeds/${feed.config.id}/routine-actions/${group.id}/approve`);
         const queued = { feedId: feed.config.id, workId: work.id };
         setUndoQueuedWork(queued);
         window.setTimeout(() => setUndoQueuedWork((current) => current?.workId === queued.workId ? null : current), 5_000);
-        showToast("Queued for Codex");
+        showToast(`${group.proposedAction.label} queued for Codex`);
         await refresh();
       } catch (error) {
         showToast(error instanceof Error ? error.message : String(error));
       }
     })();
   };
-  const approve = (card = activeCard) => card && feed && void withRefresh(() => post(`/api/feeds/${feed.config.id}/cards/${card.id}/approve`), "Approved and queued for Codex");
-  const dismiss = (card = activeCard) => {
-    if (!card || !feed) return;
-    const cleanup = { feedId: feed.config.id, cardId: card.id };
-    void (async () => {
-      try {
-        await post(`/api/feeds/${feed.config.id}/cards/${card.id}/dismiss`);
-        setUndoCleanup(cleanup);
-        window.setTimeout(() => setUndoCleanup((current) => current?.cardId === cleanup.cardId ? null : current), 5_000);
-        showToast("Cleanup queued for Codex");
-        await refresh();
-      } catch (error) {
-        showToast(error instanceof Error ? error.message : String(error));
-      }
-    })();
-  };
-
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (screen !== "feed") return;
       if (event.key.toLowerCase() === "j") navTo(1);
       if (event.key.toLowerCase() === "k") navTo(-1);
-      if (event.key.toLowerCase() === "a") approve();
-      if (event.key.toLowerCase() === "x") dismiss();
+      if (event.key.toLowerCase() === "o" && activeCard) {
+        const details = pageRef.current?.querySelector<HTMLDetailsElement>(`[data-card-id="${CSS.escape(activeCard.id)}"] details.email-thread`);
+        if (details) {
+          event.preventDefault();
+          details.open = !details.open;
+        }
+      }
+      const action = tab === "review" && activeCard && (activeCard.status === "to_review_new" || activeCard.status === "to_review_updated")
+        ? visibleCardActions(activeCard).find((item) => item.shortcut?.toLowerCase() === event.key.toLowerCase())
+        : undefined;
+      if (action) {
+        event.preventDefault();
+        runCardAction(activeCard!, action);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   });
 
   if (!state || !feed) return <main className="loading">Loading attention…</main>;
+  const resolvedDockTarget = dockTarget ?? ladder[0];
+  const compoundProposals = state.proposals.filter((proposal) => proposal.anchorFeedId === feed.config.id && proposal.source === "compound");
 
   if (screen === "workspace") return (
     <>
       <TopBar state={state} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
-      <PromptWorkspace state={state} tab={workspaceTab} onTab={(nextTab) => { setWorkspaceTab(nextTab); const url = new URL(location.href); url.searchParams.set("workspace", nextTab); history.replaceState({}, "", url); }} onBack={closeWorkspace} onInspector={setInspector} onSaved={showToast} />
+      <div className="workspace-proposals"><RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} /></div>
+      <PromptWorkspace state={state} tab={workspaceTab} onTab={(nextTab) => { setWorkspaceTab(nextTab); setWorkspaceFocus(null); const url = new URL(location.href); url.searchParams.set("workspace", nextTab); history.replaceState({}, "", url); }} onBack={closeWorkspace} onInspector={setInspector} onSaved={showToast} onTargetFocus={(target) => { setWorkspaceFocus(target); selectDockTarget(target); }} />
+      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
-      {toast && <div className="toast">{toast}</div>}
+      {toast && <div className="toast">{toast}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
+    </>
+  );
+
+  if (screen === "learnings") return (
+    <>
+      <TopBar state={state} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
+      <LearningReview feed={feed} proposals={compoundProposals} onBack={closeWorkspace} onApply={applyLearningProposal} onReject={rejectLearningProposal} />
+      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
+      <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
+      {toast && <div className="toast">{toast}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
     </>
   );
 
@@ -511,12 +1024,14 @@ export default function App() {
         <button className="tab-quiet" onClick={() => openWorkspace("feed")}>Prompts & sources</button>
       </nav>
       <main className="page" ref={pageRef}>
-        {tab === "review" && updated.length > 0 && <div className="section-label">Updated for review <span>{updated.length}</span></div>}
+        <RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} />
+        {routineActions.map((group) => <RoutineActionGroupView key={group.id} group={group} onApprove={() => approveRoutineAction(group)} />)}
+        {tab === "review" && updated.length > 0 && <div className="section-label">Back for review <span>{updated.length}</span></div>}
         {cards.map((card, index) => (
-          <>
+          <Fragment key={card.id}>
             {tab === "review" && index === updated.length && fresh.length > 0 && <div className="section-label" key={`${card.id}-label`}>New <span>{fresh.length}</span></div>}
-            <CardView key={card.id} card={card} active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()} onApprove={() => approve(card)} onDismiss={() => dismiss(card)} />
-          </>
+            <CardView key={card.id} card={card} active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()} onAction={(action) => runCardAction(card, action)} />
+          </Fragment>
         ))}
         {feedWork.map((work) => (
           <article className="attention-card feed-work-card" key={work.id}>
@@ -528,21 +1043,21 @@ export default function App() {
             <p className="why">{work.status === "queued" ? "Ready for the home Codex thread to drain." : "The home Codex thread is working through this feed-level instruction."}</p>
           </article>
         ))}
-        {!cards.length && !feedWork.length && <div className="empty"><h2>Nothing here right now.</h2><p>{tab === "review" ? "A quiet feed is allowed. Wake the feed thread when you want Codex to collect or drain pending work." : "Move back to To review when you are ready for the next pass."}</p></div>}
-        <section className={`end-cap ${feed.readyNextPass ? "" : "actions-only"}`}>
+        {!cards.length && !routineActions.length && !feedWork.length && <div className="empty"><h2>Nothing here right now.</h2><p>{tab === "review" ? "A quiet feed is allowed. Wake the feed thread when you want Codex to collect or drain pending work." : "Move back to To review when you are ready for the next pass."}</p></div>}
+        {(feed.readyNextPass > 0 || compoundProposals.length > 0) && <section className={`end-cap ${feed.readyNextPass ? "" : "actions-only"}`}>
           {feed.readyNextPass > 0 && <div>
             <span>End of this pass</span>
             <h2>{`${feed.readyNextPass} updated card${feed.readyNextPass === 1 ? "" : "s"} ready when you are.`}</h2>
           </div>}
           <div className="end-actions">
             {feed.readyNextPass > 0 && <button className="button primary" onClick={() => void withRefresh(() => post(`/api/feeds/${feed.config.id}/next-pass`), "Started the next pass")}>Review ready cards</button>}
-            <button className="button ghost" onClick={() => void withRefresh(() => post(`/api/feeds/${feed.config.id}/compound`), "Learning pass queued for Codex")}>Compound learnings</button>
+            {compoundProposals.length > 0 && <button className="button ghost" onClick={openLearningReview}>Review learning proposal</button>}
           </div>
-        </section>
+        </section>}
       </main>
-      <Dock feed={feed} card={activeCard} onSubmit={instruct} dictation={state.dictation} />
+      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
-      {toast && <div className="toast">{toast}{undoCleanup && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoCleanup.feedId}/cards/${undoCleanup.cardId}/undo-dismiss`), "Cleanup undone").then(() => setUndoCleanup(null))}>Undo</button>}{undoQueuedWork && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoQueuedWork.feedId}/work/${undoQueuedWork.workId}/cancel`), "Instruction cancelled").then(() => setUndoQueuedWork(null))}>Undo</button>}</div>}
+      {toast && <div className="toast">{toast}{undoCleanup && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoCleanup.feedId}/cards/${undoCleanup.cardId}/undo-dismiss`), "Cleanup undone").then(() => setUndoCleanup(null))}>Undo</button>}{undoQueuedWork && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoQueuedWork.feedId}/work/${undoQueuedWork.workId}/cancel`), "Instruction cancelled").then(() => setUndoQueuedWork(null))}>Undo</button>}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
     </>
   );
 }

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "api": "bun server.ts",
-    "dev": "vite --host 127.0.0.1 --port 4321",
+    "dev": "vite --host 127.0.0.1",
     "start": "concurrently -k -n api,web -c brown,blue \"bun run api\" \"pnpm dev\"",
     "build": "tsc && vite build",
     "test": "bun test",

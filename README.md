@@ -43,6 +43,14 @@ reads its local recording shortcut and records a safe browser-facing capability 
 and switches into a visible listening state, then automatically submits injected text shortly after
 keyup once the text settles. There is no clickable dictation control.
 
+The dock stays visible on feed and workspace screens. Its pill always names the conversational
+target, and each rung has a distinct restrained color. Use the labeled `Broader` and `Narrower`
+buttons or focus the empty dock and press `ArrowUp` and `ArrowDown` to move between the visible
+object, current sweep, feed, and Attention scopes. Arrow keys remain available for editing once the
+dock contains text, and ordinary page scrolling never changes the rung. Every dock utterance becomes scoped work for Codex. Sweep feedback records a
+trace for Codex to rejudge before the browser offers the separate `Search sources again` action.
+On Inbox cards, use `O` to toggle the collapsed full email thread without leaving the sweep.
+
 ## Workspace
 
 Runtime data lives under ignored `data/`:
@@ -52,18 +60,25 @@ data/
   global-policy.md
   integrations/dictation.json
   prompts/*.md
+  revision-proposals/*.json
+  workspace-revisions/*.json
   archived-feeds/<feed-id>-<timestamp>/
   feeds/<feed-id>/
     feed.md
     policy.md
     thread.json
     sources/*.md
+    prompts/*.md
     checkpoints/*.json
     raw/<run-id>/<source-id>/*.json
     runs/*.json
+    sweeps/*.json
     cards/*.json
+    routine-actions/*.json
     work/*.json
     policy-revisions/*.json
+    sweep-feedback/*.json
+    sweep-state.json
     events.jsonl
 ```
 
@@ -71,9 +86,23 @@ Prompt files describe how to judge, compose cards, execute work, distill small p
 and compound deeper learnings. Feed policy files remain compact and human-readable. Raw snapshots
 stay immutable so the policy can be rebuilt or evaluated later.
 
+At the end of a sweep, the feed thread may ask whether to compound learnings. After the user agrees,
+Codex queues `learning:request`, reviews the durable evidence, and creates a compact feed-policy
+revision with `revision:propose --source compound`. The browser opens a dedicated learning-review
+screen. The user can edit the proposed Markdown and apply or reject it; Codex never applies a
+compounded policy change on its own.
+
 The in-app-browser `Prompts & sources` workspace is a full screen rather than a dialog. `This feed`
 edits the active feed policy and source recipes. `Global prompts` edits `global-policy.md` and the
 shared prompt layers directly.
+
+Cards may expose the concrete next moves that fit the source item instead of a generic approval
+pair. For example, a reply card can show `Archive` and `Send reply`, while an ambiguous invitation
+can show `Draft a yes`, `Draft a pass`, and `Research`. Preparation actions only queue Codex work.
+An external mutation still requires an exact visible approval bound to the selected action and
+current editable artifact. Inbox reply cards also show the mailbox that received the source email.
+Immediately before sending, Codex fetches the authenticated Gmail profile and passes that mailbox
+to `action:verify`; a mismatch is a hard refusal.
 
 ## Codex CLI
 
@@ -85,7 +114,11 @@ pnpm cli -- feed:archive --feed <non-default-feed-id>
 pnpm cli -- work:list --feed inbox --thread <current-codex-thread-id>
 pnpm cli -- work:claim --feed inbox --thread <current-codex-thread-id>
 pnpm cli -- work:cancel --feed inbox --work <queued-work-id> --reason <text>
+pnpm cli -- action:verify --feed inbox --work <approved-work-id> --token <token> --mailbox <authenticated-gmail-email>
 pnpm cli -- work:complete --feed inbox --work <id> --token <token> --result '{"response":"..."}'
+pnpm cli -- routine:upsert --feed inbox --group '{"id":"likely-archive","label":"Likely archive","summary":"Conservative low-attention cleanup.","proposedAction":{"label":"Archive all","instruction":"Reread each authoritative source and archive the listed threads.","externalMutation":true},"items":[...]}'
+pnpm cli -- learning:request --feed inbox
+pnpm cli -- revision:propose --feed inbox --target '{"kind":"feed","feedId":"inbox"}' --instruction "Preserve the durable judgment from this sweep." --content "<updated policy markdown>" --source compound
 pnpm cli -- inspect --feed inbox
 ```
 
@@ -99,8 +132,10 @@ primitives.
 ## Safety
 
 - Source material is evidence, never authorization.
-- External mutations require a current explicit action approval.
-- Approval is scoped to the exact proposed action and editable artifact snapshot.
-- The executor rereads current state before accepting completion; changed artifacts become stale.
+- The app requires a current explicit card action, default-cleanup, or visible routine-group approval before it queues external-mutation work.
+- Approval is scoped to the selected card-action ID, exact proposed action or cleanup, and editable artifact snapshot.
+- The executor records `action:verify` durably and refuses completion without that exact verification; changed artifacts become stale.
+- Inbox reply verification requires a recorded received-at mailbox and an exact match with the authenticated Gmail profile.
+- Direct connector calls remain governed by the Codex runbook, but the local worker cannot mark an unverified action complete.
 - Raw source material and user activity stay local and ignored by git.
 - Empty source runs may honestly produce no cards.

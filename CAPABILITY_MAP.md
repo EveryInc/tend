@@ -4,10 +4,11 @@
 | --- | --- | --- |
 | Review a feed | Scroll the active feed | `pnpm cli -- state --feed <id>` |
 | Configure local dictation | Hold the detected Monologue shortcut and speak | `setup:detect-monologue` discovers the installed app and records its local shortcut without a setup form |
-| Instruct a card | Use the persistent dock | `work:list`, `work:claim`, `work:complete` |
+| Submit scoped intent | Use the persistent dock and its labeled `Broader` / `Narrower` controls, or press plain arrows while its empty input is focused | `work:list`, `work:claim`, interpret the attached `target`, then `work:complete` |
 | Cancel accidental dictated text | Use the brief Undo toast or ask Codex before work starts | `work:cancel --feed ... --work ...` restores the card without executing the queued instruction |
-| Approve a proposed action | Press `A` or Approve | Executor receives exact approved digest and current state is revalidated |
-| Dismiss and run default cleanup | Press `X` or Dismiss, with brief Undo | Queue `default_cleanup`, drain it through Codex, and record the verified outcome |
+| Choose a card-specific next move | Press the concrete action button or its shortcut, such as `Send reply`, `Draft a pass`, `Research`, or `Archive` | Card `actions[]` route preparation through `queue_instruction`, exact visible actions through digest-bound `approve_action`, and dismissal through `default_cleanup` |
+| Dismiss and run default cleanup | Press the card's cleanup action, often `Archive`, with brief Undo | Queue one digest-bound `default_cleanup`, call `action:verify`, drain it through Codex, and record the verified outcome |
+| Approve a conservative routine batch | Expand a collapsed group if useful, then press its one-click action | `routine:upsert` proposes the exact visible items; approval queues one digest-bound `routine_action_batch`; Codex rereads every authoritative source before acting and returns the batch to individual review if anything changed or needs judgment |
 | Create a feed | Describe it in one text field | `feed:create --brief ... --thread ...` |
 | Archive an extra feed | Ask Codex to archive it | `feed:archive --feed ...` preserves its ignored state outside the active workspace |
 | Add a source | Describe it in one text field | `source:add --feed ... --brief ...` |
@@ -15,10 +16,11 @@
 | Edit shared judgment | Open `Prompts & sources` → `Global prompts` | Edit `global-policy.md` and the allowlisted prompt files directly |
 | Bind a home thread | Guided Codex setup | `feed:bind --feed ... --thread ...` |
 | Schedule refresh and drain | Approve proposed cadence | `feed:heartbeat:propose`, then host `automation_update`, then `feed:heartbeat:installed` |
-| Verify an approved external action | Approve the exact visible artifact | `action:verify` rereads the current artifact digest immediately before mutation |
-| Collect evidence | Render the resulting cards | `source:record-run` or `source:import-json-file` writes immutable snapshots, judgment record, and checkpoint |
+| Verify an approved external action or cleanup | Choose the exact visible mutation, cleanup, or routine group | `action:verify` rereads the selected card-action ID, current artifact, cleanup, or batch digest immediately before mutation and records verification durably; Inbox replies additionally require `--mailbox <authenticated-gmail-email>` to match the source message's received-at mailbox |
+| Collect evidence | Render the resulting cards | `source:record-run` or `source:import-json-file` writes immutable snapshots and checkpoints; `sweep:record-batch` records the judged batch separately |
+| Rejudge sweep feedback | Submit dock feedback to `This sweep` | `sweep:rejudge` writes an explicit kept order and removed-card set before recollection is offered |
 | Render a judged item | Review its structured blocks | `card:upsert --feed ... --card ...` |
-| Compound learning | End-of-pass button | Claim `compound_learnings`, revise policy, create structural proposals |
+| Compound learning | Answer yes when the feed thread offers a learning pass; review and edit the resulting full-screen policy proposal before applying it | `learning:request --feed ...` queues one `compound_learnings` job; Codex reviews durable evidence and uses `revision:propose --source compound`; the browser applies only the user-reviewed Markdown |
 | Revert micro-learning | Review policy history | `policy:revert --feed ... --revision ...` |
 
 The app deliberately exposes atomic primitives. A new feed should usually require new recipe prose,

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { AttentionDomain } from "../server/domain";
 import { AttentionStore } from "../server/store";
+import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
 
 const roots: string[] = [];
 
@@ -44,11 +45,19 @@ describe("filesystem workspace", () => {
   });
 
   test("keeps raw snapshots immutable and stores run checkpoints separately", async () => {
-    const { root, domain } = await setup();
+    const { root, domain, store } = await setup();
+    const batchId = await domain.recordSweepBatch("inbox", []);
     const run = await domain.recordSourceRun("inbox", "gmail-inbox", [{ threadId: "gmail-1", subject: "Hello" }], [{ decision: "keep" }], { cursor: "gmail-1" });
     await expect(domain.store.writeRawSnapshot("inbox", run, "gmail-inbox", "snapshot-1", { changed: true })).rejects.toThrow("immutable");
     const checkpoint = JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8"));
     expect(checkpoint.cursor).toBe("gmail-1");
+    expect((await store.readSweepState("inbox")).currentBatchId).toBe(batchId);
+  });
+
+  test("refuses to record raw evidence for an unconfigured source recipe", async () => {
+    const { root, domain } = await setup();
+    await expect(domain.recordSourceRun("inbox", "not-an-authorized-recipe", [{ threadId: "nope" }], [], { cursor: "nope" })).rejects.toThrow("Source recipe not found");
+    await expect(readFile(path.join(root, "feeds", "inbox", "checkpoints", "not-an-authorized-recipe.json"), "utf8")).rejects.toThrow();
   });
 
   test("creates a feed and source recipe from plain English", async () => {
@@ -162,18 +171,174 @@ describe("thread-owned work drain", () => {
 });
 
 describe("approval, learning, and heartbeat safety", () => {
-  test("refuses approved external work when the editable artifact changed", async () => {
+  test("collapses concurrent approvals for the same visible action snapshot", async () => {
     const { store, domain } = await setup();
     await domain.seedDemo();
+    const [first, second] = await Promise.all([
+      domain.approveAction("inbox", "demo-inbox-partnership"),
+      domain.approveAction("inbox", "demo-inbox-partnership"),
+    ]);
+    expect(second.id).toBe(first.id);
+    expect((await store.readFeed("inbox")).work.filter((work) => work.kind === "execute_approved_action" && (work.status === "queued" || work.status === "working"))).toHaveLength(1);
+  });
+
+  test("refuses approved external work when the editable artifact changed", async () => {
+    const { store, domain } = await setup();
+    await domain.upsertCard("inbox", {
+      id: "external-reply-safety-fixture",
+      title: "Send this reply.",
+      why: "Approval must bind to the exact visible artifact.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft reply", value: "Original draft.", editable: true }],
+      proposedAction: { label: "Send this reply", instruction: "Send the exact currently approved reply.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" },
+    });
     await domain.bindFeed("inbox", "thread-inbox");
-    const work = await domain.approveAction("inbox", "demo-inbox-partnership");
+    const work = await domain.approveAction("inbox", "external-reply-safety-fixture");
     await domain.claimWork("inbox", "thread-inbox");
-    expect((await domain.verifyApprovedAction("inbox", work.id, work.capabilityToken)).action.label).toBe("Send this reply");
-    await domain.updateBlock("inbox", "demo-inbox-partnership", "draft", "A different draft.");
+    expect((await domain.verifyApprovedAction("inbox", work.id, work.capabilityToken, "dan@every.to")).action.label).toBe("Send this reply");
+    await domain.updateBlock("inbox", "external-reply-safety-fixture", "draft", "A different draft.");
     await expect(domain.verifyApprovedAction("inbox", work.id, work.capabilityToken)).rejects.toThrow("Approval stale");
     await expect(domain.completeWork("inbox", work.id, work.capabilityToken, { response: "Sent." })).rejects.toThrow("Approval stale");
     expect((await store.readWork("inbox", work.id)).status).toBe("stale");
-    expect((await store.readCard("inbox", "demo-inbox-partnership")).status).toBe("to_review_updated");
+    expect((await store.readCard("inbox", "external-reply-safety-fixture")).status).toBe("to_review_updated");
+  });
+
+  test("persists editable-text changes even when an agent omitted the redundant editable flag", async () => {
+    const { store, domain } = await setup();
+    await domain.upsertCard("inbox", {
+      id: "agent-draft-without-flag",
+      title: "Review this reply.",
+      why: "The visible draft should be editable.",
+      blocks: [{ id: "draft", type: "editable_text", label: "Suggested reply", value: "Original draft." }],
+    });
+    await domain.updateBlock("inbox", "agent-draft-without-flag", "draft", "Visible revised draft.");
+    expect((await store.readCard("inbox", "agent-draft-without-flag")).blocks[0]).toMatchObject({
+      type: "editable_text",
+      value: "Visible revised draft.",
+      editable: true,
+    });
+  });
+
+  test("refuses Inbox reply approval without the mailbox that received the source email", async () => {
+    const { domain } = await setup();
+    await domain.upsertCard("inbox", {
+      id: "reply-without-source-mailbox",
+      title: "Send this reply.",
+      why: "Mailbox identity must be known before approval.",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft reply", value: "Hello.", editable: true }],
+      actions: [
+        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply.", artifactBlockId: "draft", externalMutation: true, variant: "primary" },
+      ],
+    });
+    await expect(domain.runCardAction("inbox", "reply-without-source-mailbox", "send-reply")).rejects.toThrow("mailbox that received");
+  });
+
+  test("requires the authenticated Gmail mailbox to match before an Inbox reply can complete", async () => {
+    const { domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    await domain.upsertCard("inbox", {
+      id: "reply-with-source-mailbox",
+      title: "Send this reply.",
+      why: "The connector account must match the source mailbox.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft reply", value: "Hello.", editable: true }],
+      actions: [
+        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply.", artifactBlockId: "draft", externalMutation: true, variant: "primary" },
+      ],
+    });
+    const work = await domain.runCardAction("inbox", "reply-with-source-mailbox", "send-reply");
+    await domain.claimWork("inbox", "thread-inbox");
+    await expect(domain.completeWork("inbox", work.id, work.capabilityToken, { response: "Sent." })).rejects.toThrow("must pass action:verify");
+    await expect(domain.verifyApprovedAction("inbox", work.id, work.capabilityToken)).rejects.toThrow("requires the authenticated Gmail mailbox");
+    await expect(domain.verifyApprovedAction("inbox", work.id, work.capabilityToken, "dshipper@gmail.com")).rejects.toThrow("mailbox mismatch");
+    expect((await domain.verifyApprovedAction("inbox", work.id, work.capabilityToken, "DAN@EVERY.TO")).verifiedMailbox).toBe("dan@every.to");
+    expect((await domain.completeWork("inbox", work.id, work.capabilityToken, { response: "Sent." })).status).toBe("completed");
+  });
+
+  test("keeps an approved blocked send out of review and retries only the unchanged snapshot", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    await domain.upsertCard("inbox", {
+      id: "blocked-send",
+      title: "Send this exact reply.",
+      why: "The user approved the visible artifact.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft reply", value: "Approved draft.", editable: true }],
+      actions: [
+        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply.", artifactBlockId: "draft", externalMutation: true, variant: "primary" },
+      ],
+    });
+    const approved = await domain.runCardAction("inbox", "blocked-send", "send-reply");
+    await domain.claimWork("inbox", "thread-inbox");
+    await domain.blockApprovedWork("inbox", approved.id, approved.capabilityToken, "Connector temporarily refused the approved send.");
+    expect((await store.readWork("inbox", approved.id)).status).toBe("approved_blocked");
+    expect((await store.readCard("inbox", "blocked-send")).status).toBe("approved_blocked");
+    const retry = await domain.retryApprovedWork("inbox", approved.id);
+    expect(retry.status).toBe("queued");
+    expect((await store.readCard("inbox", "blocked-send")).status).toBe("queued");
+    const claimed = await domain.claimWork("inbox", "thread-inbox");
+    expect(claimed?.id).toBe(approved.id);
+    expect((await domain.verifyApprovedAction("inbox", approved.id, claimed!.capabilityToken, "dan@every.to")).artifact?.value).toBe("Approved draft.");
+  });
+
+  test("moves a completed approved action to done without an extra worker flag", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    await domain.upsertCard("inbox", {
+      id: "approved-and-completed",
+      title: "Archive this handled notice.",
+      why: "The approved action should close the card when it succeeds.",
+      blocks: [{ id: "brief", type: "memo", text: "Already handled." }],
+      actions: [
+        { id: "archive", label: "Archive", behavior: "approve_action", instruction: "Archive the handled notice.", variant: "primary" },
+      ],
+    });
+    const approved = await domain.runCardAction("inbox", "approved-and-completed", "archive");
+    await domain.claimWork("inbox", "thread-inbox");
+    await domain.verifyApprovedAction("inbox", approved.id, approved.capabilityToken);
+    await domain.completeWork("inbox", approved.id, approved.capabilityToken, { response: "Archived." });
+    expect((await store.readCard("inbox", "approved-and-completed")).status).toBe("done");
+  });
+
+  test("routes card-specific buttons through preparation, exact approval, and default-cleanup semantics", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    await domain.upsertCard("inbox", {
+      id: "custom-actions",
+      title: "Choose the right email response.",
+      why: "The reply direction is not obvious yet.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Suggested reply", value: "Current exact draft.", editable: true }],
+      actions: [
+        { id: "draft-pass", label: "Draft a pass", behavior: "queue_instruction", instruction: "Draft a polite pass for review.", shortcut: "p" },
+        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply.", artifactBlockId: "draft", externalMutation: true, variant: "primary", shortcut: "s" },
+        { id: "archive", label: "Archive", behavior: "default_cleanup", shortcut: "x" },
+      ],
+    });
+
+    const preparation = await domain.runCardAction("inbox", "custom-actions", "draft-pass");
+    expect(preparation.kind).toBe("instruction");
+    expect(preparation.instruction).toBe("Draft a polite pass for review.");
+    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(preparation.id);
+    await domain.completeWork("inbox", preparation.id, preparation.capabilityToken, { response: "Prepared a pass for review." });
+
+    const send = await domain.runCardAction("inbox", "custom-actions", "send-reply");
+    expect(send.kind).toBe("execute_approved_action");
+    expect(send.cardActionId).toBe("send-reply");
+    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(send.id);
+    expect((await domain.verifyApprovedAction("inbox", send.id, send.capabilityToken, "dan@every.to")).action.label).toBe("Send reply");
+    await domain.updateBlock("inbox", "custom-actions", "draft", "Changed after approval.");
+    await expect(domain.verifyApprovedAction("inbox", send.id, send.capabilityToken)).rejects.toThrow("Approval stale");
+
+    await domain.upsertCard("inbox", {
+      id: "custom-cleanup",
+      title: "Archive this FYI.",
+      why: "No response is needed.",
+      blocks: [{ id: "brief", type: "memo", text: "A low-attention notification." }],
+      actions: [{ id: "archive", label: "Archive", behavior: "default_cleanup", shortcut: "x" }],
+    });
+    expect((await domain.runCardAction("inbox", "custom-cleanup", "archive")).kind).toBe("default_cleanup");
+    expect((await store.readCard("inbox", "custom-cleanup")).status).toBe("queued");
   });
 
   test("queues default cleanup for Codex and allows a brief undo", async () => {
@@ -187,8 +352,165 @@ describe("approval, learning, and heartbeat safety", () => {
     await domain.bindFeed("inbox", "thread-inbox");
     const secondCleanup = await domain.dismissCard("inbox", "inbox-ready-to-collect");
     await domain.claimWork("inbox", "thread-inbox");
+    expect((await domain.verifyApprovedAction("inbox", secondCleanup.id, secondCleanup.capabilityToken)).action.instruction).toBe("Archive the email thread.");
     await domain.completeWork("inbox", secondCleanup.id, secondCleanup.capabilityToken, { response: "Archived the authoritative email thread." });
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("done");
+  });
+
+  test("queues one exact approval for a conservative routine-action group and records a collapsed audit", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const group = await domain.upsertRoutineActionGroup("inbox", {
+      id: "likely-archive",
+      label: "Likely archive",
+      summary: "Low-attention threads with an obvious shared cleanup.",
+      proposedAction: { label: "Archive all", instruction: "Reread and archive each listed Gmail thread.", externalMutation: true },
+      items: [{ id: "setup-noise", cardId: "inbox-ready-to-collect", title: "Routine notice", reason: "No reply or decision is needed." }],
+    });
+    expect((await store.readCard("inbox", "inbox-ready-to-collect")).routineActionGroupId).toBe(group.id);
+    const [first, second] = await Promise.all([
+      domain.approveRoutineActionGroup("inbox", group.id),
+      domain.approveRoutineActionGroup("inbox", group.id),
+    ]);
+    expect(second.id).toBe(first.id);
+    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(first.id);
+    expect((await store.readRoutineActionGroup("inbox", group.id)).status).toBe("working");
+    expect((await domain.verifyApprovedAction("inbox", first.id, first.capabilityToken)).action.label).toBe("Archive all");
+    await domain.completeWork("inbox", first.id, first.capabilityToken, { response: "Archived the authoritative threads." });
+    expect((await store.readRoutineActionGroup("inbox", group.id)).status).toBe("completed");
+    const card = await store.readCard("inbox", "inbox-ready-to-collect");
+    expect(card.status).toBe("done");
+    expect(card.routineActionGroupId).toBe(group.id);
+    await domain.upsertCard("inbox", {
+      id: card.id,
+      status: "to_review_updated",
+      title: "A newly relevant update",
+      why: "The source thread changed after the completed cleanup.",
+      blocks: [{ id: "brief", type: "memo", text: "Review this fresh source delta." }],
+    });
+    expect((await store.readCard("inbox", card.id)).routineActionGroupId).toBeUndefined();
+  });
+
+  test("restores a cancelled routine batch and rejects a batch whose visible snapshot changed after approval", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    await domain.upsertRoutineActionGroup("inbox", {
+      id: "likely-archive",
+      label: "Likely archive",
+      summary: "Low-attention threads with an obvious shared cleanup.",
+      proposedAction: { label: "Archive all", instruction: "Reread and archive each listed Gmail thread.", externalMutation: true },
+      items: [{ id: "setup-noise", cardId: "inbox-ready-to-collect", title: "Routine notice", reason: "No reply or decision is needed." }],
+    });
+    const cancelled = await domain.approveRoutineActionGroup("inbox", "likely-archive");
+    await domain.cancelQueuedWork("inbox", cancelled.id, "User changed their mind.");
+    expect((await store.readRoutineActionGroup("inbox", "likely-archive")).status).toBe("proposed");
+    expect((await store.readCard("inbox", "inbox-ready-to-collect")).routineActionGroupId).toBe("likely-archive");
+
+    const work = await domain.approveRoutineActionGroup("inbox", "likely-archive");
+    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(work.id);
+    const changed = await store.readRoutineActionGroup("inbox", "likely-archive");
+    changed.summary = "The visible approved snapshot changed.";
+    await store.writeRoutineActionGroup(changed);
+    await expect(domain.verifyApprovedAction("inbox", work.id, work.capabilityToken)).rejects.toThrow("Approval stale");
+    await expect(domain.completeWork("inbox", work.id, work.capabilityToken, { response: "Archived." })).rejects.toThrow("Approval stale");
+    expect((await store.readRoutineActionGroup("inbox", "likely-archive")).status).toBe("stale");
+    const card = await store.readCard("inbox", "inbox-ready-to-collect");
+    expect(card.status).toBe("to_review_updated");
+    expect(card.routineActionGroupId).toBeUndefined();
+  });
+
+  test("returns routine-batch items to full review when execution cannot safely proceed", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    await domain.upsertRoutineActionGroup("inbox", {
+      id: "likely-archive",
+      label: "Likely archive",
+      summary: "Low-attention threads with an obvious shared cleanup.",
+      proposedAction: { label: "Archive all", instruction: "Reread and archive each listed Gmail thread.", externalMutation: true },
+      items: [{ id: "setup-noise", cardId: "inbox-ready-to-collect", title: "Routine notice", reason: "No reply or decision is needed." }],
+    });
+    const work = await domain.approveRoutineActionGroup("inbox", "likely-archive");
+    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(work.id);
+    await domain.failWork("inbox", work.id, work.capabilityToken, "One source item changed before cleanup.");
+    expect((await store.readRoutineActionGroup("inbox", "likely-archive")).status).toBe("failed");
+    const card = await store.readCard("inbox", "inbox-ready-to-collect");
+    expect(card.status).toBe("to_review_updated");
+    expect(card.routineActionGroupId).toBeUndefined();
+  });
+
+  test("collapses concurrent dismiss cleanup and rejects changed cleanup configuration", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const [first, second] = await Promise.all([
+      domain.dismissCard("inbox", "inbox-ready-to-collect"),
+      domain.dismissCard("inbox", "inbox-ready-to-collect"),
+    ]);
+    expect(second.id).toBe(first.id);
+    expect((await store.readFeed("inbox")).work.filter((work) => work.kind === "default_cleanup" && (work.status === "queued" || work.status === "working"))).toHaveLength(1);
+    await domain.claimWork("inbox", "thread-inbox");
+    const config = await store.readConfig("inbox");
+    config.defaultCleanup = "Archive the email thread and add a label.";
+    await store.writeConfig(config);
+    await expect(domain.verifyApprovedAction("inbox", first.id, first.capabilityToken)).rejects.toThrow("Approval stale");
+    await expect(domain.completeWork("inbox", first.id, first.capabilityToken, { response: "Archived." })).rejects.toThrow("Approval stale");
+    expect((await store.readWork("inbox", first.id)).status).toBe("stale");
+  });
+
+  test("quarantines legacy mutation work without an approval digest and continues draining", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const legacy = await domain.dismissCard("inbox", "inbox-ready-to-collect");
+    legacy.approvalDigest = undefined;
+    await store.writeWork(legacy);
+    const next = await domain.queueFeedInstruction("inbox", "Process the next safe item.");
+
+    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(next.id);
+    expect((await store.readWork("inbox", legacy.id)).status).toBe("stale");
+    expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("to_review_updated");
+  });
+
+  test("quarantines claimed legacy approval work and continues draining", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    await domain.upsertCard("inbox", {
+      id: "legacy-approved-action",
+      title: "Publish the approved artifact.",
+      why: "Legacy claimed work must not wedge newer safe work.",
+      blocks: [{ id: "brief", type: "memo", text: "The exact visible artifact." }],
+      proposedAction: { label: "Publish", instruction: "Publish the exact approved artifact.", externalMutation: true },
+    });
+    const legacy = await domain.approveAction("inbox", "legacy-approved-action");
+    legacy.approvalDigest = undefined;
+    legacy.status = "working";
+    await store.writeWork(legacy);
+    const next = await domain.queueFeedInstruction("inbox", "Process the next safe item.");
+
+    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(next.id);
+    expect((await store.readWork("inbox", legacy.id)).status).toBe("stale");
+    expect((await store.readCard("inbox", "legacy-approved-action")).status).toBe("to_review_updated");
+  });
+
+  test("quarantines legacy routine batches and restores their cards for review", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    await domain.upsertRoutineActionGroup("inbox", {
+      id: "legacy-routine-cleanup",
+      label: "Likely archive",
+      summary: "Low-attention threads with an obvious shared cleanup.",
+      proposedAction: { label: "Archive all", instruction: "Reread and archive each listed Gmail thread.", externalMutation: true },
+      items: [{ id: "setup-noise", cardId: "inbox-ready-to-collect", title: "Routine notice", reason: "No reply or decision is needed." }],
+    });
+    const legacy = await domain.approveRoutineActionGroup("inbox", "legacy-routine-cleanup");
+    legacy.approvalDigest = undefined;
+    await store.writeWork(legacy);
+    const next = await domain.queueFeedInstruction("inbox", "Process the next safe item.");
+
+    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(next.id);
+    expect((await store.readWork("inbox", legacy.id)).status).toBe("stale");
+    expect((await store.readRoutineActionGroup("inbox", "legacy-routine-cleanup")).status).toBe("stale");
+    const card = await store.readCard("inbox", "inbox-ready-to-collect");
+    expect(card.status).toBe("to_review_updated");
+    expect(card.routineActionGroupId).toBeUndefined();
   });
 
   test("clears visual QA demo cards without touching setup cards", async () => {
@@ -225,5 +547,295 @@ describe("approval, learning, and heartbeat safety", () => {
     const thread = await store.readThread("inbox");
     expect(thread.homeThreadId).toBe("thread-inbox");
     expect(thread.heartbeat.status).toBe("proposed");
+  });
+});
+
+describe("scoped persistent voice dock routing", () => {
+  test("returns to the narrowest live dock target after an automatic fallback", () => {
+    const sweep = { kind: "sweep" as const, feedId: "inbox", batchId: "batch-current" };
+    const card = { kind: "card" as const, feedId: "inbox", cardId: "card-current" };
+    const broadLadder = [sweep, { kind: "feed" as const, feedId: "inbox" }, { kind: "attention" as const }];
+    const narrowLadder = [card, ...broadLadder];
+
+    expect(preferredTarget(sweep, narrowLadder, false)).toEqual(card);
+    expect(preferredTarget(sweep, narrowLadder, true)).toEqual(sweep);
+  });
+
+  test("rebinds stale client card and sweep targets to the live sweep rung", () => {
+    const sweep = { kind: "sweep" as const, feedId: "inbox", batchId: "batch-current" };
+    const ladder = [sweep, { kind: "feed" as const, feedId: "inbox" }, { kind: "attention" as const }];
+    expect(closestTarget({ kind: "card", feedId: "inbox", cardId: "missing-card" }, ladder)).toEqual(sweep);
+    expect(closestTarget({ kind: "sweep", feedId: "inbox", batchId: "batch-old" }, ladder)).toEqual(sweep);
+  });
+
+  test("falls back from stale object targets to the nearest valid parent scope", async () => {
+    const { domain } = await setup();
+    const batchId = await domain.recordSweepBatch("inbox", []);
+    expect(await domain.store.validateVoiceTarget({ kind: "card", feedId: "inbox", cardId: "missing-card" })).toEqual({ kind: "sweep", feedId: "inbox", batchId });
+    expect(await domain.store.validateVoiceTarget({ kind: "source_recipe", feedId: "inbox", sourceId: "missing-source" })).toEqual({ kind: "feed", feedId: "inbox" });
+    expect(await domain.store.validateVoiceTarget({ kind: "prompt_layer", feedId: "missing-feed", promptId: "judge.md" })).toEqual({ kind: "attention" });
+    expect(await domain.store.validateVoiceTarget({ kind: "global_prompt", promptId: "../nope.md" })).toEqual({ kind: "attention" });
+  });
+
+  test("queues card speech through the existing scoped work queue", async () => {
+    const { store, domain } = await setup();
+    const result = await domain.submitVoiceInstruction("inbox", { kind: "card", feedId: "inbox", cardId: "inbox-ready-to-collect" }, "Collect the first real sweep.");
+    expect(result.kind).toBe("scoped_work");
+    expect(result.work.cardId).toBe("inbox-ready-to-collect");
+    expect(result.work.kind).toBe("scoped_instruction");
+    expect(result.work.target).toEqual({ kind: "card", feedId: "inbox", cardId: "inbox-ready-to-collect" });
+    expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("queued");
+    expect((await store.readEvents("inbox")).map((event) => event.type)).toContain("voice.instruction_submitted");
+  });
+
+  test("queues sweep feedback for Codex and only changes cards after an explicit rejudgment write-back", async () => {
+    const { store, domain } = await setup();
+    await domain.seedDemo();
+    await domain.bindFeed("company-attention", "thread-company");
+    const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "These are too infrastructure-heavy. I want product taste and evidence.");
+    expect(result.kind).toBe("scoped_work");
+    if (!("trace" in result)) throw new Error("Expected sweep trace");
+    expect(result.trace.visibleCardIds.length).toBeGreaterThan(1);
+    expect(result.trace.removedCardIds).toEqual([]);
+    let feed = await store.readFeed("company-attention");
+    expect(feed.sweep.recollectionOffered).toBe(false);
+    expect(feed.work).toHaveLength(1);
+    expect(feed.work[0].intent).toBe("sweep_rejudge");
+    expect(feed.work[0].feedbackId).toBe(result.trace.id);
+    expect(feed.work[0].startingBatchId).toBe(null);
+    expect(feed.cards.filter((card) => card.sweep?.hidden)).toHaveLength(0);
+
+    const removedCardIds = ["demo-company-q3"];
+    const orderedCardIds = result.trace.visibleCardIds.filter((cardId) => !removedCardIds.includes(cardId));
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(result.work.id);
+    await domain.recordSweepRejudgment("company-attention", result.trace.id, orderedCardIds, removedCardIds);
+    feed = await store.readFeed("company-attention");
+    expect(feed.sweep.recollectionOffered).toBe(true);
+    expect(feed.cards.filter((card) => card.sweep?.hidden).map((card) => card.id)).toEqual(removedCardIds);
+    expect((await store.readEvents("company-attention")).map((event) => event.type)).toEqual(expect.arrayContaining([
+      "sweep.feedback_recorded",
+      "sweep.rejudged",
+      "sweep.recollection_offered",
+    ]));
+  });
+
+  test("collapses concurrent recollection requests into one queued item", async () => {
+    const { store, domain } = await setup();
+    await domain.seedDemo();
+    await domain.bindFeed("company-attention", "thread-company");
+    const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Search again after this correction.");
+    if (!("trace" in result)) throw new Error("Expected sweep trace");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(result.work.id);
+    await domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, []);
+    await domain.completeWork("company-attention", result.work.id, result.work.capabilityToken, { response: "Rejudged." });
+    const [first, second] = await Promise.all([
+      domain.requestSweepRecollection("company-attention"),
+      domain.requestSweepRecollection("company-attention"),
+    ]);
+    expect(second.id).toBe(first.id);
+    expect((await store.readFeed("company-attention")).work.filter((work) => work.intent === "recollect_sources")).toHaveLength(1);
+  });
+
+  test("restores sweep state when queued feedback is cancelled or claimed feedback fails", async () => {
+    const { store, domain } = await setup();
+    await domain.seedDemo();
+    const previous = await store.readSweepState("company-attention");
+    const cancelled = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Cancel this correction.");
+    if (!("trace" in cancelled)) throw new Error("Expected sweep trace");
+    await domain.cancelQueuedWork("company-attention", cancelled.work.id, "Undid dictated feedback.");
+    expect(await store.readSweepState("company-attention")).toEqual(previous);
+    await expect(domain.recordSweepRejudgment("company-attention", cancelled.trace.id, cancelled.trace.visibleCardIds, [])).rejects.toThrow("must be claimed");
+
+    await domain.bindFeed("company-attention", "thread-company");
+    const failed = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "This review will fail.");
+    if (!("trace" in failed)) throw new Error("Expected sweep trace");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(failed.work.id);
+    await domain.failWork("company-attention", failed.work.id, failed.work.capabilityToken, "Could not rejudge.");
+    expect(await store.readSweepState("company-attention")).toEqual(previous);
+    await expect(domain.recordSweepRejudgment("company-attention", failed.trace.id, failed.trace.visibleCardIds, [])).rejects.toThrow("must be claimed");
+    expect((await store.readEvents("company-attention")).map((event) => event.type)).toEqual(expect.arrayContaining([
+      "sweep.feedback_cancelled",
+      "sweep.feedback_failed",
+    ]));
+  });
+
+  test("does not revive abandoned sweep feedback while unwinding stacked corrections", async () => {
+    const { store, domain } = await setup();
+    await domain.seedDemo();
+    const previous = await store.readSweepState("company-attention");
+    const first = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "First pending correction.");
+    const second = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Second pending correction.");
+    if (!("trace" in first) || !("trace" in second)) throw new Error("Expected sweep traces");
+    await domain.cancelQueuedWork("company-attention", first.work.id, "Cancel first.");
+    expect((await store.readSweepState("company-attention")).lastFeedbackId).toBe(second.trace.id);
+    await domain.cancelQueuedWork("company-attention", second.work.id, "Cancel second.");
+    expect(await store.readSweepState("company-attention")).toEqual(previous);
+
+    await domain.bindFeed("company-attention", "thread-company");
+    const failed = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Claimed correction that fails.");
+    if (!("trace" in failed)) throw new Error("Expected sweep trace");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(failed.work.id);
+    const pending = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Newer pending correction.");
+    if (!("trace" in pending)) throw new Error("Expected sweep trace");
+    await domain.failWork("company-attention", failed.work.id, failed.work.capabilityToken, "Could not rejudge.");
+    expect((await store.readSweepState("company-attention")).lastFeedbackId).toBe(pending.trace.id);
+    await domain.cancelQueuedWork("company-attention", pending.work.id, "Undo newer correction.");
+    expect(await store.readSweepState("company-attention")).toEqual(previous);
+  });
+
+  test("rejects a rejudgment write-back after a newer sweep batch becomes active", async () => {
+    const { domain } = await setup();
+    await domain.seedDemo();
+    await domain.bindFeed("company-attention", "thread-company");
+    const firstRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "first" });
+    await domain.recordSweepBatch("company-attention", [firstRun]);
+    const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Prefer more product evidence.");
+    if (!("trace" in result)) throw new Error("Expected sweep trace");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(result.work.id);
+    const secondRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "second" });
+    await domain.recordSweepBatch("company-attention", [secondRun]);
+    await expect(domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, [])).rejects.toThrow("newer batch");
+  });
+
+  test("rejects pre-batch feedback after the first sweep batch becomes active", async () => {
+    const { domain } = await setup();
+    await domain.seedDemo();
+    await domain.bindFeed("company-attention", "thread-company");
+    const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Prefer more product evidence.");
+    if (!("trace" in result)) throw new Error("Expected sweep trace");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(result.work.id);
+    const run = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "first" });
+    await domain.recordSweepBatch("company-attention", [run]);
+    await expect(domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, [])).rejects.toThrow("newer batch");
+  });
+
+  test("requires sweep write-backs before specialized feed work can complete and reopens failed recollection", async () => {
+    const { store, domain } = await setup();
+    await domain.seedDemo();
+    await domain.bindFeed("company-attention", "thread-company");
+    const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Prefer more product evidence.");
+    if (!("trace" in result)) throw new Error("Expected sweep trace");
+
+    const claimedRejudge = await domain.claimWork("company-attention", "thread-company");
+    expect(claimedRejudge?.id).toBe(result.work.id);
+    await expect(domain.completeWork("company-attention", result.work.id, result.work.capabilityToken, { response: "Rejudged." })).rejects.toThrow("must be recorded");
+    await domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, []);
+    expect((await domain.completeWork("company-attention", result.work.id, result.work.capabilityToken, { response: "Rejudged." })).status).toBe("completed");
+
+    const firstRecollection = await domain.requestSweepRecollection("company-attention");
+    expect(firstRecollection.feedbackId).toBe(result.trace.id);
+    expect(firstRecollection.startingBatchId).toBe(null);
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(firstRecollection.id);
+    await expect(domain.completeWork("company-attention", firstRecollection.id, firstRecollection.capabilityToken, { response: "Collected." })).rejects.toThrow("new sweep batch");
+    await domain.failWork("company-attention", firstRecollection.id, firstRecollection.capabilityToken, "Transient connector failure.");
+    expect((await store.readSweepState("company-attention")).recollectionOffered).toBe(true);
+
+    const retry = await domain.requestSweepRecollection("company-attention");
+    expect(retry.id).not.toBe(firstRecollection.id);
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(retry.id);
+    const run = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "retry" }, retry.id);
+    await domain.recordSweepBatch("company-attention", [run], retry.id);
+    expect((await domain.completeWork("company-attention", retry.id, retry.capabilityToken, { response: "Collected and judged." })).status).toBe("completed");
+  });
+
+  test("requires recollection batches to contain source runs recorded for the claimed recollection", async () => {
+    const { store, domain } = await setup();
+    await domain.seedDemo();
+    await domain.bindFeed("company-attention", "thread-company");
+    const oldRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "old" });
+    await domain.recordSweepBatch("company-attention", [oldRun]);
+    const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Search again with this correction.");
+    if (!("trace" in result)) throw new Error("Expected sweep trace");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(result.work.id);
+    await domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, []);
+    await domain.completeWork("company-attention", result.work.id, result.work.capabilityToken, { response: "Rejudged." });
+    const recollection = await domain.requestSweepRecollection("company-attention");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(recollection.id);
+    await expect(domain.recordSweepBatch("company-attention", [oldRun], recollection.id)).rejects.toThrow("not recorded for this recollection");
+    const newRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "new" }, recollection.id);
+    const batchId = await domain.recordSweepBatch("company-attention", [newRun], recollection.id);
+    expect((await store.readSweepBatch("company-attention", batchId)).triggerWorkId).toBe(recollection.id);
+    expect((await domain.completeWork("company-attention", recollection.id, recollection.capabilityToken, { response: "Collected." })).status).toBe("completed");
+  });
+
+  test("rejects sweep batches that reference missing source runs", async () => {
+    const { domain } = await setup();
+    await expect(domain.recordSweepBatch("inbox", ["run-does-not-exist"])).rejects.toThrow("Source run not found");
+  });
+
+  test("queues broader voice intent for Codex and preserves approval-gated revision history", async () => {
+    const { store, domain } = await setup();
+    const feedTarget = { kind: "feed" as const, feedId: "inbox" };
+    const originalPolicy = await store.readTargetContent(feedTarget);
+    const feedResult = await domain.submitVoiceInstruction("inbox", feedTarget, "Add Slack as a source and refresh this feed.");
+    expect(feedResult.kind).toBe("scoped_work");
+    expect(feedResult.work.cardId).toBe("__feed__");
+    expect(feedResult.work.target).toEqual(feedTarget);
+    expect(await store.readTargetContent(feedTarget)).toBe(originalPolicy);
+    expect((await store.readWorkspace("inbox")).proposals).toHaveLength(0);
+
+    const target = { kind: "source_recipe" as const, feedId: "inbox", sourceId: "gmail-inbox" };
+    const original = await store.readTargetContent(target);
+    const result = await domain.submitVoiceInstruction("inbox", target, "Exclude newsletters unless they require a decision.");
+    expect(result.kind).toBe("scoped_work");
+    expect(result.work.target).toEqual(target);
+    expect(await store.readTargetContent(target)).toBe(original);
+    expect((await store.readWorkspace("inbox")).proposals).toHaveLength(0);
+
+    const proposal = await domain.proposeRevision("inbox", target, "Exclude newsletters unless they require a decision.", `${original}\n\n- Exclude newsletters unless they require a decision.`);
+    const revision = await domain.applyRevisionProposal(proposal.id);
+    expect(await store.readTargetContent(target)).toContain("Exclude newsletters");
+    await domain.revertWorkspaceRevision(revision.id);
+    expect(await store.readTargetContent(target)).toBe(original);
+    expect((await store.readEvents("inbox")).map((event) => event.type)).toEqual(expect.arrayContaining([
+      "revision.proposed",
+      "revision.applied",
+      "revision.reverted",
+    ]));
+  });
+
+  test("records reversible direct prompt edits and approval-gated global proposals", async () => {
+    const { store, domain } = await setup();
+    const prompt = { kind: "prompt_layer" as const, feedId: "inbox", promptId: "judge.md" };
+    const originalPrompt = await store.readTargetContent(prompt);
+    const revision = await domain.updateWorkspaceDocument("inbox", prompt, `${originalPrompt}\n- Prefer a smaller set.`);
+    expect(await store.readTargetContent(prompt)).toContain("smaller set");
+    await domain.revertWorkspaceRevision(revision.id);
+    expect(await store.readTargetContent(prompt)).toBe(originalPrompt);
+
+    const globalPrompt = { kind: "global_prompt" as const, promptId: "judge.md" };
+    const originalGlobal = await store.readTargetContent(globalPrompt);
+    const proposal = await domain.proposeRevision("inbox", globalPrompt, "Require a concrete decision consequence.", `${originalGlobal}\n\n- Require a concrete decision consequence.`);
+    expect(await store.readTargetContent(globalPrompt)).toBe(originalGlobal);
+    expect((await store.readWorkspace("company-attention")).proposals.map((item) => item.id)).toContain(proposal.id);
+    expect((await domain.rejectRevisionProposal(proposal.id)).status).toBe("rejected");
+    expect((await store.readWorkspace("company-attention")).proposals.map((item) => item.id)).not.toContain(proposal.id);
+    expect(await store.readTargetContent(globalPrompt)).toBe(originalGlobal);
+  });
+
+  test("queues one compound pass and keeps its editable policy proposal approval-gated", async () => {
+    const { store, domain } = await setup();
+    const first = await domain.queueCompound("inbox");
+    const second = await domain.queueCompound("inbox");
+    expect(second.id).toBe(first.id);
+
+    const target = { kind: "feed" as const, feedId: "inbox" };
+    const original = await store.readTargetContent(target);
+    const proposal = await domain.proposeRevision("inbox", target, "Preserve the sweep's durable reply judgment.", `${original}\n\n- Prefer concrete reply moves.`, "compound");
+    expect(proposal.source).toBe("compound");
+    expect(await store.readTargetContent(target)).toBe(original);
+
+    const edited = await domain.updateRevisionProposal(proposal.id, `${original}\n\n- Prefer concrete reply moves backed by the latest outcome.`);
+    expect(edited.next).toContain("latest outcome");
+    expect(await store.readTargetContent(target)).toBe(original);
+
+    await domain.applyRevisionProposal(proposal.id);
+    expect(await store.readTargetContent(target)).toContain("latest outcome");
+    expect((await store.readEvents("inbox")).map((event) => event.type)).toEqual(expect.arrayContaining([
+      "learning.compound_queued",
+      "revision.proposed",
+      "revision.proposal_updated",
+      "revision.applied",
+    ]));
   });
 });

@@ -1,7 +1,25 @@
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
-import type { Card, DictationCapability, FeedConfig, FeedEvent, FeedView, PolicyRevision, SourceRecipe, ThreadBinding, WorkItem, WorkspaceView } from "../src/types";
+import type {
+  Card,
+  DictationCapability,
+  FeedConfig,
+  FeedEvent,
+  FeedView,
+  PolicyRevision,
+  RevisionProposal,
+  RoutineActionGroup,
+  SourceRecipe,
+  SweepBatch,
+  SweepFeedbackTrace,
+  SweepState,
+  ThreadBinding,
+  VoiceTarget,
+  WorkItem,
+  WorkspaceRevision,
+  WorkspaceView,
+} from "../src/types";
 import {
   BASE_JUDGE_PROMPT,
   COMPOUND_PROMPT,
@@ -19,6 +37,16 @@ import { isoNow, makeId, readJson, writeJson, writeText } from "./util";
 import { defaultDictationCapability } from "./monologue";
 
 export const GLOBAL_PROMPT_NAMES = ["judge.md", "compose-card.md", "execute-work.md", "distill-policy.md", "compound.md"] as const;
+export const FEED_PROMPT_NAMES = ["judge.md", "compose-card.md"] as const;
+
+function defaultSweepState(): SweepState {
+  return {
+    currentBatchId: null,
+    lastFeedbackId: null,
+    recollectionOffered: false,
+    statusMessage: null,
+  };
+}
 
 export class AttentionStore {
   readonly dataDir: string;
@@ -42,6 +70,8 @@ export class AttentionStore {
     if (!existsSync(workspacePath)) await writeJson(workspacePath, { version: 1, feedIds: ["inbox", "company-attention"], createdAt: isoNow() });
     await this.ensureDefaultFeed("inbox");
     await this.ensureDefaultFeed("company-attention");
+    const workspace = await readJson<{ feedIds: string[] }>(workspacePath);
+    await Promise.all(workspace.feedIds.map((feedId) => this.ensureFeedPrompts(feedId)));
   }
 
   path(...parts: string[]): string {
@@ -60,7 +90,12 @@ export class AttentionStore {
       return { id: config.id, name: config.name, purpose: config.purpose };
     }));
     const selected = workspace.feedIds.includes(feedId) ? feedId : workspace.feedIds[0];
-    return { feeds, active: await this.readFeed(selected), dictation: await this.readDictationCapability() };
+    return {
+      feeds,
+      active: await this.readFeed(selected),
+      dictation: await this.readDictationCapability(),
+      proposals: await this.readRevisionProposals(selected),
+    };
   }
 
   async readDictationCapability(): Promise<DictationCapability> {
@@ -87,16 +122,115 @@ export class AttentionStore {
     await writeText(this.path("prompts", name), content);
   }
 
+  async readRevisionProposals(anchorFeedId: string): Promise<RevisionProposal[]> {
+    const proposals = await this.readDirectoryJson<RevisionProposal>(this.path("revision-proposals"));
+    return proposals
+      .filter((proposal) =>
+        proposal.status === "proposed" &&
+        (proposal.anchorFeedId === anchorFeedId || proposal.target.kind === "attention" || proposal.target.kind === "global_prompt")
+      )
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async readRevisionProposal(proposalId: string): Promise<RevisionProposal> {
+    return readJson<RevisionProposal>(this.path("revision-proposals", `${proposalId}.json`));
+  }
+
+  async writeRevisionProposal(proposal: RevisionProposal): Promise<void> {
+    await writeJson(this.path("revision-proposals", `${proposal.id}.json`), proposal);
+  }
+
+  async readWorkspaceRevision(revisionId: string): Promise<WorkspaceRevision> {
+    return readJson<WorkspaceRevision>(this.path("workspace-revisions", `${revisionId}.json`));
+  }
+
+  async writeWorkspaceRevision(anchorFeedId: string, target: VoiceTarget, next: string, reason: string, source: WorkspaceRevision["source"]): Promise<WorkspaceRevision> {
+    const validated = await this.validateVoiceTarget(target);
+    if (validated.kind !== target.kind) throw new Error("The document target is stale. Choose the visible scope and try again.");
+    const previous = await this.readTargetContent(validated);
+    const revision: WorkspaceRevision = {
+      id: makeId("revision"),
+      anchorFeedId,
+      target: validated,
+      previous,
+      next,
+      reason,
+      source,
+      status: "applied",
+      createdAt: isoNow(),
+    };
+    await this.writeTargetContent(validated, next);
+    await writeJson(this.path("workspace-revisions", `${revision.id}.json`), revision);
+    await this.appendEvent({ feedId: anchorFeedId, type: "revision.applied", detail: { revisionId: revision.id, target: validated, source } });
+    return revision;
+  }
+
+  async revertWorkspaceRevision(revisionId: string): Promise<WorkspaceRevision> {
+    const revision = await this.readWorkspaceRevision(revisionId);
+    if (revision.status !== "applied") throw new Error("Workspace revision is not active.");
+    const current = await this.readTargetContent(revision.target);
+    if (current.trimEnd() !== revision.next.trimEnd()) throw new Error("Workspace content changed after this revision. Undo the newest revision first.");
+    revision.status = "reverted";
+    revision.revertedAt = isoNow();
+    await this.writeTargetContent(revision.target, revision.previous);
+    await writeJson(this.path("workspace-revisions", `${revision.id}.json`), revision);
+    await this.appendEvent({ feedId: revision.anchorFeedId, type: "revision.reverted", detail: { revisionId, target: revision.target } });
+    return revision;
+  }
+
+  async validateVoiceTarget(target: VoiceTarget): Promise<VoiceTarget> {
+    if (await this.isValidVoiceTarget(target)) {
+      if (target.kind !== "sweep") return target;
+      const sweep = await this.readSweepState(target.feedId);
+      return { kind: "sweep", feedId: target.feedId, ...(sweep.currentBatchId ? { batchId: sweep.currentBatchId } : {}) };
+    }
+    if (target.kind === "card") return this.validateVoiceTarget({ kind: "sweep", feedId: target.feedId });
+    if (target.kind === "sweep" || target.kind === "source_recipe" || target.kind === "prompt_layer") return this.validateVoiceTarget({ kind: "feed", feedId: target.feedId });
+    if (target.kind === "feed" || target.kind === "global_prompt") return { kind: "attention" };
+    return target;
+  }
+
+  async readTargetContent(target: VoiceTarget): Promise<string> {
+    if (target.kind === "feed") return readFile(this.feedPath(target.feedId, "policy.md"), "utf8");
+    if (target.kind === "source_recipe") {
+      const recipe = (await readJson<SourceRecipe[]>(this.feedPath(target.feedId, "sources.json"))).find((item) => item.id === target.sourceId);
+      if (!recipe) throw new Error(`Source recipe not found: ${target.sourceId}`);
+      return readFile(this.feedPath(target.feedId, "sources", recipe.filename), "utf8");
+    }
+    if (target.kind === "prompt_layer") return readFile(this.feedPath(target.feedId, "prompts", target.promptId), "utf8");
+    if (target.kind === "global_prompt") return readFile(this.path("prompts", target.promptId), "utf8");
+    if (target.kind === "attention") return readFile(this.path("global-policy.md"), "utf8");
+    throw new Error("This target does not contain editable prompt content.");
+  }
+
+  async writeTargetContent(target: VoiceTarget, content: string): Promise<void> {
+    const normalized = content.replace(/\\n/g, "\n").trim();
+    if (!normalized) throw new Error("Workspace content is required.");
+    if (target.kind === "feed") return writeText(this.feedPath(target.feedId, "policy.md"), normalized);
+    if (target.kind === "source_recipe") {
+      const recipe = (await readJson<SourceRecipe[]>(this.feedPath(target.feedId, "sources.json"))).find((item) => item.id === target.sourceId);
+      if (!recipe) throw new Error(`Source recipe not found: ${target.sourceId}`);
+      return writeText(this.feedPath(target.feedId, "sources", recipe.filename), normalized);
+    }
+    if (target.kind === "prompt_layer") return writeText(this.feedPath(target.feedId, "prompts", target.promptId), normalized);
+    if (target.kind === "global_prompt") return this.writeGlobalPrompt(target.promptId, normalized);
+    if (target.kind === "attention") return writeText(this.path("global-policy.md"), normalized);
+    throw new Error("This target does not contain editable prompt content.");
+  }
+
   async readFeed(feedId: string): Promise<FeedView> {
     const config = await this.readConfig(feedId);
-    const [thread, sources, policy, cards, work] = await Promise.all([
+    const [thread, sources, policy, cards, routineActions, work, sweep] = await Promise.all([
       readJson<ThreadBinding>(this.feedPath(feedId, "thread.json")),
       readJson<SourceRecipe[]>(this.feedPath(feedId, "sources.json")),
       readFile(this.feedPath(feedId, "policy.md"), "utf8"),
       this.readDirectoryJson<Card>(this.feedPath(feedId, "cards")),
+      this.readDirectoryJson<RoutineActionGroup>(this.feedPath(feedId, "routine-actions")),
       this.readDirectoryJson<WorkItem>(this.feedPath(feedId, "work")),
+      this.readSweepState(feedId),
     ]);
     cards.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    routineActions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     work.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     return {
       config,
@@ -104,9 +238,39 @@ export class AttentionStore {
       sources,
       policy,
       cards,
+      routineActions,
       work,
+      sweep,
       readyNextPass: cards.filter((card) => card.status === "to_review_updated" && card.readyForPass > config.currentPass).length,
     };
+  }
+
+  async readSweepState(feedId: string): Promise<SweepState> {
+    const file = this.feedPath(feedId, "sweep-state.json");
+    if (!existsSync(file)) return defaultSweepState();
+    const state = await readJson<SweepState & { currentRunId?: string | null }>(file);
+    return {
+      currentBatchId: state.currentBatchId ?? state.currentRunId ?? null,
+      lastFeedbackId: state.lastFeedbackId,
+      recollectionOffered: state.recollectionOffered,
+      statusMessage: state.statusMessage,
+    };
+  }
+
+  async writeSweepState(feedId: string, state: SweepState): Promise<void> {
+    await writeJson(this.feedPath(feedId, "sweep-state.json"), state);
+  }
+
+  async writeSweepFeedback(trace: SweepFeedbackTrace): Promise<void> {
+    await writeJson(this.feedPath(trace.feedId, "sweep-feedback", `${trace.id}.json`), trace);
+  }
+
+  async readSweepFeedback(feedId: string, feedbackId: string): Promise<SweepFeedbackTrace> {
+    return readJson<SweepFeedbackTrace>(this.feedPath(feedId, "sweep-feedback", `${feedbackId}.json`));
+  }
+
+  async writeSweepBatch(batch: SweepBatch): Promise<void> {
+    await writeJson(this.feedPath(batch.feedId, "sweeps", `${batch.id}.json`), batch);
   }
 
   async readConfig(feedId: string): Promise<FeedConfig> {
@@ -129,6 +293,15 @@ export class AttentionStore {
 
   async removeCard(feedId: string, cardId: string): Promise<void> {
     await rm(this.feedPath(feedId, "cards", `${cardId}.json`), { force: true });
+  }
+
+  async readRoutineActionGroup(feedId: string, groupId: string): Promise<RoutineActionGroup> {
+    return readJson<RoutineActionGroup>(this.feedPath(feedId, "routine-actions", `${groupId}.json`));
+  }
+
+  async writeRoutineActionGroup(group: RoutineActionGroup): Promise<void> {
+    group.updatedAt = isoNow();
+    await writeJson(this.feedPath(group.feedId, "routine-actions", `${group.id}.json`), group);
   }
 
   async readWork(feedId: string, workId: string): Promise<WorkItem> {
@@ -219,6 +392,14 @@ export class AttentionStore {
     await writeJson(this.feedPath(feedId, "runs", `${runId}.json`), value);
   }
 
+  async readRun(feedId: string, runId: string): Promise<{ id: string; feedId: string; triggerWorkId?: string; completedAt?: string }> {
+    return readJson<{ id: string; feedId: string; triggerWorkId?: string; completedAt?: string }>(this.feedPath(feedId, "runs", `${runId}.json`));
+  }
+
+  async readSweepBatch(feedId: string, batchId: string): Promise<SweepBatch> {
+    return readJson<SweepBatch>(this.feedPath(feedId, "sweeps", `${batchId}.json`));
+  }
+
   async createFeed(config: FeedConfig, homeThreadId: string | null = null): Promise<FeedView> {
     return this.serialize(async () => {
       const workspace = await readJson<{ version: number; feedIds: string[]; createdAt: string }>(this.path("workspace.json"));
@@ -230,6 +411,7 @@ export class AttentionStore {
       await writeText(this.feedPath(config.id, "policy.md"), `# ${config.name} policy\n\n- Start with a high attention bar. Learn from explicit corrections and outcomes.\n`);
       await writeJson(this.feedPath(config.id, "thread.json"), { ...threadBinding(), homeThreadId, boundAt: homeThreadId ? isoNow() : null });
       await writeJson(this.feedPath(config.id, "sources.json"), []);
+      await this.ensureFeedPrompts(config.id);
       await this.appendEvent({ feedId: config.id, type: "feed.created", detail: { homeThreadId } });
       return this.readFeed(config.id);
     });
@@ -286,6 +468,22 @@ export class AttentionStore {
     const source = inbox ? inboxRecipe() : companyRecipe();
     await this.addSource(feedId, source.recipe, source.markdown);
     await this.writeCard(setupCard(feedId, inbox ? "inbox" : "company"));
+  }
+
+  private async ensureFeedPrompts(feedId: string): Promise<void> {
+    await this.ensureText(`feeds/${feedId}/prompts/judge.md`, "# Feed judge prompt layer\n\nAdd feed-specific judging refinements here. Global policy and the global judge prompt remain in force.\n");
+    await this.ensureText(`feeds/${feedId}/prompts/compose-card.md`, "# Feed card prompt layer\n\nAdd feed-specific card composition refinements here. Keep the outer card calm and compact.\n");
+  }
+
+  private async isValidVoiceTarget(target: VoiceTarget): Promise<boolean> {
+    if (target.kind === "attention") return true;
+    if (target.kind === "global_prompt") return GLOBAL_PROMPT_NAMES.includes(target.promptId as (typeof GLOBAL_PROMPT_NAMES)[number]);
+    if (!existsSync(this.feedPath(target.feedId, "feed.json"))) return false;
+    if (target.kind === "feed" || target.kind === "sweep") return true;
+    if (target.kind === "card") return existsSync(this.feedPath(target.feedId, "cards", `${target.cardId}.json`));
+    if (target.kind === "prompt_layer") return FEED_PROMPT_NAMES.includes(target.promptId as (typeof FEED_PROMPT_NAMES)[number]);
+    const recipes = await readJson<SourceRecipe[]>(this.feedPath(target.feedId, "sources.json"));
+    return recipes.some((recipe) => recipe.id === target.sourceId);
   }
 
   private async ensureText(relativePath: string, value: string): Promise<void> {
