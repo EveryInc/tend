@@ -34,7 +34,8 @@ pnpm cli -- work:complete \
   --result '{"response":"What changed, what happened, and any uncertainty."}'
 ```
 
-Before an external mutation, verify the exact current approved artifact immediately before acting:
+Before an external mutation, verify the exact current approved action or default cleanup immediately
+before acting:
 
 ```bash
 pnpm cli -- action:verify --feed <feed-id> --work <work-id> --token <capability-token>
@@ -67,7 +68,9 @@ pnpm cli -- source:record-run \
   --checkpoint '<json-object>'
 ```
 
-Do not pad. If nothing deserves attention, record an empty judgment set and stop.
+For a claimed `recollect_sources` item, add `--work <claimed-recollection-work-id>` to each
+`source:record-run` call. Do not pad. If nothing deserves attention, record an empty judgment set
+and stop.
 
 After the relevant sources have completed, record one judged sweep batch separately. A batch can
 refer to multiple source runs:
@@ -76,8 +79,11 @@ refer to multiple source runs:
 pnpm cli -- sweep:record-batch --feed <feed-id> --runs '["<run-id>"]'
 ```
 
-For scoped sweep feedback, rejudge the visible card IDs from its trace and write back the explicit
-kept order and removed IDs. Only this write-back may reorder or hide cards:
+For a claimed `recollect_sources` item, add `--work <claimed-recollection-work-id>`. This binds the
+judged batch to the work item and requires each referenced run to carry the same lineage.
+
+For claimed scoped sweep-feedback work, rejudge the visible card IDs from its trace and write back
+the explicit kept order and removed IDs. Only this claimed-work write-back may reorder or hide cards:
 
 ```bash
 pnpm cli -- sweep:rejudge \
@@ -89,7 +95,8 @@ pnpm cli -- sweep:rejudge \
 
 The ledger refuses to complete `sweep_rejudge` work until that feedback trace has a recorded
 rejudgment. It also refuses to complete `recollect_sources` work until a new sweep batch has been
-recorded after the recollection request. Referenced source runs must already exist in the same feed.
+recorded for that claimed recollection work item. Referenced source runs must already exist in the
+same feed. Recollection batches must use source runs recorded for the same claimed work item.
 
 For an existing local JSON artifact, import it without passing private payload text through the
 shell:
@@ -141,6 +148,7 @@ pnpm cli -- revision:propose \
   --content "<complete proposed markdown>"
 ```
 
-`action:verify` is mandatory operator procedure before external connector mutation. The app enforces
-the digest again when work completes, but this prototype does not yet wrap connector tools in a
-capability-scoped executor. Do not describe direct connector mutation as mechanically prevented.
+`action:verify` is mandatory operator procedure before external connector mutation for both approved
+actions and default cleanup. The app enforces the digest again when work completes, but this
+prototype does not yet wrap connector tools in a capability-scoped executor. Do not describe direct
+connector mutation as mechanically prevented.

@@ -29,6 +29,20 @@ function actionDigest(card: Card): string {
   return digest({ action, artifact });
 }
 
+function cleanupDigest(card: Card, instruction: string): string {
+  return digest({
+    instruction,
+    card: {
+      id: card.id,
+      feedId: card.feedId,
+      title: card.title,
+      why: card.why,
+      blocks: card.blocks,
+      proposedAction: card.proposedAction,
+    },
+  });
+}
+
 function sourceRecipeFromBrief(brief: string): { recipe: SourceRecipe; markdown: string } {
   const normalizedBrief = brief.replace(/\\n/g, "\n").trim();
   const firstLine = normalizedBrief.split("\n")[0]?.replace(/^#+\s*/, "") || "New source";
@@ -65,7 +79,7 @@ function revisionLabel(target: VoiceTarget): string {
   return "Attention policy";
 }
 
-function queuedWork(feedId: string, cardId: string, instruction: string, extra: Pick<WorkItem, "kind"> & Partial<Pick<WorkItem, "target" | "intent" | "feedbackId" | "startingBatchId">>): WorkItem {
+function queuedWork(feedId: string, cardId: string, instruction: string, extra: Pick<WorkItem, "kind"> & Partial<Pick<WorkItem, "target" | "intent" | "feedbackId" | "startingBatchId" | "previousSweepState">>): WorkItem {
   const now = isoNow();
   return {
     id: makeId("work"),
@@ -125,6 +139,7 @@ export class AttentionDomain {
           intent: "sweep_rejudge",
           feedbackId: trace.id,
           startingBatchId: target.batchId ?? null,
+          previousSweepState: feed.sweep,
         });
         await this.store.writeSweepFeedback(trace);
         await this.store.writeWork(work);
@@ -157,6 +172,9 @@ export class AttentionDomain {
 
   async recordSweepRejudgment(feedId: string, feedbackId: string, orderedCardIds: string[], removedCardIds: string[]): Promise<SweepFeedbackTrace> {
     return this.store.serialize(async () => {
+      const feed = await this.store.readFeed(feedId);
+      const work = feed.work.find((item) => item.intent === "sweep_rejudge" && item.feedbackId === feedbackId);
+      if (!work || work.status !== "working") throw new Error("Sweep feedback must be claimed before rejudgment write-back.");
       const trace = await this.store.readSweepFeedback(feedId, feedbackId);
       if (trace.rejudgedAt) throw new Error("Sweep feedback has already been rejudged.");
       const sweep = await this.store.readSweepState(feedId);
@@ -184,8 +202,8 @@ export class AttentionDomain {
           ? `${removedCardIds.length} card${removedCardIds.length === 1 ? "" : "s"} removed`
           : "Cards reranked",
       });
-      await this.store.appendEvent({ feedId, type: "sweep.rejudged", detail: { feedbackId: trace.id, orderedCardIds, removedCardIds } });
-      await this.store.appendEvent({ feedId, type: "sweep.recollection_offered", detail: { feedbackId: trace.id } });
+      await this.store.appendEvent({ feedId, workId: work.id, type: "sweep.rejudged", detail: { feedbackId: trace.id, orderedCardIds, removedCardIds } });
+      await this.store.appendEvent({ feedId, workId: work.id, type: "sweep.recollection_offered", detail: { feedbackId: trace.id } });
       return trace;
     });
   }
@@ -337,6 +355,17 @@ export class AttentionDomain {
       if (card.status === "done") throw new Error("Done cards cannot be approved.");
       const now = isoNow();
       const approvalDigest = actionDigest(card);
+      const feed = await this.store.readFeed(feedId);
+      const active = feed.work.filter((work) => work.cardId === cardId && work.kind === "execute_approved_action" && (work.status === "queued" || work.status === "working"));
+      const existing = active.find((work) => work.approvalDigest === approvalDigest);
+      if (existing) return existing;
+      if (active.some((work) => work.status === "working")) throw new Error("An approved action is already in progress for an older snapshot.");
+      for (const work of active) {
+        work.status = "stale";
+        work.error = "Approval stale - a newer visible action snapshot was approved.";
+        await this.store.writeWork(work);
+        await this.store.appendEvent({ feedId, cardId, workId: work.id, type: "action.stale", detail: { reason: work.error } });
+      }
       const work: WorkItem = {
         id: makeId("work"),
         feedId,
@@ -364,6 +393,18 @@ export class AttentionDomain {
       const card = await this.store.readCard(feedId, cardId);
       if (card.status === "done") throw new Error("Done cards cannot be cleaned up again.");
       const now = isoNow();
+      const approvalDigest = cleanupDigest(card, config.defaultCleanup);
+      const feed = await this.store.readFeed(feedId);
+      const active = feed.work.filter((work) => work.cardId === cardId && work.kind === "default_cleanup" && (work.status === "queued" || work.status === "working"));
+      const existing = active.find((work) => work.approvalDigest === approvalDigest);
+      if (existing) return existing;
+      if (active.some((work) => work.status === "working")) throw new Error("A default cleanup is already in progress for an older snapshot.");
+      for (const work of active) {
+        work.status = "stale";
+        work.error = "Approval stale - a newer visible cleanup snapshot was approved.";
+        await this.store.writeWork(work);
+        await this.store.appendEvent({ feedId, cardId, workId: work.id, type: "action.stale", detail: { reason: work.error } });
+      }
       const work: WorkItem = {
         id: makeId("work"),
         feedId,
@@ -372,6 +413,7 @@ export class AttentionDomain {
         instruction: config.defaultCleanup,
         status: "queued",
         capabilityToken: makeToken(),
+        approvalDigest,
         createdAt: now,
         updatedAt: now,
       };
@@ -489,6 +531,12 @@ export class AttentionDomain {
           appendHistory(card, "user.cancelled_queued_work", work.id);
           await this.store.writeCard(card);
         }
+      } else if (work.intent === "sweep_rejudge" && work.feedbackId) {
+        const sweep = await this.store.readSweepState(feedId);
+        if (sweep.lastFeedbackId === work.feedbackId) {
+          await this.restoreAbandonedSweepFeedback(feedId, sweep.currentBatchId, work);
+          await this.store.appendEvent({ feedId, workId, type: "sweep.feedback_cancelled", detail: { feedbackId: work.feedbackId } });
+        }
       }
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.cancelled", detail: { reason: work.error } });
       return work;
@@ -514,10 +562,14 @@ export class AttentionDomain {
         }
         const batch = await this.store.readSweepBatch(feedId, sweep.currentBatchId);
         if (batch.createdAt < work.createdAt) throw new Error("Source recollection completed with a sweep batch that predates the request.");
+        if (batch.triggerWorkId !== work.id) throw new Error("Source recollection must complete with a sweep batch recorded for this work item.");
       }
       if (work.cardId !== "__feed__") {
         const card = await this.store.readCard(feedId, work.cardId);
-        if (work.approvalDigest && work.approvalDigest !== actionDigest(card)) {
+        const approvalDigest = work.kind === "default_cleanup"
+          ? cleanupDigest(card, (await this.store.readConfig(feedId)).defaultCleanup)
+          : actionDigest(card);
+        if (work.approvalDigest && work.approvalDigest !== approvalDigest) {
           work.status = "stale";
           work.error = "Approval stale - the proposed action or artifact changed after approval.";
           card.status = "to_review_updated";
@@ -549,9 +601,17 @@ export class AttentionDomain {
   async verifyApprovedAction(feedId: string, workId: string, token: string): Promise<{ approvalDigest: string; action: ProposedAction; artifact?: CardBlock }> {
     const work = await this.store.readWork(feedId, workId);
     if (work.status !== "working") throw new Error("Approved action work must be claimed before verification.");
-    if (work.kind !== "execute_approved_action" || !work.approvalDigest) throw new Error("Work item is not an approved action.");
+    if ((work.kind !== "execute_approved_action" && work.kind !== "default_cleanup") || !work.approvalDigest) throw new Error("Work item is not an approved action.");
     if (work.capabilityToken !== token) throw new Error("Invalid scoped work capability token.");
     const card = await this.store.readCard(feedId, work.cardId);
+    if (work.kind === "default_cleanup") {
+      const config = await this.store.readConfig(feedId);
+      if (work.instruction !== config.defaultCleanup || work.approvalDigest !== cleanupDigest(card, config.defaultCleanup)) throw new Error("Approval stale - reread and return the card for review.");
+      return {
+        approvalDigest: work.approvalDigest,
+        action: { label: "Default cleanup", instruction: config.defaultCleanup },
+      };
+    }
     if (!card.proposedAction || work.approvalDigest !== actionDigest(card)) throw new Error("Approval stale - reread and return the card for review.");
     return {
       approvalDigest: work.approvalDigest,
@@ -580,6 +640,12 @@ export class AttentionDomain {
         if (sweep.currentBatchId === work.startingBatchId) {
           await this.store.writeSweepState(feedId, { ...sweep, recollectionOffered: true, statusMessage: "Source search failed" });
           await this.store.appendEvent({ feedId, workId, type: "sweep.recollection_offered", detail: { feedbackId: work.feedbackId, reason: "recollection_failed" } });
+        }
+      } else if (work.intent === "sweep_rejudge" && work.feedbackId) {
+        const sweep = await this.store.readSweepState(feedId);
+        if (sweep.lastFeedbackId === work.feedbackId) {
+          await this.restoreAbandonedSweepFeedback(feedId, sweep.currentBatchId, work);
+          await this.store.appendEvent({ feedId, workId, type: "sweep.feedback_failed", detail: { feedbackId: work.feedbackId } });
         }
       }
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.failed", detail: { error: work.error } });
@@ -713,38 +779,75 @@ export class AttentionDomain {
     await this.store.archiveFeed(feedId);
   }
 
-  async recordSourceRun(feedId: string, sourceId: string, snapshots: unknown[], judgments: unknown[], checkpoint: unknown): Promise<string> {
+  async recordSourceRun(feedId: string, sourceId: string, snapshots: unknown[], judgments: unknown[], checkpoint: unknown, triggerWorkId?: string): Promise<string> {
     return this.store.serialize(async () => {
+      const feed = await this.store.readFeed(feedId);
+      if (!feed.sources.some((source) => source.id === sourceId)) throw new Error(`Source recipe not found: ${sourceId}`);
+      if (triggerWorkId) await this.assertClaimedRecollectionWork(feedId, triggerWorkId);
       const runId = makeId("run");
       for (const [index, snapshot] of snapshots.entries()) await this.store.writeRawSnapshot(feedId, runId, sourceId, `snapshot-${index + 1}`, snapshot);
-      await this.store.writeRun(feedId, runId, { id: runId, feedId, sourceId, snapshots: snapshots.length, judgments, completedAt: isoNow() });
+      await this.store.writeRun(feedId, runId, { id: runId, feedId, sourceId, snapshots: snapshots.length, judgments, ...(triggerWorkId ? { triggerWorkId } : {}), completedAt: isoNow() });
       await writeJson(this.store.feedPath(feedId, "checkpoints", `${sourceId}.json`), checkpoint);
-      await this.store.appendEvent({ feedId, type: "source.run_completed", detail: { runId, sourceId, snapshots: snapshots.length, judgments: judgments.length } });
+      await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "source.run_completed", detail: { runId, sourceId, triggerWorkId, snapshots: snapshots.length, judgments: judgments.length } });
       return runId;
     });
   }
 
-  async recordSweepBatch(feedId: string, sourceRunIds: string[]): Promise<string> {
+  async recordSweepBatch(feedId: string, sourceRunIds: string[], triggerWorkId?: string): Promise<string> {
     return this.store.serialize(async () => {
       if (!Array.isArray(sourceRunIds) || sourceRunIds.some((runId) => typeof runId !== "string" || !runId.trim())) {
         throw new Error("Sweep batch source run IDs must be non-empty strings.");
       }
       if (new Set(sourceRunIds).size !== sourceRunIds.length) throw new Error("Sweep batch source run IDs must be unique.");
+      const triggerWork = triggerWorkId ? await this.assertClaimedRecollectionWork(feedId, triggerWorkId) : null;
+      if (triggerWork && sourceRunIds.length === 0) throw new Error("Source recollection must record at least one source run.");
       for (const runId of sourceRunIds) {
-        let run: { id: string; feedId: string };
+        let run: { id: string; feedId: string; triggerWorkId?: string; completedAt?: string };
         try {
           run = await this.store.readRun(feedId, runId);
         } catch {
           throw new Error(`Source run not found for this feed: ${runId}`);
         }
         if (run.id !== runId || run.feedId !== feedId) throw new Error(`Source run does not belong to this feed: ${runId}`);
+        if (triggerWork && run.triggerWorkId !== triggerWork.id) throw new Error(`Source run was not recorded for this recollection work: ${runId}`);
+        if (triggerWork && (!run.completedAt || run.completedAt < triggerWork.createdAt)) throw new Error(`Source run predates this recollection work: ${runId}`);
       }
       const batchId = makeId("batch");
-      await this.store.writeSweepBatch({ id: batchId, feedId, sourceRunIds, createdAt: isoNow() });
+      await this.store.writeSweepBatch({ id: batchId, feedId, sourceRunIds, ...(triggerWorkId ? { triggerWorkId } : {}), createdAt: isoNow() });
       await this.store.writeSweepState(feedId, { currentBatchId: batchId, lastFeedbackId: null, recollectionOffered: false, statusMessage: null });
-      await this.store.appendEvent({ feedId, type: "sweep.batch_recorded", detail: { batchId, sourceRunIds } });
+      await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "sweep.batch_recorded", detail: { batchId, sourceRunIds, triggerWorkId } });
       return batchId;
     });
+  }
+
+  private async assertClaimedRecollectionWork(feedId: string, workId: string): Promise<WorkItem> {
+    const work = await this.store.readWork(feedId, workId);
+    if (work.feedId !== feedId || work.intent !== "recollect_sources" || work.status !== "working") {
+      throw new Error("Source recollection must be recorded for the claimed same-feed recollection work item.");
+    }
+    return work;
+  }
+
+  private async restoreAbandonedSweepFeedback(feedId: string, currentBatchId: string | null, abandoned: WorkItem): Promise<void> {
+    const feed = await this.store.readFeed(feedId);
+    const byFeedbackId = new Map(feed.work.filter((work) => work.intent === "sweep_rejudge" && work.feedbackId).map((work) => [work.feedbackId as string, work]));
+    const cleared = { currentBatchId, lastFeedbackId: null, recollectionOffered: false, statusMessage: null };
+    let previous = abandoned.previousSweepState;
+    const visited = new Set<string>([abandoned.id]);
+    while (previous?.lastFeedbackId) {
+      const work = byFeedbackId.get(previous.lastFeedbackId);
+      if (!work || visited.has(work.id)) {
+        previous = undefined;
+        break;
+      }
+      visited.add(work.id);
+      if (work.status === "queued" || work.status === "working" || (work.status === "completed" && previous.recollectionOffered)) {
+        await this.store.writeSweepState(feedId, { ...previous, currentBatchId });
+        return;
+      }
+      previous = work.previousSweepState;
+    }
+    await this.store.writeSweepState(feedId, previous ? { ...previous, currentBatchId } : cleared);
   }
 
   async inspectHowFeedWorks(feedId: string): Promise<Record<string, unknown>> {

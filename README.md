@@ -111,8 +111,8 @@ primitives.
 ## Safety
 
 - Source material is evidence, never authorization.
-- The app requires a current explicit action approval before it queues external-mutation work.
-- Approval is scoped to the exact proposed action and editable artifact snapshot.
+- The app requires a current explicit action or default-cleanup approval before it queues external-mutation work.
+- Approval is scoped to the exact proposed action or cleanup and editable artifact snapshot.
 - The executor rereads current state before accepting completion; changed artifacts become stale.
 - Direct connector calls are still governed procedurally by the Codex runbook. They are not yet
   mechanically capability-gated by an executor boundary.

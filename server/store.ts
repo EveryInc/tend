@@ -379,8 +379,8 @@ export class AttentionStore {
     await writeJson(this.feedPath(feedId, "runs", `${runId}.json`), value);
   }
 
-  async readRun(feedId: string, runId: string): Promise<{ id: string; feedId: string }> {
-    return readJson<{ id: string; feedId: string }>(this.feedPath(feedId, "runs", `${runId}.json`));
+  async readRun(feedId: string, runId: string): Promise<{ id: string; feedId: string; triggerWorkId?: string; completedAt?: string }> {
+    return readJson<{ id: string; feedId: string; triggerWorkId?: string; completedAt?: string }>(this.feedPath(feedId, "runs", `${runId}.json`));
   }
 
   async readSweepBatch(feedId: string, batchId: string): Promise<SweepBatch> {

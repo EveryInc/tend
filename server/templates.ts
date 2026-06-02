@@ -32,9 +32,10 @@ export const EXECUTE_WORK_PROMPT = `# Execute work prompt
 Read the current card and instruction again before acting. Questions authorize research or drafting
 only. Explicit imperatives authorize the described work unless the consequence is destructive,
 ambiguous, or unusually high-stakes. Never perform an external mutation from an ordinary dock
-instruction. External mutations are allowed only for claimed \`execute_approved_action\` work after
-\`action:verify\` succeeds for the exact current approved action snapshot immediately before the
-connector call. Record the result, evidence, uncertainty, and any proposed policy learning.
+instruction. External mutations are allowed only for claimed \`execute_approved_action\` or
+\`default_cleanup\` work after \`action:verify\` succeeds for the exact current approved snapshot
+immediately before the connector call. Record the result, evidence, uncertainty, and any proposed
+policy learning.
 `;
 
 export const DISTILL_POLICY_PROMPT = `# Distill policy prompt

@@ -54,23 +54,23 @@ switch (command) {
     output = { ok: true };
     break;
   case "source:record-run":
-    output = await domain.recordSourceRun(required("feed"), required("source"), json(required("snapshots")), json(required("judgments")), json(required("checkpoint")));
+    output = await domain.recordSourceRun(required("feed"), required("source"), json(required("snapshots")), json(required("judgments")), json(required("checkpoint")), value("work"));
     break;
   case "sweep:record-batch":
-    output = await domain.recordSweepBatch(required("feed"), json(required("runs")));
+    output = await domain.recordSweepBatch(required("feed"), json(required("runs")), value("work"));
     break;
   case "sweep:rejudge":
     output = await domain.recordSweepRejudgment(required("feed"), required("feedback"), json(required("ordered-cards")), json(required("removed-cards")));
     break;
   case "source:import-json-file": {
     const sourcePath = required("path");
-    output = await domain.recordSourceRun(required("feed"), required("source"), [JSON.parse(await readFile(sourcePath, "utf8"))], [], { importedFrom: sourcePath, importedAt: new Date().toISOString() });
+    output = await domain.recordSourceRun(required("feed"), required("source"), [JSON.parse(await readFile(sourcePath, "utf8"))], [], { importedFrom: sourcePath, importedAt: new Date().toISOString() }, value("work"));
     break;
   }
   case "source:import-file": {
     const sourcePath = required("path");
     const content = await readFile(sourcePath, "utf8");
-    output = await domain.recordSourceRun(required("feed"), required("source"), [{ format: "text", content }], [], { importedFrom: sourcePath, importedAt: new Date().toISOString() });
+    output = await domain.recordSourceRun(required("feed"), required("source"), [{ format: "text", content }], [], { importedFrom: sourcePath, importedAt: new Date().toISOString() }, value("work"));
     break;
   }
   case "card:upsert":
@@ -219,8 +219,8 @@ switch (command) {
         "feed:heartbeat:propose --feed <id> --cadence <plain-English cadence>",
         "source:add --feed <id> --brief <plain-English source recipe>",
         "source:remove --feed <id> --source <id>",
-        "source:record-run --feed <id> --source <id> --snapshots <json> --judgments <json> --checkpoint <json>",
-        "sweep:record-batch --feed <id> --runs <json-array>",
+        "source:record-run --feed <id> --source <id> --snapshots <json> --judgments <json> --checkpoint <json> [--work <recollection-work-id>]",
+        "sweep:record-batch --feed <id> --runs <json-array> [--work <recollection-work-id>]",
         "sweep:rejudge --feed <id> --feedback <id> --ordered-cards <json-array> --removed-cards <json-array>",
         "source:import-json-file --feed <id> --source <id> --path <local-json-file>",
         "source:import-file --feed <id> --source <id> --path <local-text-or-jsonl-file>",

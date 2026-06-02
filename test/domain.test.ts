@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { AttentionDomain } from "../server/domain";
 import { AttentionStore } from "../server/store";
+import { closestTarget } from "../src/state/voiceTarget";
 
 const roots: string[] = [];
 
@@ -51,6 +52,12 @@ describe("filesystem workspace", () => {
     const checkpoint = JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8"));
     expect(checkpoint.cursor).toBe("gmail-1");
     expect((await store.readSweepState("inbox")).currentBatchId).toBe(batchId);
+  });
+
+  test("refuses to record raw evidence for an unconfigured source recipe", async () => {
+    const { root, domain } = await setup();
+    await expect(domain.recordSourceRun("inbox", "not-an-authorized-recipe", [{ threadId: "nope" }], [], { cursor: "nope" })).rejects.toThrow("Source recipe not found");
+    await expect(readFile(path.join(root, "feeds", "inbox", "checkpoints", "not-an-authorized-recipe.json"), "utf8")).rejects.toThrow();
   });
 
   test("creates a feed and source recipe from plain English", async () => {
@@ -164,6 +171,17 @@ describe("thread-owned work drain", () => {
 });
 
 describe("approval, learning, and heartbeat safety", () => {
+  test("collapses concurrent approvals for the same visible action snapshot", async () => {
+    const { store, domain } = await setup();
+    await domain.seedDemo();
+    const [first, second] = await Promise.all([
+      domain.approveAction("inbox", "demo-inbox-partnership"),
+      domain.approveAction("inbox", "demo-inbox-partnership"),
+    ]);
+    expect(second.id).toBe(first.id);
+    expect((await store.readFeed("inbox")).work.filter((work) => work.kind === "execute_approved_action" && (work.status === "queued" || work.status === "working"))).toHaveLength(1);
+  });
+
   test("refuses approved external work when the editable artifact changed", async () => {
     const { store, domain } = await setup();
     await domain.seedDemo();
@@ -189,8 +207,27 @@ describe("approval, learning, and heartbeat safety", () => {
     await domain.bindFeed("inbox", "thread-inbox");
     const secondCleanup = await domain.dismissCard("inbox", "inbox-ready-to-collect");
     await domain.claimWork("inbox", "thread-inbox");
+    expect((await domain.verifyApprovedAction("inbox", secondCleanup.id, secondCleanup.capabilityToken)).action.instruction).toBe("Archive the email thread.");
     await domain.completeWork("inbox", secondCleanup.id, secondCleanup.capabilityToken, { response: "Archived the authoritative email thread." });
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("done");
+  });
+
+  test("collapses concurrent dismiss cleanup and rejects changed cleanup configuration", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const [first, second] = await Promise.all([
+      domain.dismissCard("inbox", "inbox-ready-to-collect"),
+      domain.dismissCard("inbox", "inbox-ready-to-collect"),
+    ]);
+    expect(second.id).toBe(first.id);
+    expect((await store.readFeed("inbox")).work.filter((work) => work.kind === "default_cleanup" && (work.status === "queued" || work.status === "working"))).toHaveLength(1);
+    await domain.claimWork("inbox", "thread-inbox");
+    const config = await store.readConfig("inbox");
+    config.defaultCleanup = "Archive the email thread and add a label.";
+    await store.writeConfig(config);
+    await expect(domain.verifyApprovedAction("inbox", first.id, first.capabilityToken)).rejects.toThrow("Approval stale");
+    await expect(domain.completeWork("inbox", first.id, first.capabilityToken, { response: "Archived." })).rejects.toThrow("Approval stale");
+    expect((await store.readWork("inbox", first.id)).status).toBe("stale");
   });
 
   test("clears visual QA demo cards without touching setup cards", async () => {
@@ -231,6 +268,13 @@ describe("approval, learning, and heartbeat safety", () => {
 });
 
 describe("scoped persistent voice dock routing", () => {
+  test("rebinds stale client card and sweep targets to the live sweep rung", () => {
+    const sweep = { kind: "sweep" as const, feedId: "inbox", batchId: "batch-current" };
+    const ladder = [sweep, { kind: "feed" as const, feedId: "inbox" }, { kind: "attention" as const }];
+    expect(closestTarget({ kind: "card", feedId: "inbox", cardId: "missing-card" }, ladder)).toEqual(sweep);
+    expect(closestTarget({ kind: "sweep", feedId: "inbox", batchId: "batch-old" }, ladder)).toEqual(sweep);
+  });
+
   test("falls back from stale object targets to the nearest valid parent scope", async () => {
     const { domain } = await setup();
     const batchId = await domain.recordSweepBatch("inbox", []);
@@ -254,6 +298,7 @@ describe("scoped persistent voice dock routing", () => {
   test("queues sweep feedback for Codex and only changes cards after an explicit rejudgment write-back", async () => {
     const { store, domain } = await setup();
     await domain.seedDemo();
+    await domain.bindFeed("company-attention", "thread-company");
     const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "These are too infrastructure-heavy. I want product taste and evidence.");
     expect(result.kind).toBe("scoped_work");
     if (!("trace" in result)) throw new Error("Expected sweep trace");
@@ -269,6 +314,7 @@ describe("scoped persistent voice dock routing", () => {
 
     const removedCardIds = ["demo-company-q3"];
     const orderedCardIds = result.trace.visibleCardIds.filter((cardId) => !removedCardIds.includes(cardId));
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(result.work.id);
     await domain.recordSweepRejudgment("company-attention", result.trace.id, orderedCardIds, removedCardIds);
     feed = await store.readFeed("company-attention");
     expect(feed.sweep.recollectionOffered).toBe(true);
@@ -283,9 +329,12 @@ describe("scoped persistent voice dock routing", () => {
   test("collapses concurrent recollection requests into one queued item", async () => {
     const { store, domain } = await setup();
     await domain.seedDemo();
+    await domain.bindFeed("company-attention", "thread-company");
     const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Search again after this correction.");
     if (!("trace" in result)) throw new Error("Expected sweep trace");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(result.work.id);
     await domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, []);
+    await domain.completeWork("company-attention", result.work.id, result.work.capabilityToken, { response: "Rejudged." });
     const [first, second] = await Promise.all([
       domain.requestSweepRecollection("company-attention"),
       domain.requestSweepRecollection("company-attention"),
@@ -294,13 +343,62 @@ describe("scoped persistent voice dock routing", () => {
     expect((await store.readFeed("company-attention")).work.filter((work) => work.intent === "recollect_sources")).toHaveLength(1);
   });
 
+  test("restores sweep state when queued feedback is cancelled or claimed feedback fails", async () => {
+    const { store, domain } = await setup();
+    await domain.seedDemo();
+    const previous = await store.readSweepState("company-attention");
+    const cancelled = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Cancel this correction.");
+    if (!("trace" in cancelled)) throw new Error("Expected sweep trace");
+    await domain.cancelQueuedWork("company-attention", cancelled.work.id, "Undid dictated feedback.");
+    expect(await store.readSweepState("company-attention")).toEqual(previous);
+    await expect(domain.recordSweepRejudgment("company-attention", cancelled.trace.id, cancelled.trace.visibleCardIds, [])).rejects.toThrow("must be claimed");
+
+    await domain.bindFeed("company-attention", "thread-company");
+    const failed = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "This review will fail.");
+    if (!("trace" in failed)) throw new Error("Expected sweep trace");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(failed.work.id);
+    await domain.failWork("company-attention", failed.work.id, failed.work.capabilityToken, "Could not rejudge.");
+    expect(await store.readSweepState("company-attention")).toEqual(previous);
+    await expect(domain.recordSweepRejudgment("company-attention", failed.trace.id, failed.trace.visibleCardIds, [])).rejects.toThrow("must be claimed");
+    expect((await store.readEvents("company-attention")).map((event) => event.type)).toEqual(expect.arrayContaining([
+      "sweep.feedback_cancelled",
+      "sweep.feedback_failed",
+    ]));
+  });
+
+  test("does not revive abandoned sweep feedback while unwinding stacked corrections", async () => {
+    const { store, domain } = await setup();
+    await domain.seedDemo();
+    const previous = await store.readSweepState("company-attention");
+    const first = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "First pending correction.");
+    const second = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Second pending correction.");
+    if (!("trace" in first) || !("trace" in second)) throw new Error("Expected sweep traces");
+    await domain.cancelQueuedWork("company-attention", first.work.id, "Cancel first.");
+    expect((await store.readSweepState("company-attention")).lastFeedbackId).toBe(second.trace.id);
+    await domain.cancelQueuedWork("company-attention", second.work.id, "Cancel second.");
+    expect(await store.readSweepState("company-attention")).toEqual(previous);
+
+    await domain.bindFeed("company-attention", "thread-company");
+    const failed = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Claimed correction that fails.");
+    if (!("trace" in failed)) throw new Error("Expected sweep trace");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(failed.work.id);
+    const pending = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Newer pending correction.");
+    if (!("trace" in pending)) throw new Error("Expected sweep trace");
+    await domain.failWork("company-attention", failed.work.id, failed.work.capabilityToken, "Could not rejudge.");
+    expect((await store.readSweepState("company-attention")).lastFeedbackId).toBe(pending.trace.id);
+    await domain.cancelQueuedWork("company-attention", pending.work.id, "Undo newer correction.");
+    expect(await store.readSweepState("company-attention")).toEqual(previous);
+  });
+
   test("rejects a rejudgment write-back after a newer sweep batch becomes active", async () => {
     const { domain } = await setup();
     await domain.seedDemo();
+    await domain.bindFeed("company-attention", "thread-company");
     const firstRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "first" });
     await domain.recordSweepBatch("company-attention", [firstRun]);
     const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Prefer more product evidence.");
     if (!("trace" in result)) throw new Error("Expected sweep trace");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(result.work.id);
     const secondRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "second" });
     await domain.recordSweepBatch("company-attention", [secondRun]);
     await expect(domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, [])).rejects.toThrow("newer batch");
@@ -309,8 +407,10 @@ describe("scoped persistent voice dock routing", () => {
   test("rejects pre-batch feedback after the first sweep batch becomes active", async () => {
     const { domain } = await setup();
     await domain.seedDemo();
+    await domain.bindFeed("company-attention", "thread-company");
     const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Prefer more product evidence.");
     if (!("trace" in result)) throw new Error("Expected sweep trace");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(result.work.id);
     const run = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "first" });
     await domain.recordSweepBatch("company-attention", [run]);
     await expect(domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, [])).rejects.toThrow("newer batch");
@@ -340,9 +440,29 @@ describe("scoped persistent voice dock routing", () => {
     const retry = await domain.requestSweepRecollection("company-attention");
     expect(retry.id).not.toBe(firstRecollection.id);
     expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(retry.id);
-    const run = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "retry" });
-    await domain.recordSweepBatch("company-attention", [run]);
+    const run = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "retry" }, retry.id);
+    await domain.recordSweepBatch("company-attention", [run], retry.id);
     expect((await domain.completeWork("company-attention", retry.id, retry.capabilityToken, { response: "Collected and judged." })).status).toBe("completed");
+  });
+
+  test("requires recollection batches to contain source runs recorded for the claimed recollection", async () => {
+    const { store, domain } = await setup();
+    await domain.seedDemo();
+    await domain.bindFeed("company-attention", "thread-company");
+    const oldRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "old" });
+    await domain.recordSweepBatch("company-attention", [oldRun]);
+    const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Search again with this correction.");
+    if (!("trace" in result)) throw new Error("Expected sweep trace");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(result.work.id);
+    await domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, []);
+    await domain.completeWork("company-attention", result.work.id, result.work.capabilityToken, { response: "Rejudged." });
+    const recollection = await domain.requestSweepRecollection("company-attention");
+    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(recollection.id);
+    await expect(domain.recordSweepBatch("company-attention", [oldRun], recollection.id)).rejects.toThrow("not recorded for this recollection");
+    const newRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "new" }, recollection.id);
+    const batchId = await domain.recordSweepBatch("company-attention", [newRun], recollection.id);
+    expect((await store.readSweepBatch("company-attention", batchId)).triggerWorkId).toBe(recollection.id);
+    expect((await domain.completeWork("company-attention", recollection.id, recollection.capabilityToken, { response: "Collected." })).status).toBe("completed");
   });
 
   test("rejects sweep batches that reference missing source runs", async () => {

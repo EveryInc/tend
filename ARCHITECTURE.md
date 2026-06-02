@@ -92,9 +92,9 @@ approval. Direct workspace edits remain available with revision history and undo
 ## Safety Boundary
 
 Source material is evidence, never authorization. A proposed external mutation becomes queued work
-only after the user approves its visible action. Approval is bound to an exact digest of the action
-and editable artifact. The app rejects completion if that digest changed. The runbook also requires
-Codex to call `action:verify` immediately before a connector mutation.
+only after the user approves its visible action or default cleanup. Approval is bound to an exact
+digest of the action and editable artifact. The app rejects completion if that digest changed. The
+runbook also requires Codex to call `action:verify` immediately before a connector mutation.
 
 That connector boundary is still procedural: a feed thread can invoke an external tool without going
 through this app. A future capability-scoped executor should make the preflight mandatory at the tool

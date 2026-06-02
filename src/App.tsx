@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import type { Card, CardBlock, FeedView, RevisionProposal, VoiceTarget, WorkspaceRevision, WorkspaceView } from "./types";
 import { useActiveCard } from "./state/activeCard";
 import { usePushToTalk } from "./state/pushToTalk";
+import { closestTarget, sameTarget } from "./state/voiceTarget";
 
 type Tab = "review" | "queued" | "working" | "done";
 type Inspector = "new-feed" | "add-source" | null;
@@ -17,22 +18,6 @@ async function api<T>(url: string, init?: RequestInit): Promise<T> {
 
 function post<T>(url: string, value: unknown = {}): Promise<T> {
   return api<T>(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(value) });
-}
-
-function sameTarget(left?: VoiceTarget | null, right?: VoiceTarget | null): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
-function targetParents(target: VoiceTarget): VoiceTarget[] {
-  if (target.kind === "card") return [{ kind: "sweep", feedId: target.feedId }, { kind: "feed", feedId: target.feedId }, { kind: "attention" }];
-  if (target.kind === "sweep" || target.kind === "source_recipe" || target.kind === "prompt_layer") return [{ kind: "feed", feedId: target.feedId }, { kind: "attention" }];
-  if (target.kind === "feed" || target.kind === "global_prompt") return [{ kind: "attention" }];
-  return [];
-}
-
-function closestTarget(target: VoiceTarget | null, ladder: VoiceTarget[]): VoiceTarget {
-  if (!target) return ladder[0];
-  return [target, ...targetParents(target)].find((candidate) => ladder.some((item) => sameTarget(item, candidate))) ?? ladder[ladder.length - 1];
 }
 
 function targetLabel(target: VoiceTarget, state: WorkspaceView): string {
@@ -673,10 +658,12 @@ export default function App() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+      if (screen !== "feed") return;
       if (event.key.toLowerCase() === "j") navTo(1);
       if (event.key.toLowerCase() === "k") navTo(-1);
-      if (event.key.toLowerCase() === "a") approve();
-      if (event.key.toLowerCase() === "x") dismiss();
+      const actionable = tab === "review" && activeCard?.proposedAction && (activeCard.status === "to_review_new" || activeCard.status === "to_review_updated");
+      if (actionable && event.key.toLowerCase() === "a") approve();
+      if (actionable && event.key.toLowerCase() === "x") dismiss();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);

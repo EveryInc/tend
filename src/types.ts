@@ -120,6 +120,7 @@ export interface WorkItem {
   intent?: "voice_instruction" | "sweep_rejudge" | "recollect_sources";
   feedbackId?: string;
   startingBatchId?: string | null;
+  previousSweepState?: SweepState;
   status: WorkStatus;
   capabilityToken: string;
   approvalDigest?: string;
@@ -164,6 +165,7 @@ export interface SweepBatch {
   id: string;
   feedId: FeedId;
   sourceRunIds: string[];
+  triggerWorkId?: string;
   createdAt: string;
 }
 
