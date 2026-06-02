@@ -1,7 +1,7 @@
 import type { Card, CardBlock, FeedConfig, FeedEvent, PolicyRevision, ProposedAction, SourceRecipe, ThreadBinding, WorkItem } from "../../types";
 import type { FeedState, HostedCardInput } from "../env";
 import { digest, isoNow, makeId, makeToken } from "../util";
-import { normalizeCardBlocks, sourceRecipeFromBrief } from "./feed-state-service";
+import { normalizeCard, normalizeCardBlocks, normalizeCardStatus, sourceRecipeFromBrief } from "./feed-state-service";
 
 export interface FeedMutation<T> {
   state: FeedState;
@@ -255,23 +255,25 @@ export class FeedService {
 
   upsertCard(input: HostedCardInput): FeedMutation<Card> {
     const now = isoNow();
-    const existing = this.state.cards[input.id];
-    const card: Card = {
-      id: input.id,
+    const raw = input as HostedCardInput & { blocks?: unknown; done?: unknown; status?: unknown; summary?: unknown };
+    const existing = this.state.cards[raw.id];
+    const card = normalizeCard({
+      ...raw,
+      id: raw.id,
       feedId: this.state.config.id,
       kind: input.kind ?? existing?.kind ?? "attention",
-      status: input.status ?? existing?.status ?? "to_review_new",
+      status: normalizeCardStatus(raw.status, raw.done, existing?.status),
       eyebrow: input.eyebrow ?? existing?.eyebrow ?? this.state.config.name,
       title: input.title,
-      why: input.why,
-      blocks: normalizeCardBlocks((input as HostedCardInput & { blocks?: unknown }).blocks, existing?.blocks),
-      proposedAction: input.proposedAction,
+      why: input.why ?? (typeof raw.summary === "string" ? raw.summary : existing?.why ?? ""),
+      blocks: normalizeCardBlocks(raw.blocks, existing?.blocks),
+      proposedAction: input.proposedAction ?? existing?.proposedAction,
       readyForPass: input.readyForPass ?? existing?.readyForPass ?? this.state.config.currentPass,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
-      completedAt: input.completedAt,
+      completedAt: input.completedAt ?? (raw.done === true || raw.status === "done" ? now : existing?.completedAt),
       history: existing?.history ?? [],
-    };
+    } as Card);
     this.state.cards[card.id] = card;
     return { state: this.state, result: card, event: event(this.state, { cardId: card.id, type: existing ? "card.updated" : "card.created" }) };
   }

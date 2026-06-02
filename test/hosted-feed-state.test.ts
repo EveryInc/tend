@@ -40,4 +40,25 @@ describe("hosted feed card normalization", () => {
       { id: "block-1", type: "memo", text: "Useful context." },
     ]);
   });
+
+  test("renders agent-shaped result cards with summary and evidence blocks", () => {
+    const state = defaultFeedState("inbox");
+    const service = new FeedService(state);
+
+    service.upsertCard({
+      id: "gmail-search:dictly",
+      title: "Dictly mail search results",
+      status: "done",
+      done: true,
+      summary: "Found 40 recent Dictly messages across support, admin, and outreach.",
+      suggestedAction: "Review support threads first.",
+      evidence: ["Two Gmail search pages were read.", "No Gmail mutations were performed."],
+      provenance: { query: "Dictly -in:spam -in:trash", resultCount: 40 },
+    } as any);
+
+    const card = feedView(state).cards.find((item) => item.id === "gmail-search:dictly");
+    expect(card?.status).toBe("done");
+    expect(card?.why).toBe("Found 40 recent Dictly messages across support, admin, and outreach.");
+    expect(card?.blocks.map((block) => block.label)).toEqual(["Summary", "Suggested action", "Evidence", "Provenance"]);
+  });
 });

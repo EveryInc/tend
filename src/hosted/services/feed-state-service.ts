@@ -1,4 +1,4 @@
-import type { Card, CardBlock, FeedConfig, FeedView, SourceRecipe } from "../../types";
+import type { Card, CardBlock, CardStatus, FeedConfig, FeedView, SourceRecipe } from "../../types";
 import {
   companyRecipe,
   feedConfig,
@@ -8,6 +8,62 @@ import {
 } from "../../../server/templates";
 import type { FeedState } from "../env";
 import { isoNow, slugify } from "../util";
+
+type AgentCardShape = Partial<Card> & {
+  done?: unknown;
+  evidence?: unknown;
+  provenance?: unknown;
+  source?: unknown;
+  sourceId?: unknown;
+  status?: unknown;
+  suggestedAction?: unknown;
+  summary?: unknown;
+};
+
+const CARD_STATUSES: CardStatus[] = ["to_review_new", "to_review_updated", "queued", "working", "done"];
+
+function text(value: unknown): string | undefined {
+  if (typeof value === "string") return value.trim() || undefined;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return undefined;
+}
+
+function evidenceItems(value: unknown): CardBlock["items"] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.map((item) => typeof item === "string" ? item : { label: JSON.stringify(item) });
+}
+
+function provenanceText(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return text(value);
+  return Object.entries(value as Record<string, unknown>)
+    .map(([key, item]) => `${key}: ${typeof item === "string" || typeof item === "number" || typeof item === "boolean" ? String(item) : JSON.stringify(item)}`)
+    .join("\n");
+}
+
+function generatedBlocks(card: AgentCardShape, fallback: CardBlock[] = []): CardBlock[] {
+  const normalized = normalizeCardBlocks(card.blocks, fallback);
+  if (normalized.length > 0) return normalized;
+
+  const blocks: CardBlock[] = [];
+  const summary = text(card.summary);
+  const suggestedAction = text(card.suggestedAction);
+  const evidence = evidenceItems(card.evidence);
+  const provenance = provenanceText(card.provenance);
+
+  if (summary) blocks.push({ id: "summary", type: "memo", label: "Summary", text: summary });
+  if (suggestedAction) blocks.push({ id: "suggested-action", type: "clarification", label: "Suggested action", text: suggestedAction });
+  if (evidence?.length) blocks.push({ id: "evidence", type: "evidence", label: "Evidence", items: evidence });
+  if (provenance) blocks.push({ id: "provenance", type: "memo", label: "Provenance", text: provenance });
+
+  return blocks;
+}
+
+export function normalizeCardStatus(status: unknown, done: unknown, fallback: CardStatus = "to_review_new"): CardStatus {
+  if (CARD_STATUSES.includes(status as CardStatus)) return status as CardStatus;
+  if (done === true || status === "done" || status === "completed") return "done";
+  if (status === "open") return "to_review_new";
+  return fallback;
+}
 
 export function normalizeCardBlocks(blocks: unknown, fallback: CardBlock[] = []): CardBlock[] {
   const value = Array.isArray(blocks) ? blocks : fallback;
@@ -25,7 +81,13 @@ export function normalizeCardBlocks(blocks: unknown, fallback: CardBlock[] = [])
 }
 
 export function normalizeCard(card: Card): Card {
-  return { ...card, blocks: normalizeCardBlocks((card as Card & { blocks?: unknown }).blocks) };
+  const agentCard = card as AgentCardShape;
+  return {
+    ...card,
+    status: normalizeCardStatus(agentCard.status, agentCard.done, card.status),
+    why: text(card.why) ?? text(agentCard.summary) ?? "",
+    blocks: generatedBlocks(agentCard),
+  };
 }
 
 export function defaultFeedState(feedId: string): FeedState {
