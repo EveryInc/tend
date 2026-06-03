@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import type { Card, CardAction, CardBlock, FeedView, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkspaceRevision, WorkspaceView } from "./types";
 import { useActiveCard } from "./state/activeCard";
 import { usePushToTalk } from "./state/pushToTalk";
@@ -8,8 +9,8 @@ import { preferredTarget, sameTarget } from "./state/voiceTarget";
 
 type Tab = "review" | "queued" | "working" | "done";
 type Inspector = "new-feed" | "add-source" | null;
-type Screen = "feed" | "workspace" | "learnings";
-type WorkspaceTab = "feed" | "global";
+export type AttentionScreen = "feed" | "workspace" | "learnings";
+export type WorkspaceTab = "feed" | "global";
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -695,14 +696,9 @@ function Dock({
   );
 }
 
-export default function App() {
+export default function App({ feedId, screen, workspaceTab }: { feedId: string; screen: AttentionScreen; workspaceTab: WorkspaceTab }) {
   const queryClient = useQueryClient();
-  const [feedId, setFeedId] = useState(new URLSearchParams(location.search).get("feed") ?? "inbox");
-  const [screen, setScreen] = useState<Screen>(() => {
-    const value = new URLSearchParams(location.search).get("screen");
-    return value === "workspace" || value === "learnings" ? value : "feed";
-  });
-  const [workspaceTab, setWorkspaceTab] = useState<WorkspaceTab>(new URLSearchParams(location.search).get("workspace") === "global" ? "global" : "feed");
+  const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("review");
   const [inspector, setInspector] = useState<Inspector>(null);
   const [toast, setToast] = useState("");
@@ -724,6 +720,12 @@ export default function App() {
   const dockScopeExplicitlyChangedRef = useRef(false);
   const toastTimerRef = useRef<number | null>(null);
   const knownCompoundProposalIdsRef = useRef(new Map<string, Set<string>>());
+
+  useEffect(() => {
+    setTab("review");
+    setWorkspaceFocus(null);
+    setInspector(null);
+  }, [feedId]);
 
   const workspaceQuery = useQuery({
     queryKey: ["workspace", feedId],
@@ -763,41 +765,33 @@ export default function App() {
   }, [activeCard, feed, screen, workspaceFocus, workspaceTab]);
 
   const changeFeed = (id: string) => {
-    setFeedId(id);
     setTab("review");
     setWorkspaceFocus(null);
-    const url = new URL(location.href);
-    url.searchParams.set("feed", id);
-    history.replaceState({}, "", url);
+    if (screen === "workspace" && workspaceTab === "global") {
+      void navigate({ to: "/feed/$feedId/prompts/global", params: { feedId: id } });
+    } else if (screen === "workspace") {
+      void navigate({ to: "/feed/$feedId/prompts", params: { feedId: id } });
+    } else if (screen === "learnings") {
+      void navigate({ to: "/feed/$feedId/learnings", params: { feedId: id } });
+    } else {
+      void navigate({ to: "/feed/$feedId", params: { feedId: id } });
+    }
   };
 
   const openWorkspace = (nextTab: WorkspaceTab = "feed") => {
-    setWorkspaceTab(nextTab);
-    setScreen("workspace");
     setWorkspaceFocus(null);
-    const url = new URL(location.href);
-    url.searchParams.set("screen", "workspace");
-    url.searchParams.set("workspace", nextTab);
-    history.replaceState({}, "", url);
+    void navigate({ to: nextTab === "global" ? "/feed/$feedId/prompts/global" : "/feed/$feedId/prompts", params: { feedId } });
   };
 
   const closeWorkspace = () => {
-    setScreen("feed");
     setWorkspaceFocus(null);
-    const url = new URL(location.href);
-    url.searchParams.delete("screen");
-    url.searchParams.delete("workspace");
-    history.replaceState({}, "", url);
+    void navigate({ to: "/feed/$feedId", params: { feedId } });
   };
 
   const openLearningReview = useCallback(() => {
-    setScreen("learnings");
     setWorkspaceFocus(null);
-    const url = new URL(location.href);
-    url.searchParams.set("screen", "learnings");
-    url.searchParams.delete("workspace");
-    history.replaceState({}, "", url);
-  }, []);
+    void navigate({ to: "/feed/$feedId/learnings", params: { feedId } });
+  }, [feedId, navigate]);
 
   const showToast = (message: string, duration = 2_400) => {
     setToast(message);
@@ -995,7 +989,7 @@ export default function App() {
     <>
       <TopBar state={state} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
       <div className="workspace-proposals"><RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} /></div>
-      <PromptWorkspace state={state} tab={workspaceTab} onTab={(nextTab) => { setWorkspaceTab(nextTab); setWorkspaceFocus(null); const url = new URL(location.href); url.searchParams.set("workspace", nextTab); history.replaceState({}, "", url); }} onBack={closeWorkspace} onInspector={setInspector} onSaved={showToast} onTargetFocus={(target) => { setWorkspaceFocus(target); selectDockTarget(target); }} />
+      <PromptWorkspace state={state} tab={workspaceTab} onTab={openWorkspace} onBack={closeWorkspace} onInspector={setInspector} onSaved={showToast} onTargetFocus={(target) => { setWorkspaceFocus(target); selectDockTarget(target); }} />
       <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}

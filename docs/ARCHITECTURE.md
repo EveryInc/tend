@@ -27,6 +27,8 @@ The current domain model still stores feed artifacts in readable local files. SQ
 - `server/routes/assets.ts` owns built UI asset serving.
 - `attention.ts` is the human-facing CLI entrypoint.
 - `cli.ts` remains the low-level operator command surface.
+- `src/router.tsx` owns UI routes such as `/feed/:feedId`, prompt workspaces, and learning review.
+- TanStack Query owns workspace fetching and invalidation.
 - `src/state/realtime.tsx` hides SSE details behind a provider.
 
 ## Agent Model
