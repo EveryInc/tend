@@ -14,7 +14,7 @@ attention executable
   └─ local feed state
 ```
 
-The current domain model keeps the richest authoring artifacts readable in local files while moving active runtime records into SQLite. Active feed membership, feed cards, routine action groups, source run records, feed audit events, and work items are now behind repository interfaces with SQLite as the runtime authority and readable files as backup-compatible mirrors.
+The current domain model keeps the richest authoring artifacts readable in local files while moving active runtime records into SQLite. Active feed membership, feed cards, routine action groups, source run records, sweep state/artifacts, feed audit events, and work items are now behind repository interfaces with SQLite as the runtime authority and readable files as backup-compatible mirrors.
 
 ## Boundaries
 

@@ -8,6 +8,7 @@ import { FileCardRepository, MirroredCardRepository } from "../server/repositori
 import { FileFeedEventRepository, MirroredFeedEventRepository } from "../server/repositories/feedEvents";
 import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository } from "../server/repositories/routineActionGroups";
 import { FileSourceRunRepository, MirroredSourceRunRepository } from "../server/repositories/sourceRuns";
+import { FileSweepRepository, MirroredSweepRepository } from "../server/repositories/sweeps";
 import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/repositories/workItems";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
@@ -293,6 +294,51 @@ describe("filesystem workspace", () => {
 
     expect((await sqlite.sourceRuns().get("inbox", runId)).judgments).toHaveLength(2);
     expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "runs", `${runId}.json`), "utf8")).judgments).toHaveLength(2);
+    sqlite.close();
+  });
+
+  test("migrates sweep state and artifacts from JSON files into SQLite and mirrors updates", async () => {
+    const { root, store: fileStore } = await setup();
+    const createdAt = new Date().toISOString();
+    await fileStore.writeSweepBatch({ id: "batch-old", feedId: "inbox", sourceRunIds: [], createdAt });
+    await fileStore.writeSweepFeedback({
+      id: "feedback-old",
+      feedId: "inbox",
+      batchId: "batch-old",
+      instruction: "Reorder this sweep.",
+      visibleCardIds: ["inbox-ready-to-collect"],
+      orderedCardIds: ["inbox-ready-to-collect"],
+      removedCardIds: [],
+      createdAt,
+    });
+    await fileStore.writeSweepState("inbox", { currentBatchId: "batch-old", lastFeedbackId: "feedback-old", recollectionOffered: true, statusMessage: "Needs source search" });
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      sweeps: new MirroredSweepRepository(
+        sqlite.sweeps(),
+        new FileSweepRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.sweeps().readState("inbox")).lastFeedbackId).toBe("feedback-old");
+    expect((await sqlite.sweeps().getBatch("inbox", "batch-old")).id).toBe("batch-old");
+    expect((await sqlite.sweeps().getFeedback("inbox", "feedback-old")).instruction).toBe("Reorder this sweep.");
+
+    await store.writeSweepState("inbox", { currentBatchId: "batch-old", lastFeedbackId: null, recollectionOffered: false, statusMessage: null });
+    const trace = await store.readSweepFeedback("inbox", "feedback-old");
+    await store.writeSweepFeedback({ ...trace, rejudgedAt: createdAt });
+
+    expect((await sqlite.sweeps().readState("inbox")).lastFeedbackId).toBeNull();
+    expect((await sqlite.sweeps().getFeedback("inbox", "feedback-old")).rejudgedAt).toBe(createdAt);
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "sweep-state.json"), "utf8")).lastFeedbackId).toBeNull();
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "sweep-feedback", "feedback-old.json"), "utf8")).rejudgedAt).toBe(createdAt);
     sqlite.close();
   });
 

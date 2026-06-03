@@ -2,15 +2,16 @@ import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDbPath } from "./paths";
-import type { Card, FeedEvent, RoutineActionGroup, SourceRun, WorkItem } from "../src/types";
+import type { Card, FeedEvent, RoutineActionGroup, SourceRun, SweepBatch, SweepFeedbackTrace, SweepState, WorkItem } from "../src/types";
 import type { CardRepository } from "./repositories/cards";
 import type { FeedEventRepository } from "./repositories/feedEvents";
 import type { RoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import type { SourceRunRepository } from "./repositories/sourceRuns";
+import { defaultSweepState, type SweepRepository } from "./repositories/sweeps";
 import type { WorkItemRepository } from "./repositories/workItems";
 import type { WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 export type LocalRuntimeStatus = {
   dbPath: string;
@@ -81,6 +82,27 @@ export class LocalSqliteStore {
       );
       CREATE INDEX IF NOT EXISTS idx_source_runs_feed_source ON source_runs (feed_id, source_id);
       CREATE INDEX IF NOT EXISTS idx_source_runs_trigger_work ON source_runs (trigger_work_id);
+      CREATE TABLE IF NOT EXISTS sweep_states (
+        feed_id TEXT PRIMARY KEY,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS sweep_batches (
+        id TEXT PRIMARY KEY,
+        feed_id TEXT NOT NULL,
+        trigger_work_id TEXT,
+        created_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_sweep_batches_feed_created ON sweep_batches (feed_id, created_at);
+      CREATE TABLE IF NOT EXISTS sweep_feedback (
+        id TEXT PRIMARY KEY,
+        feed_id TEXT NOT NULL,
+        batch_id TEXT,
+        created_at TEXT NOT NULL,
+        rejudged_at TEXT,
+        payload_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_sweep_feedback_feed_created ON sweep_feedback (feed_id, created_at);
       CREATE TABLE IF NOT EXISTS work_items (
         id TEXT PRIMARY KEY,
         feed_id TEXT NOT NULL,
@@ -133,6 +155,10 @@ export class LocalSqliteStore {
 
   sourceRuns(): SourceRunRepository {
     return new SqliteSourceRunRepository(() => this.database());
+  }
+
+  sweeps(): SweepRepository {
+    return new SqliteSweepRepository(() => this.database());
   }
 
   workItems(): WorkItemRepository {
@@ -282,6 +308,92 @@ class SqliteSourceRunRepository implements SourceRunRepository {
           payload_json = excluded.payload_json
       `)
       .run(run.id, run.feedId, run.sourceId, run.triggerWorkId ?? null, run.completedAt ?? null, JSON.stringify(run));
+  }
+}
+
+class SqliteSweepRepository implements SweepRepository {
+  constructor(private readonly database: () => Database) {}
+
+  async init(_feedIds: string[]): Promise<void> {}
+
+  async hasState(feedId: string): Promise<boolean> {
+    const row = this.database().query("SELECT 1 AS found FROM sweep_states WHERE feed_id = ?").get(feedId) as { found: number } | undefined;
+    return Boolean(row);
+  }
+
+  async readState(feedId: string): Promise<SweepState> {
+    const row = this.database().query("SELECT payload_json FROM sweep_states WHERE feed_id = ?").get(feedId) as { payload_json: string } | undefined;
+    if (!row) return defaultSweepState();
+    return JSON.parse(row.payload_json) as SweepState;
+  }
+
+  async writeState(feedId: string, state: SweepState): Promise<void> {
+    this.database()
+      .query(`
+        INSERT INTO sweep_states (feed_id, payload_json)
+        VALUES (?, ?)
+        ON CONFLICT(feed_id) DO UPDATE SET payload_json = excluded.payload_json
+      `)
+      .run(feedId, JSON.stringify(state));
+  }
+
+  async listBatches(feedId: string): Promise<SweepBatch[]> {
+    const rows = this.database()
+      .query("SELECT payload_json FROM sweep_batches WHERE feed_id = ? ORDER BY created_at ASC, id ASC")
+      .all(feedId) as Array<{ payload_json: string }>;
+    return rows.map((row) => JSON.parse(row.payload_json) as SweepBatch);
+  }
+
+  async getBatch(feedId: string, batchId: string): Promise<SweepBatch> {
+    const row = this.database()
+      .query("SELECT payload_json FROM sweep_batches WHERE feed_id = ? AND id = ?")
+      .get(feedId, batchId) as { payload_json: string } | undefined;
+    if (!row) throw new Error(`Sweep batch not found: ${batchId}`);
+    return JSON.parse(row.payload_json) as SweepBatch;
+  }
+
+  async writeBatch(batch: SweepBatch): Promise<void> {
+    this.database()
+      .query(`
+        INSERT INTO sweep_batches (id, feed_id, trigger_work_id, created_at, payload_json)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          feed_id = excluded.feed_id,
+          trigger_work_id = excluded.trigger_work_id,
+          created_at = excluded.created_at,
+          payload_json = excluded.payload_json
+      `)
+      .run(batch.id, batch.feedId, batch.triggerWorkId ?? null, batch.createdAt, JSON.stringify(batch));
+  }
+
+  async listFeedback(feedId: string): Promise<SweepFeedbackTrace[]> {
+    const rows = this.database()
+      .query("SELECT payload_json FROM sweep_feedback WHERE feed_id = ? ORDER BY created_at ASC, id ASC")
+      .all(feedId) as Array<{ payload_json: string }>;
+    return rows.map((row) => JSON.parse(row.payload_json) as SweepFeedbackTrace);
+  }
+
+  async getFeedback(feedId: string, feedbackId: string): Promise<SweepFeedbackTrace> {
+    const row = this.database()
+      .query("SELECT payload_json FROM sweep_feedback WHERE feed_id = ? AND id = ?")
+      .get(feedId, feedbackId) as { payload_json: string } | undefined;
+    if (!row) throw new Error(`Sweep feedback not found: ${feedbackId}`);
+    return JSON.parse(row.payload_json) as SweepFeedbackTrace;
+  }
+
+  async writeFeedback(trace: SweepFeedbackTrace): Promise<void> {
+    this.database()
+      .query(`
+        INSERT INTO sweep_feedback (id, feed_id, batch_id, created_at, rejudged_at, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          feed_id = excluded.feed_id,
+          batch_id = excluded.batch_id,
+          created_at = excluded.created_at,
+          rejudged_at = excluded.rejudged_at,
+          payload_json = excluded.payload_json
+      `)
+      .run(trace.id, trace.feedId, trace.batchId ?? null, trace.createdAt, trace.rejudgedAt ?? null, JSON.stringify(trace));
   }
 }
 

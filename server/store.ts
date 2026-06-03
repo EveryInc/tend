@@ -40,21 +40,13 @@ import { FileCardRepository, type CardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
 import { FileRoutineActionGroupRepository, type RoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import { FileSourceRunRepository, type SourceRunRepository } from "./repositories/sourceRuns";
+import { FileSweepRepository, type SweepRepository } from "./repositories/sweeps";
 import { FileWorkItemRepository, type WorkItemRepository } from "./repositories/workItems";
 import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
 export const GLOBAL_PROMPT_NAMES = ["judge.md", "compose-card.md", "execute-work.md", "distill-policy.md", "compound.md"] as const;
 export const FEED_PROMPT_NAMES = ["judge.md", "compose-card.md"] as const;
 const DEFAULT_FEED_IDS = ["inbox", "company-attention"];
-
-function defaultSweepState(): SweepState {
-  return {
-    currentBatchId: null,
-    lastFeedbackId: null,
-    recollectionOffered: false,
-    statusMessage: null,
-  };
-}
 
 export class AttentionStore {
   readonly dataDir: string;
@@ -63,15 +55,17 @@ export class AttentionStore {
   private readonly events: FeedEventRepository;
   private readonly routineActionGroups: RoutineActionGroupRepository;
   private readonly sourceRuns: SourceRunRepository;
+  private readonly sweeps: SweepRepository;
   private readonly workItems: WorkItemRepository;
   private readonly workspaceFeeds: WorkspaceFeedRepository;
 
-  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
+  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; sweeps?: SweepRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
     this.dataDir = dataDir;
     this.cards = options.cards ?? new FileCardRepository(this.dataDir);
     this.events = options.events ?? new FileFeedEventRepository(this.dataDir);
     this.routineActionGroups = options.routineActionGroups ?? new FileRoutineActionGroupRepository(this.dataDir);
     this.sourceRuns = options.sourceRuns ?? new FileSourceRunRepository(this.dataDir);
+    this.sweeps = options.sweeps ?? new FileSweepRepository(this.dataDir);
     this.workItems = options.workItems ?? new FileWorkItemRepository(this.dataDir);
     this.workspaceFeeds = options.workspaceFeeds ?? new FileWorkspaceFeedRepository(this.path("workspace.json"));
   }
@@ -92,6 +86,7 @@ export class AttentionStore {
     await this.events.init(feedIds);
     await this.routineActionGroups.init(feedIds);
     await this.sourceRuns.init(feedIds);
+    await this.sweeps.init(feedIds);
     await this.workItems.init(feedIds);
     await this.ensureDefaultFeed("inbox");
     await this.ensureDefaultFeed("company-attention");
@@ -270,31 +265,23 @@ export class AttentionStore {
   }
 
   async readSweepState(feedId: string): Promise<SweepState> {
-    const file = this.feedPath(feedId, "sweep-state.json");
-    if (!existsSync(file)) return defaultSweepState();
-    const state = await readJson<SweepState & { currentRunId?: string | null }>(file);
-    return {
-      currentBatchId: state.currentBatchId ?? state.currentRunId ?? null,
-      lastFeedbackId: state.lastFeedbackId,
-      recollectionOffered: state.recollectionOffered,
-      statusMessage: state.statusMessage,
-    };
+    return this.sweeps.readState(feedId);
   }
 
   async writeSweepState(feedId: string, state: SweepState): Promise<void> {
-    await writeJson(this.feedPath(feedId, "sweep-state.json"), state);
+    await this.sweeps.writeState(feedId, state);
   }
 
   async writeSweepFeedback(trace: SweepFeedbackTrace): Promise<void> {
-    await writeJson(this.feedPath(trace.feedId, "sweep-feedback", `${trace.id}.json`), trace);
+    await this.sweeps.writeFeedback(trace);
   }
 
   async readSweepFeedback(feedId: string, feedbackId: string): Promise<SweepFeedbackTrace> {
-    return readJson<SweepFeedbackTrace>(this.feedPath(feedId, "sweep-feedback", `${feedbackId}.json`));
+    return this.sweeps.getFeedback(feedId, feedbackId);
   }
 
   async writeSweepBatch(batch: SweepBatch): Promise<void> {
-    await writeJson(this.feedPath(batch.feedId, "sweeps", `${batch.id}.json`), batch);
+    await this.sweeps.writeBatch(batch);
   }
 
   async readConfig(feedId: string): Promise<FeedConfig> {
@@ -426,7 +413,7 @@ export class AttentionStore {
   }
 
   async readSweepBatch(feedId: string, batchId: string): Promise<SweepBatch> {
-    return readJson<SweepBatch>(this.feedPath(feedId, "sweeps", `${batchId}.json`));
+    return this.sweeps.getBatch(feedId, batchId);
   }
 
   async createFeed(config: FeedConfig, homeThreadId: string | null = null): Promise<FeedView> {
