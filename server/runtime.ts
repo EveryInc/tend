@@ -8,6 +8,7 @@ import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository 
 import { FileSourceRunRepository, MirroredSourceRunRepository } from "./repositories/sourceRuns";
 import { FileSourceRepository, MirroredSourceRepository } from "./repositories/sources";
 import { FileSweepRepository, MirroredSweepRepository } from "./repositories/sweeps";
+import { FileTextDocumentRepository, MirroredTextDocumentRepository } from "./repositories/textDocuments";
 import { FileWorkItemRepository, MirroredWorkItemRepository } from "./repositories/workItems";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 import { LocalSqliteStore } from "./sqlite";
@@ -53,7 +54,11 @@ export async function createLocalRuntime(dataDir = attentionDataDir()): Promise<
     sqlite.sweeps(),
     new FileSweepRepository(dataDir),
   );
-  const store = new AttentionStore(dataDir, { cards, events, revisions, routineActionGroups, sourceRuns, sources, sweeps, workItems, workspaceFeeds });
+  const textDocuments = new MirroredTextDocumentRepository(
+    sqlite.textDocuments(),
+    new FileTextDocumentRepository(dataDir),
+  );
+  const store = new AttentionStore(dataDir, { cards, events, revisions, routineActionGroups, sourceRuns, sources, sweeps, textDocuments, workItems, workspaceFeeds });
   await store.init();
   return { dataDir, sqlite, store };
 }

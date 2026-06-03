@@ -11,6 +11,7 @@ import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository 
 import { FileSourceRunRepository, MirroredSourceRunRepository } from "../server/repositories/sourceRuns";
 import { FileSourceRepository, MirroredSourceRepository } from "../server/repositories/sources";
 import { FileSweepRepository, MirroredSweepRepository } from "../server/repositories/sweeps";
+import { FileTextDocumentRepository, MirroredTextDocumentRepository } from "../server/repositories/textDocuments";
 import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/repositories/workItems";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
@@ -296,6 +297,49 @@ describe("filesystem workspace", () => {
 
     expect((await sqlite.sourceRuns().get("inbox", runId)).judgments).toHaveLength(2);
     expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "runs", `${runId}.json`), "utf8")).judgments).toHaveLength(2);
+    sqlite.close();
+  });
+
+  test("migrates prompt and policy documents from files into SQLite and mirrors updates", async () => {
+    const { root, domain: fileDomain } = await setup();
+    await fileDomain.updateGlobalPolicy("# Global policy\n\n- Existing custom global policy.");
+    await fileDomain.updateGlobalPrompt("judge.md", "# Judge\n\nExisting custom global judge.");
+    await fileDomain.updateWorkspaceDocument("inbox", { kind: "feed", feedId: "inbox" }, "# Inbox policy\n\n- Existing custom inbox policy.");
+    await fileDomain.updateWorkspaceDocument("inbox", { kind: "prompt_layer", feedId: "inbox", promptId: "judge.md" }, "# Feed judge\n\nExisting custom feed judge.");
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const textDocuments = new MirroredTextDocumentRepository(
+      sqlite.textDocuments(),
+      new FileTextDocumentRepository(root),
+    );
+    const store = new AttentionStore(root, {
+      textDocuments,
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect(await sqlite.textDocuments().read("global-policy.md")).toContain("Existing custom global policy");
+    expect(await sqlite.textDocuments().read("prompts/judge.md")).toContain("Existing custom global judge");
+    expect(await sqlite.textDocuments().read("feeds/inbox/policy.md")).toContain("Existing custom inbox policy");
+    expect(await sqlite.textDocuments().read("feeds/inbox/prompts/judge.md")).toContain("Existing custom feed judge");
+
+    await store.writeGlobalPolicy("# Global policy\n\n- Updated global policy.");
+    await store.writeGlobalPrompt("judge.md", "# Judge\n\nUpdated global judge.");
+    await store.writeTargetContent({ kind: "feed", feedId: "inbox" }, "# Inbox policy\n\n- Updated inbox policy.");
+    await store.writeTargetContent({ kind: "prompt_layer", feedId: "inbox", promptId: "judge.md" }, "# Feed judge\n\n- Updated feed judge.");
+
+    expect(await sqlite.textDocuments().read("global-policy.md")).toContain("Updated global policy");
+    expect(await sqlite.textDocuments().read("prompts/judge.md")).toContain("Updated global judge");
+    expect(await sqlite.textDocuments().read("feeds/inbox/policy.md")).toContain("Updated inbox policy");
+    expect(await sqlite.textDocuments().read("feeds/inbox/prompts/judge.md")).toContain("Updated feed judge");
+    expect(await readFile(path.join(root, "global-policy.md"), "utf8")).toContain("Updated global policy");
+    expect(await readFile(path.join(root, "prompts", "judge.md"), "utf8")).toContain("Updated global judge");
+    expect(await readFile(path.join(root, "feeds", "inbox", "policy.md"), "utf8")).toContain("Updated inbox policy");
+    expect(await readFile(path.join(root, "feeds", "inbox", "prompts", "judge.md"), "utf8")).toContain("Updated feed judge");
     sqlite.close();
   });
 

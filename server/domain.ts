@@ -1,4 +1,3 @@
-import { readFile } from "node:fs/promises";
 import type {
   Card,
   CardAction,
@@ -1261,7 +1260,7 @@ export class AttentionDomain {
       content: await this.store.readSourceContent(feedId, source.id),
       checkpoint: JSON.stringify(await this.store.readSourceCheckpoint(feedId, source.id), null, 2),
     })));
-    const prompts = await Promise.all(FEED_PROMPT_NAMES.map(async (name) => ({ name, content: await readFile(this.store.feedPath(feedId, "prompts", name), "utf8") })));
+    const prompts = await Promise.all(FEED_PROMPT_NAMES.map(async (name) => ({ name, content: await this.store.readTargetContent({ kind: "prompt_layer", feedId, promptId: name }) })));
     return { feed: feed.config, thread: feed.thread, policy: feed.policy, sources, prompts };
   }
 

@@ -10,10 +10,11 @@ import type { RoutineActionGroupRepository } from "./repositories/routineActionG
 import type { SourceRunRepository } from "./repositories/sourceRuns";
 import { defaultCheckpoint, type SourceRecord, type SourceRepository } from "./repositories/sources";
 import { defaultSweepState, type SweepRepository } from "./repositories/sweeps";
+import type { TextDocumentRepository, TextDocumentSeed } from "./repositories/textDocuments";
 import type { WorkItemRepository } from "./repositories/workItems";
 import type { WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 export type LocalRuntimeStatus = {
   dbPath: string;
@@ -94,6 +95,11 @@ export class LocalSqliteStore {
         content_text TEXT NOT NULL,
         checkpoint_json TEXT NOT NULL,
         PRIMARY KEY (feed_id, source_id)
+      );
+      CREATE TABLE IF NOT EXISTS text_documents (
+        key TEXT PRIMARY KEY,
+        content_text TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS revision_proposals (
         id TEXT PRIMARY KEY,
@@ -203,6 +209,10 @@ export class LocalSqliteStore {
 
   sources(): SourceRepository {
     return new SqliteSourceRepository(() => this.database());
+  }
+
+  textDocuments(): TextDocumentRepository {
+    return new SqliteTextDocumentRepository(() => this.database());
   }
 
   sweeps(): SweepRepository {
@@ -527,6 +537,39 @@ class SqliteSourceRepository implements SourceRepository {
       .query("SELECT checkpoint_json FROM source_recipes WHERE feed_id = ? AND source_id = ?")
       .get(feedId, sourceId) as { checkpoint_json: string } | undefined;
     return row ? JSON.parse(row.checkpoint_json) as unknown : null;
+  }
+}
+
+class SqliteTextDocumentRepository implements TextDocumentRepository {
+  constructor(private readonly database: () => Database) {}
+
+  async init(): Promise<void> {}
+
+  async ensure(seed: TextDocumentSeed): Promise<void> {
+    if (!(await this.has(seed.key))) await this.write(seed.key, seed.content);
+  }
+
+  async has(key: string): Promise<boolean> {
+    const row = this.database().query("SELECT 1 AS found FROM text_documents WHERE key = ?").get(key) as { found: number } | undefined;
+    return Boolean(row);
+  }
+
+  async read(key: string): Promise<string> {
+    const row = this.database().query("SELECT content_text FROM text_documents WHERE key = ?").get(key) as { content_text: string } | undefined;
+    if (!row) throw new Error(`Text document not found: ${key}`);
+    return row.content_text;
+  }
+
+  async write(key: string, content: string): Promise<void> {
+    this.database()
+      .query(`
+        INSERT INTO text_documents (key, content_text, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+          content_text = excluded.content_text,
+          updated_at = excluded.updated_at
+      `)
+      .run(key, content, new Date().toISOString());
   }
 }
 
