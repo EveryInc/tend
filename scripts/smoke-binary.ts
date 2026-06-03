@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 const binaryPath = path.resolve(process.env.ATTENTION_BINARY ?? path.join("dist-bin", "attention"));
+const cwd = path.resolve(process.env.ATTENTION_SMOKE_CWD ?? process.cwd());
 const port = process.env.ATTENTION_API_PORT ?? "4599";
 const home = await mkdtemp(path.join(os.tmpdir(), "attention-smoke-"));
 const statusUrl = `http://127.0.0.1:${port}/api/status`;
@@ -14,6 +15,7 @@ if (!existsSync(binaryPath)) {
 }
 
 const server = Bun.spawn([binaryPath, "start"], {
+  cwd,
   env: { ...process.env, ATTENTION_HOME: home, ATTENTION_API_PORT: port },
   stderr: "inherit",
   stdout: "inherit",
@@ -26,7 +28,7 @@ try {
   if (status.mcpUrl !== mcpUrl) throw new Error(`/api/status reported ${status.mcpUrl} instead of ${mcpUrl}.`);
   if (schemaVersion !== 11) throw new Error(`/api/status reported schema ${schemaVersion} instead of 11.`);
   const ui = await fetchUi();
-  console.log(JSON.stringify({ ok: true, statusUrl, mcpUrl, schemaVersion, ui, home }, null, 2));
+  console.log(JSON.stringify({ ok: true, statusUrl, mcpUrl, schemaVersion, ui, binaryPath, cwd, home }, null, 2));
 } finally {
   server.kill();
   await server.exited.catch(() => undefined);

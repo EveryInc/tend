@@ -45,6 +45,8 @@ pnpm attention:package
 The package command writes `dist-bin/releases/attention-<version>-<platform>-<arch>.tar.gz` plus a
 `.sha256` checksum. The archive contains the `attention` executable, built `dist/` UI assets, README,
 contributor notes, install/agent/data/security docs, and the operator/capability references.
+The packaged executable resolves UI assets from the sibling `dist/` directory, so it can be launched
+from inside the extracted folder or by absolute path from another working directory.
 
 ## Codex Setup
 
