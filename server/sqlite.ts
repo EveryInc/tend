@@ -2,9 +2,11 @@ import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDbPath } from "./paths";
+import type { FeedEvent } from "../src/types";
+import type { FeedEventRepository } from "./repositories/feedEvents";
 import type { WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 export type LocalRuntimeStatus = {
   dbPath: string;
@@ -35,6 +37,16 @@ export class LocalSqliteStore {
         position INTEGER NOT NULL,
         created_at TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS feed_events (
+        id TEXT PRIMARY KEY,
+        feed_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        at TEXT NOT NULL,
+        card_id TEXT,
+        work_id TEXT,
+        detail_json TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_feed_events_feed_at ON feed_events (feed_id, at);
     `);
     const now = new Date().toISOString();
     this.setMeta("schema_version", String(SCHEMA_VERSION));
@@ -62,6 +74,10 @@ export class LocalSqliteStore {
     return new SqliteWorkspaceFeedRepository(() => this.database());
   }
 
+  feedEvents(): FeedEventRepository {
+    return new SqliteFeedEventRepository(() => this.database());
+  }
+
   private database(): Database {
     if (!this.db) {
       this.db = new Database(this.dbPath, { create: true });
@@ -77,6 +93,41 @@ export class LocalSqliteStore {
 
   private setMeta(key: string, value: string): void {
     this.database().query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+  }
+}
+
+class SqliteFeedEventRepository implements FeedEventRepository {
+  constructor(private readonly database: () => Database) {}
+
+  async init(_feedIds: string[]): Promise<void> {}
+
+  async append(event: FeedEvent): Promise<void> {
+    this.database()
+      .query("INSERT INTO feed_events (id, feed_id, type, at, card_id, work_id, detail_json) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING")
+      .run(
+        event.id,
+        event.feedId,
+        event.type,
+        event.at,
+        event.cardId ?? null,
+        event.workId ?? null,
+        event.detail === undefined ? null : JSON.stringify(event.detail),
+      );
+  }
+
+  async list(feedId: string): Promise<FeedEvent[]> {
+    const rows = this.database()
+      .query("SELECT id, feed_id, type, at, card_id, work_id, detail_json FROM feed_events WHERE feed_id = ? ORDER BY at ASC, id ASC")
+      .all(feedId) as Array<{ id: string; feed_id: string; type: string; at: string; card_id: string | null; work_id: string | null; detail_json: string | null }>;
+    return rows.map((row) => ({
+      id: row.id,
+      feedId: row.feed_id,
+      type: row.type,
+      at: row.at,
+      ...(row.card_id ? { cardId: row.card_id } : {}),
+      ...(row.work_id ? { workId: row.work_id } : {}),
+      ...(row.detail_json ? { detail: JSON.parse(row.detail_json) as unknown } : {}),
+    }));
   }
 }
 

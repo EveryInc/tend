@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDataDir } from "./paths";
+import { FileFeedEventRepository, MirroredFeedEventRepository } from "./repositories/feedEvents";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 import { LocalSqliteStore } from "./sqlite";
 import { AttentionStore } from "./store";
@@ -13,7 +14,11 @@ export async function createLocalRuntime(dataDir = attentionDataDir()): Promise<
     sqlite.workspaceFeeds(),
     new FileWorkspaceFeedRepository(path.join(dataDir, "workspace.json")),
   );
-  const store = new AttentionStore(dataDir, { workspaceFeeds });
+  const events = new MirroredFeedEventRepository(
+    sqlite.feedEvents(),
+    new FileFeedEventRepository(dataDir),
+  );
+  const store = new AttentionStore(dataDir, { events, workspaceFeeds });
   await store.init();
   return { dataDir, sqlite, store };
 }

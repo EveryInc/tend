@@ -14,7 +14,7 @@ attention executable
   └─ local feed state
 ```
 
-The current domain model still stores rich feed artifacts in readable local files. SQLite is introduced as the durable local metadata and migration anchor; active feed membership is now behind a repository interface with SQLite as the runtime authority and `workspace.json` as a backup-compatible mirror.
+The current domain model still stores rich feed artifacts in readable local files. SQLite is introduced as the durable local metadata and migration anchor; active feed membership and feed audit events are now behind repository interfaces with SQLite as the runtime authority and readable files as backup-compatible mirrors.
 
 ## Boundaries
 

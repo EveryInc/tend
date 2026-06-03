@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { AttentionDomain } from "../server/domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "../server/operator";
+import { FileFeedEventRepository, MirroredFeedEventRepository } from "../server/repositories/feedEvents";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
@@ -131,6 +132,36 @@ describe("filesystem workspace", () => {
     await domain.archiveFeed("model-vibe-check");
     expect(await sqlite.workspaceFeeds().listFeedIds()).not.toContain("model-vibe-check");
     expect(JSON.parse(await readFile(path.join(root, "workspace.json"), "utf8")).feedIds).not.toContain("model-vibe-check");
+    sqlite.close();
+  });
+
+  test("migrates feed events from JSONL into SQLite and mirrors new audit events", async () => {
+    const { root, domain: fileDomain, store: fileStore } = await setup();
+    await fileDomain.bindFeed("inbox", "thread-inbox");
+    const fileEvents = await fileStore.readEvents("inbox");
+    expect(fileEvents.map((event) => event.type)).toContain("thread.bound");
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      events: new MirroredFeedEventRepository(
+        sqlite.feedEvents(),
+        new FileFeedEventRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+    const domain = new AttentionDomain(store);
+
+    expect((await sqlite.feedEvents().list("inbox")).map((event) => event.type)).toContain("thread.bound");
+
+    await domain.proposeHeartbeat("inbox", "Every 30 minutes");
+    expect((await sqlite.feedEvents().list("inbox")).map((event) => event.type)).toContain("heartbeat.proposed");
+    const mirrored = (await readFile(path.join(root, "feeds", "inbox", "events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(mirrored.map((event) => event.type)).toContain("heartbeat.proposed");
     sqlite.close();
   });
 

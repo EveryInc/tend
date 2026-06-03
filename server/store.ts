@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type {
   Card,
@@ -35,6 +35,7 @@ import {
 } from "./templates";
 import { isoNow, makeId, readJson, writeJson, writeText } from "./util";
 import { defaultDictationCapability } from "./monologue";
+import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
 import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
 export const GLOBAL_PROMPT_NAMES = ["judge.md", "compose-card.md", "execute-work.md", "distill-policy.md", "compound.md"] as const;
@@ -53,10 +54,12 @@ function defaultSweepState(): SweepState {
 export class AttentionStore {
   readonly dataDir: string;
   private tail = Promise.resolve();
+  private readonly events: FeedEventRepository;
   private readonly workspaceFeeds: WorkspaceFeedRepository;
 
-  constructor(dataDir: string, options: { workspaceFeeds?: WorkspaceFeedRepository } = {}) {
+  constructor(dataDir: string, options: { events?: FeedEventRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
     this.dataDir = dataDir;
+    this.events = options.events ?? new FileFeedEventRepository(this.dataDir);
     this.workspaceFeeds = options.workspaceFeeds ?? new FileWorkspaceFeedRepository(this.path("workspace.json"));
   }
 
@@ -71,6 +74,7 @@ export class AttentionStore {
     const dictationPath = this.path("integrations/dictation.json");
     if (!existsSync(dictationPath)) await writeJson(dictationPath, defaultDictationCapability());
     await this.workspaceFeeds.init(DEFAULT_FEED_IDS);
+    await this.events.init(await this.workspaceFeeds.listFeedIds());
     await this.ensureDefaultFeed("inbox");
     await this.ensureDefaultFeed("company-attention");
     await Promise.all((await this.workspaceFeeds.listFeedIds()).map((feedId) => this.ensureFeedPrompts(feedId)));
@@ -325,15 +329,12 @@ export class AttentionStore {
 
   async appendEvent(event: Omit<FeedEvent, "id" | "at">): Promise<FeedEvent> {
     const full = { ...event, id: makeId("evt"), at: isoNow() };
-    await mkdir(this.feedPath(event.feedId), { recursive: true });
-    await appendFile(this.feedPath(event.feedId, "events.jsonl"), `${JSON.stringify(full)}\n`, "utf8");
+    await this.events.append(full);
     return full;
   }
 
   async readEvents(feedId: string): Promise<FeedEvent[]> {
-    const file = this.feedPath(feedId, "events.jsonl");
-    if (!existsSync(file)) return [];
-    return (await readFile(file, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as FeedEvent);
+    return this.events.list(feedId);
   }
 
   async writePolicy(feedId: string, next: string, reason: string, source: PolicyRevision["source"]): Promise<PolicyRevision> {
