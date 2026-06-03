@@ -43,8 +43,8 @@ pnpm attention:package
 ```
 
 The package command writes `dist-bin/releases/attention-<version>-<platform>-<arch>.tar.gz` plus a
-`.sha256` checksum. The archive contains the `attention` executable, README, contributor notes,
-install/agent/data/security docs, and the operator/capability references.
+`.sha256` checksum. The archive contains the `attention` executable, built `dist/` UI assets, README,
+contributor notes, install/agent/data/security docs, and the operator/capability references.
 
 ## Codex Setup
 

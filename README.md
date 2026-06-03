@@ -36,7 +36,8 @@ pnpm attention:smoke
 ```
 
 The compiled/local server serves built UI assets, API, and MCP from `http://127.0.0.1:4332`.
-For a local release tarball and checksum, run `pnpm attention:package`.
+For a local release tarball with the binary, built UI assets, docs, and checksum, run
+`pnpm attention:package`.
 
 For a scrubbed visual walkthrough:
 

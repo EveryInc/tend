@@ -64,8 +64,9 @@ pnpm attention:package
 ```
 
 `pnpm attention:smoke` starts the compiled `dist-bin/attention` binary against a temporary
-`ATTENTION_HOME`, checks `/api/status`, validates the MCP URL and schema version, stops the server,
-and removes the temporary data directory.
+`ATTENTION_HOME`, checks `/api/status`, validates the MCP URL and schema version, verifies the built
+UI is served, stops the server, and removes the temporary data directory.
 
 Use `pnpm attention:package` after the smoke check when preparing a local release archive. It writes
-a platform-specific tarball and checksum under `dist-bin/releases/`.
+a platform-specific tarball and checksum under `dist-bin/releases/`. The tarball includes the
+compiled binary, built `dist/` UI assets, and release docs.

@@ -25,11 +25,23 @@ try {
   if (status.ok !== true) throw new Error("/api/status did not report ok=true.");
   if (status.mcpUrl !== mcpUrl) throw new Error(`/api/status reported ${status.mcpUrl} instead of ${mcpUrl}.`);
   if (schemaVersion !== 11) throw new Error(`/api/status reported schema ${schemaVersion} instead of 11.`);
-  console.log(JSON.stringify({ ok: true, statusUrl, mcpUrl, schemaVersion, home }, null, 2));
+  const ui = await fetchUi();
+  console.log(JSON.stringify({ ok: true, statusUrl, mcpUrl, schemaVersion, ui, home }, null, 2));
 } finally {
   server.kill();
   await server.exited.catch(() => undefined);
   await rm(home, { recursive: true, force: true });
+}
+
+async function fetchUi(): Promise<{ url: string; title: string }> {
+  const url = `http://127.0.0.1:${port}/`;
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`);
+  const html = await response.text();
+  if (!html.includes("<title>Attention</title>") || !html.includes('<div id="root"></div>')) {
+    throw new Error(`${url} did not return the built Attention UI.`);
+  }
+  return { url, title: "Attention" };
 }
 
 async function waitForStatus(): Promise<{ ok?: boolean; mcpUrl?: string; sqlite?: { schemaVersion?: number } }> {

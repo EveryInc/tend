@@ -6,6 +6,7 @@ import path from "node:path";
 const root = process.cwd();
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")) as { name: string; version: string };
 const binaryPath = path.resolve(process.env.ATTENTION_BINARY ?? path.join("dist-bin", "attention"));
+const clientDir = path.resolve(process.env.ATTENTION_CLIENT_DIR ?? "dist");
 const platform = process.env.ATTENTION_PACKAGE_PLATFORM ?? process.platform;
 const arch = process.env.ATTENTION_PACKAGE_ARCH ?? process.arch;
 const packageName = `${packageJson.name}-${packageJson.version}-${platform}-${arch}`;
@@ -18,10 +19,14 @@ const checksumPath = `${archivePath}.sha256`;
 if (!existsSync(binaryPath)) {
   throw new Error(`Compiled binary not found: ${binaryPath}. Run pnpm attention:build first.`);
 }
+if (!existsSync(path.join(clientDir, "index.html"))) {
+  throw new Error(`Built UI assets not found: ${clientDir}. Run pnpm build first.`);
+}
 
 await rm(stageRoot, { recursive: true, force: true });
 await mkdir(stageDir, { recursive: true });
 await cp(binaryPath, path.join(stageDir, "attention"));
+await cp(clientDir, path.join(stageDir, "dist"), { recursive: true });
 await cp(path.join(root, "README.md"), path.join(stageDir, "README.md"));
 await cp(path.join(root, "CONTRIBUTING.md"), path.join(stageDir, "CONTRIBUTING.md"));
 await copyDocs([
@@ -38,6 +43,7 @@ await writeFile(path.join(stageDir, "manifest.json"), JSON.stringify({
   platform,
   arch,
   binary: "attention",
+  uiAssets: "dist",
   createdAt: new Date().toISOString(),
 }, null, 2));
 await rm(archivePath, { force: true });
