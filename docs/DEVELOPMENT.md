@@ -69,4 +69,4 @@ UI is served, stops the server, and removes the temporary data directory.
 
 Use `pnpm attention:package` after the smoke check when preparing a local release archive. It writes
 a platform-specific tarball and checksum under `dist-bin/releases/`. The tarball includes the
-compiled binary, built `dist/` UI assets, and release docs.
+compiled binary, built `dist/` UI assets, license, and release docs.

@@ -192,3 +192,7 @@ For contribution workflow, architecture expectations, and local verification gat
 - Direct connector calls remain governed by the Codex runbook, but the local worker cannot mark an unverified action complete.
 - Raw source material and user activity stay local and ignored by git.
 - Empty source runs may honestly produce no cards.
+
+## License
+
+MIT. See [LICENSE](./LICENSE).

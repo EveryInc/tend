@@ -94,3 +94,7 @@ Update docs when changing behavior:
 - `docs/DEVELOPMENT.md` for local workflow and CI changes
 - `RUNBOOK.md` for feed-thread operator behavior
 - `CAPABILITY_MAP.md` for user-visible action primitives
+
+## License
+
+By contributing, you agree that your contribution is licensed under the MIT license in `LICENSE`.

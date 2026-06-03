@@ -29,6 +29,7 @@ await cp(binaryPath, path.join(stageDir, "attention"));
 await cp(clientDir, path.join(stageDir, "dist"), { recursive: true });
 await cp(path.join(root, "README.md"), path.join(stageDir, "README.md"));
 await cp(path.join(root, "CONTRIBUTING.md"), path.join(stageDir, "CONTRIBUTING.md"));
+await cp(path.join(root, "LICENSE"), path.join(stageDir, "LICENSE"));
 await copyDocs([
   "docs/INSTALL.md",
   "docs/AGENT_CONTRACT.md",
