@@ -1,12 +1,10 @@
 import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { AttentionDomain } from "./server/domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "./server/operator";
+import { attentionDataDir } from "./server/paths";
 import { AttentionStore } from "./server/store";
 
-const root = path.dirname(fileURLToPath(import.meta.url));
-const store = new AttentionStore(process.env.ATTENTION_DATA_DIR ?? path.join(root, "data"));
+const store = new AttentionStore(attentionDataDir());
 const domain = new AttentionDomain(store);
 await store.init();
 

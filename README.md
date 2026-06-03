@@ -1,8 +1,11 @@
 # Attention
 
-Attention is a Codex-native feed builder for the Codex desktop in-app browser. It turns authorized
-sources into calm card sweeps, lets the user talk naturally to the active card, and gives each feed
-an owned Codex thread that performs the judgment and work.
+Attention is an open-source, local-first Codex-native feed builder. It runs on your machine, stores
+workflow state locally, exposes a local MCP server for Codex Desktop, and renders a calm review UI
+for feed sweeps, approvals, and queued work.
+
+This is an experimental local app, not a hosted service. Codex Desktop remains the agent runtime;
+Attention is the local workspace and coordination layer.
 
 ## Start
 
@@ -11,8 +14,24 @@ pnpm install
 pnpm start
 ```
 
-Open `http://127.0.0.1:4321/` in the Codex in-app browser. The API listens on
-`http://127.0.0.1:4332/`.
+Open `http://127.0.0.1:4321/` in the Codex in-app browser. During development, Vite serves the UI
+on `4321`, the API listens on `4332`, and the MCP endpoint is `http://127.0.0.1:4332/mcp`.
+
+Check local setup:
+
+```bash
+pnpm attention -- doctor
+pnpm attention -- setup codex
+```
+
+Build a Bun binary:
+
+```bash
+pnpm attention:build
+./dist-bin/attention start
+```
+
+The compiled/local server serves built UI assets, API, and MCP from `http://127.0.0.1:4332`.
 
 For a scrubbed visual walkthrough:
 
@@ -51,9 +70,20 @@ dock contains text, and ordinary page scrolling never changes the rung. Every do
 trace for Codex to rejudge before the browser offers the separate `Search sources again` action.
 On Inbox cards, use `O` to toggle the collapsed full email thread without leaving the sweep.
 
-## Workspace
+## Local Data
 
-Runtime data lives under ignored `data/`:
+Runtime data lives under `~/.attention/` by default:
+
+```text
+~/.attention/
+  attention.db
+  data/
+  logs/
+  exports/
+```
+
+Set `ATTENTION_HOME` or `ATTENTION_DATA_DIR` to override paths. Current feed artifacts live in the
+data directory:
 
 ```text
 data/
@@ -104,29 +134,33 @@ current editable artifact. Inbox reply cards also show the mailbox that received
 Immediately before sending, Codex fetches the authenticated Gmail profile and passes that mailbox
 to `action:verify`; a mismatch is a hard refusal.
 
-## Codex CLI
+## CLI And MCP
+
+The human-facing CLI is:
 
 ```bash
-pnpm cli -- state --feed inbox
-pnpm cli -- setup:detect-monologue
-pnpm cli -- feed:bind --feed inbox --thread <current-codex-thread-id>
-pnpm cli -- feed:archive --feed <non-default-feed-id>
-pnpm cli -- work:list --feed inbox --thread <current-codex-thread-id>
-pnpm cli -- work:claim --feed inbox --thread <current-codex-thread-id>
-pnpm cli -- work:cancel --feed inbox --work <queued-work-id> --reason <text>
-pnpm cli -- action:verify --feed inbox --work <approved-work-id> --token <token> --mailbox <authenticated-gmail-email>
-pnpm cli -- work:complete --feed inbox --work <id> --token <token> --result '{"response":"..."}'
-pnpm cli -- routine:upsert --feed inbox --group '{"id":"likely-archive","label":"Likely archive","summary":"Conservative low-attention cleanup.","proposedAction":{"label":"Archive all","instruction":"Reread each authoritative source and archive the listed threads.","externalMutation":true},"items":[...]}'
-pnpm cli -- learning:request --feed inbox
-pnpm cli -- revision:propose --feed inbox --target '{"kind":"feed","feedId":"inbox"}' --instruction "Preserve the durable judgment from this sweep." --content "<updated policy markdown>" --source compound
-pnpm cli -- inspect --feed inbox
+pnpm attention -- start
+pnpm attention -- status
+pnpm attention -- doctor
+pnpm attention -- setup codex
+pnpm attention -- backup export
 ```
 
-Run `pnpm cli -- help` for the complete capability list.
+The low-level operator commands remain available through:
 
-Read [ARCHITECTURE.md](./ARCHITECTURE.md) for the runtime division, filesystem model, attention
-loop, learning loop, and approval boundary. [RUNBOOK.md](./RUNBOOK.md) is the feed-thread operator
-guide, and [CAPABILITY_MAP.md](./CAPABILITY_MAP.md) maps user-visible actions to the atomic Codex
+```bash
+pnpm attention -- cli state --feed inbox
+pnpm attention -- cli work:list --feed inbox --thread <current-codex-thread-id>
+```
+
+Codex should prefer MCP over shelling out to the CLI. The MCP endpoint exposes feed resources,
+runner prompts, and typed tools such as `inspect_feed`, `bind_feed_thread`, `list_work`,
+`claim_work`, `complete_work`, `verify_action`, `upsert_card`, and source-run recording.
+
+Read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md), [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md),
+[docs/DATA.md](./docs/DATA.md), and [docs/INSTALL.md](./docs/INSTALL.md) for the local runtime,
+agent setup, storage model, and install flow. [RUNBOOK.md](./RUNBOOK.md) is the feed-thread operator
+guide, and [CAPABILITY_MAP.md](./CAPABILITY_MAP.md) maps user-visible actions to atomic Codex
 primitives.
 
 ## Safety

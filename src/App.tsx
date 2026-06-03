@@ -1,7 +1,9 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Card, CardAction, CardBlock, FeedView, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkspaceRevision, WorkspaceView } from "./types";
 import { useActiveCard } from "./state/activeCard";
 import { usePushToTalk } from "./state/pushToTalk";
+import { RealtimeProvider } from "./state/realtime";
 import { preferredTarget, sameTarget } from "./state/voiceTarget";
 
 type Tab = "review" | "queued" | "working" | "done";
@@ -694,7 +696,7 @@ function Dock({
 }
 
 export default function App() {
-  const [state, setState] = useState<WorkspaceView | null>(null);
+  const queryClient = useQueryClient();
   const [feedId, setFeedId] = useState(new URLSearchParams(location.search).get("feed") ?? "inbox");
   const [screen, setScreen] = useState<Screen>(() => {
     const value = new URLSearchParams(location.search).get("screen");
@@ -723,17 +725,19 @@ export default function App() {
   const toastTimerRef = useRef<number | null>(null);
   const knownCompoundProposalIdsRef = useRef(new Map<string, Set<string>>());
 
-  const refresh = useCallback(async (nextFeed = feedId) => setState(await api(`/api/state?feed=${encodeURIComponent(nextFeed)}`)), [feedId]);
-  useEffect(() => { void refresh(); }, [refresh]);
-  useEffect(() => {
-    const events = new EventSource("/api/events");
-    events.addEventListener("change", () => void refresh());
-    return () => events.close();
-  }, [refresh]);
-  useEffect(() => {
-    const timer = window.setInterval(() => void refresh(), 1_200);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+  const workspaceQuery = useQuery({
+    queryKey: ["workspace", feedId],
+    queryFn: () => api<WorkspaceView>(`/api/state?feed=${encodeURIComponent(feedId)}`),
+  });
+  const state = workspaceQuery.data ?? null;
+  const refresh = useCallback(async (nextFeed = feedId) => {
+    await queryClient.invalidateQueries({ queryKey: ["workspace", nextFeed] });
+  }, [feedId, queryClient]);
+  const withRealtime = (children: ReactNode) => (
+    <RealtimeProvider enabled onChange={() => void refresh()}>
+      {children}
+    </RealtimeProvider>
+  );
 
   const feed = state?.active;
   const cards = useMemo(() => feed ? visibleCards(feed, tab) : [], [feed, tab]);
@@ -983,11 +987,11 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKey);
   });
 
-  if (!state || !feed) return <main className="loading">Loading attention…</main>;
+  if (!state || !feed) return withRealtime(<main className="loading">Loading attention…</main>);
   const resolvedDockTarget = dockTarget ?? ladder[0];
   const compoundProposals = state.proposals.filter((proposal) => proposal.anchorFeedId === feed.config.id && proposal.source === "compound");
 
-  if (screen === "workspace") return (
+  if (screen === "workspace") return withRealtime(
     <>
       <TopBar state={state} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
       <div className="workspace-proposals"><RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} /></div>
@@ -998,7 +1002,7 @@ export default function App() {
     </>
   );
 
-  if (screen === "learnings") return (
+  if (screen === "learnings") return withRealtime(
     <>
       <TopBar state={state} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
       <LearningReview feed={feed} proposals={compoundProposals} onBack={closeWorkspace} onApply={applyLearningProposal} onReject={rejectLearningProposal} />
@@ -1011,7 +1015,7 @@ export default function App() {
   const updated = cards.filter((card) => card.status === "to_review_updated");
   const fresh = cards.filter((card) => card.status !== "to_review_updated");
   const feedWork = feed.work.filter((work) => work.cardId === "__feed__" && work.status === tab);
-  return (
+  return withRealtime(
     <>
       <TopBar state={state} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
       <nav className="tabs">

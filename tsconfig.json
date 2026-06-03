@@ -8,7 +8,7 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node", "bun"]
   },
-  "include": ["src", "server", "server.ts", "cli.ts", "vite.config.ts"]
+  "include": ["src", "server", "server.ts", "cli.ts", "attention.ts", "vite.config.ts"]
 }
