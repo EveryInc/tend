@@ -15,6 +15,39 @@ async function text(value: unknown) {
 const jsonValue = z.unknown();
 
 export async function createMcpRequestHandler(domain: AttentionDomain, store: AttentionStore): Promise<(request: Request) => Promise<Response>> {
+  const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
+
+  return async (request: Request) => {
+    const sessionId = request.headers.get("mcp-session-id");
+    let transport = sessionId ? transports.get(sessionId) : undefined;
+
+    if (sessionId && !transport) {
+      return new Response(JSON.stringify({ jsonrpc: "2.0", error: { code: -32001, message: "Session not found" }, id: null }), {
+        status: 404,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    if (!transport) {
+      let createdTransport: WebStandardStreamableHTTPServerTransport | null = null;
+      transport = new WebStandardStreamableHTTPServerTransport({
+        sessionIdGenerator: randomUUID,
+        onsessioninitialized: (initializedSessionId) => {
+          if (createdTransport) transports.set(initializedSessionId, createdTransport);
+        },
+      });
+      createdTransport = transport;
+      transport.onclose = () => {
+        if (createdTransport?.sessionId) transports.delete(createdTransport.sessionId);
+      };
+      await createAttentionMcpServer(domain, store).connect(transport);
+    }
+
+    return transport.handleRequest(request);
+  };
+}
+
+function createAttentionMcpServer(domain: AttentionDomain, store: AttentionStore): McpServer {
   const server = new McpServer({ name: "attention-local", version: "0.1.0" });
 
   server.registerResource("feed_state", new ResourceTemplate("attention://feeds/{feedId}/state", { list: undefined }), { title: "Feed State" }, async (uri, variables) => {
@@ -145,7 +178,5 @@ export async function createMcpRequestHandler(domain: AttentionDomain, store: At
     inputSchema: { feedId: z.string() },
   }, ({ feedId }) => text(domain.queueCompound(feedId)));
 
-  const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: randomUUID });
-  await server.connect(transport);
-  return (request: Request) => transport.handleRequest(request);
+  return server;
 }
