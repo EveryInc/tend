@@ -1190,7 +1190,7 @@ export class AttentionDomain {
       if (triggerWorkId) await this.assertClaimedRecollectionWork(feedId, triggerWorkId);
       const runId = makeId("run");
       for (const [index, snapshot] of snapshots.entries()) await this.store.writeRawSnapshot(feedId, runId, sourceId, `snapshot-${index + 1}`, snapshot);
-      await this.store.writeRun(feedId, runId, { id: runId, feedId, sourceId, snapshots: snapshots.length, judgments, ...(triggerWorkId ? { triggerWorkId } : {}), completedAt: isoNow() });
+      await this.store.writeRun({ id: runId, feedId, sourceId, snapshots: snapshots.length, judgments, ...(triggerWorkId ? { triggerWorkId } : {}), completedAt: isoNow() });
       await writeJson(this.store.feedPath(feedId, "checkpoints", `${sourceId}.json`), checkpoint);
       await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "source.run_completed", detail: { runId, sourceId, triggerWorkId, snapshots: snapshots.length, judgments: judgments.length } });
       return runId;

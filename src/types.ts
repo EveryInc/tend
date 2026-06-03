@@ -216,6 +216,16 @@ export interface SweepBatch {
   createdAt: string;
 }
 
+export interface SourceRun {
+  id: string;
+  feedId: FeedId;
+  sourceId: string;
+  snapshots: number;
+  judgments: unknown[];
+  triggerWorkId?: string;
+  completedAt?: string;
+}
+
 export interface RevisionProposal {
   id: string;
   anchorFeedId: FeedId;

@@ -2,14 +2,15 @@ import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDbPath } from "./paths";
-import type { Card, FeedEvent, RoutineActionGroup, WorkItem } from "../src/types";
+import type { Card, FeedEvent, RoutineActionGroup, SourceRun, WorkItem } from "../src/types";
 import type { CardRepository } from "./repositories/cards";
 import type { FeedEventRepository } from "./repositories/feedEvents";
 import type { RoutineActionGroupRepository } from "./repositories/routineActionGroups";
+import type { SourceRunRepository } from "./repositories/sourceRuns";
 import type { WorkItemRepository } from "./repositories/workItems";
 import type { WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 export type LocalRuntimeStatus = {
   dbPath: string;
@@ -70,6 +71,16 @@ export class LocalSqliteStore {
         payload_json TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_routine_action_groups_feed_status ON routine_action_groups (feed_id, status);
+      CREATE TABLE IF NOT EXISTS source_runs (
+        id TEXT PRIMARY KEY,
+        feed_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        trigger_work_id TEXT,
+        completed_at TEXT,
+        payload_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_source_runs_feed_source ON source_runs (feed_id, source_id);
+      CREATE INDEX IF NOT EXISTS idx_source_runs_trigger_work ON source_runs (trigger_work_id);
       CREATE TABLE IF NOT EXISTS work_items (
         id TEXT PRIMARY KEY,
         feed_id TEXT NOT NULL,
@@ -118,6 +129,10 @@ export class LocalSqliteStore {
 
   routineActionGroups(): RoutineActionGroupRepository {
     return new SqliteRoutineActionGroupRepository(() => this.database());
+  }
+
+  sourceRuns(): SourceRunRepository {
+    return new SqliteSourceRunRepository(() => this.database());
   }
 
   workItems(): WorkItemRepository {
@@ -231,6 +246,42 @@ class SqliteRoutineActionGroupRepository implements RoutineActionGroupRepository
           payload_json = excluded.payload_json
       `)
       .run(group.id, group.feedId, group.status, group.createdAt, group.updatedAt, JSON.stringify(group));
+  }
+}
+
+class SqliteSourceRunRepository implements SourceRunRepository {
+  constructor(private readonly database: () => Database) {}
+
+  async init(_feedIds: string[]): Promise<void> {}
+
+  async list(feedId: string): Promise<SourceRun[]> {
+    const rows = this.database()
+      .query("SELECT payload_json FROM source_runs WHERE feed_id = ? ORDER BY completed_at ASC, id ASC")
+      .all(feedId) as Array<{ payload_json: string }>;
+    return rows.map((row) => JSON.parse(row.payload_json) as SourceRun);
+  }
+
+  async get(feedId: string, runId: string): Promise<SourceRun> {
+    const row = this.database()
+      .query("SELECT payload_json FROM source_runs WHERE feed_id = ? AND id = ?")
+      .get(feedId, runId) as { payload_json: string } | undefined;
+    if (!row) throw new Error(`Source run not found: ${runId}`);
+    return JSON.parse(row.payload_json) as SourceRun;
+  }
+
+  async write(run: SourceRun): Promise<void> {
+    this.database()
+      .query(`
+        INSERT INTO source_runs (id, feed_id, source_id, trigger_work_id, completed_at, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          feed_id = excluded.feed_id,
+          source_id = excluded.source_id,
+          trigger_work_id = excluded.trigger_work_id,
+          completed_at = excluded.completed_at,
+          payload_json = excluded.payload_json
+      `)
+      .run(run.id, run.feedId, run.sourceId, run.triggerWorkId ?? null, run.completedAt ?? null, JSON.stringify(run));
   }
 }
 

@@ -7,6 +7,7 @@ import { formatWorkClaimOutput, formatWorkListOutput } from "../server/operator"
 import { FileCardRepository, MirroredCardRepository } from "../server/repositories/cards";
 import { FileFeedEventRepository, MirroredFeedEventRepository } from "../server/repositories/feedEvents";
 import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository } from "../server/repositories/routineActionGroups";
+import { FileSourceRunRepository, MirroredSourceRunRepository } from "../server/repositories/sourceRuns";
 import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/repositories/workItems";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
@@ -264,6 +265,34 @@ describe("filesystem workspace", () => {
 
     expect((await sqlite.routineActionGroups().get("inbox", group.id)).status).toBe("failed");
     expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "routine-actions", `${group.id}.json`), "utf8")).status).toBe("failed");
+    sqlite.close();
+  });
+
+  test("migrates source runs from JSON files into SQLite and mirrors updates", async () => {
+    const { root, domain: fileDomain } = await setup();
+    const runId = await fileDomain.recordSourceRun("inbox", "gmail-inbox", [{ threadId: "gmail-1", subject: "Hello" }], [{ decision: "keep" }], { cursor: "gmail-1" });
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      sourceRuns: new MirroredSourceRunRepository(
+        sqlite.sourceRuns(),
+        new FileSourceRunRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.sourceRuns().list("inbox")).map((run) => run.id)).toContain(runId);
+
+    const run = await store.readRun("inbox", runId);
+    await store.writeRun({ ...run, judgments: [{ decision: "keep" }, { decision: "promote" }] });
+
+    expect((await sqlite.sourceRuns().get("inbox", runId)).judgments).toHaveLength(2);
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "runs", `${runId}.json`), "utf8")).judgments).toHaveLength(2);
     sqlite.close();
   });
 

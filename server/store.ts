@@ -10,6 +10,7 @@ import type {
   PolicyRevision,
   RevisionProposal,
   RoutineActionGroup,
+  SourceRun,
   SourceRecipe,
   SweepBatch,
   SweepFeedbackTrace,
@@ -38,6 +39,7 @@ import { defaultDictationCapability } from "./monologue";
 import { FileCardRepository, type CardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
 import { FileRoutineActionGroupRepository, type RoutineActionGroupRepository } from "./repositories/routineActionGroups";
+import { FileSourceRunRepository, type SourceRunRepository } from "./repositories/sourceRuns";
 import { FileWorkItemRepository, type WorkItemRepository } from "./repositories/workItems";
 import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
@@ -60,14 +62,16 @@ export class AttentionStore {
   private readonly cards: CardRepository;
   private readonly events: FeedEventRepository;
   private readonly routineActionGroups: RoutineActionGroupRepository;
+  private readonly sourceRuns: SourceRunRepository;
   private readonly workItems: WorkItemRepository;
   private readonly workspaceFeeds: WorkspaceFeedRepository;
 
-  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; routineActionGroups?: RoutineActionGroupRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
+  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
     this.dataDir = dataDir;
     this.cards = options.cards ?? new FileCardRepository(this.dataDir);
     this.events = options.events ?? new FileFeedEventRepository(this.dataDir);
     this.routineActionGroups = options.routineActionGroups ?? new FileRoutineActionGroupRepository(this.dataDir);
+    this.sourceRuns = options.sourceRuns ?? new FileSourceRunRepository(this.dataDir);
     this.workItems = options.workItems ?? new FileWorkItemRepository(this.dataDir);
     this.workspaceFeeds = options.workspaceFeeds ?? new FileWorkspaceFeedRepository(this.path("workspace.json"));
   }
@@ -87,6 +91,7 @@ export class AttentionStore {
     await this.cards.init(feedIds);
     await this.events.init(feedIds);
     await this.routineActionGroups.init(feedIds);
+    await this.sourceRuns.init(feedIds);
     await this.workItems.init(feedIds);
     await this.ensureDefaultFeed("inbox");
     await this.ensureDefaultFeed("company-attention");
@@ -412,12 +417,12 @@ export class AttentionStore {
     await writeJson(file, value);
   }
 
-  async writeRun(feedId: string, runId: string, value: unknown): Promise<void> {
-    await writeJson(this.feedPath(feedId, "runs", `${runId}.json`), value);
+  async writeRun(run: SourceRun): Promise<void> {
+    await this.sourceRuns.write(run);
   }
 
-  async readRun(feedId: string, runId: string): Promise<{ id: string; feedId: string; triggerWorkId?: string; completedAt?: string }> {
-    return readJson<{ id: string; feedId: string; triggerWorkId?: string; completedAt?: string }>(this.feedPath(feedId, "runs", `${runId}.json`));
+  async readRun(feedId: string, runId: string): Promise<SourceRun> {
+    return this.sourceRuns.get(feedId, runId);
   }
 
   async readSweepBatch(feedId: string, batchId: string): Promise<SweepBatch> {
