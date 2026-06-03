@@ -14,7 +14,8 @@
     "attention": "bun attention.ts",
     "attention:doctor": "bun attention.ts doctor",
     "attention:build": "bun build ./attention.ts --compile --outfile dist-bin/attention",
-    "attention:smoke": "bun scripts/smoke-binary.ts"
+    "attention:smoke": "bun scripts/smoke-binary.ts",
+    "attention:package": "bun scripts/package-binary.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

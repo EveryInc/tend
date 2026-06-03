@@ -14,6 +14,7 @@ pnpm build
 pnpm attention -- doctor
 pnpm attention:build
 pnpm attention:smoke
+pnpm attention:package
 ```
 
 ## Local Runtime
@@ -59,8 +60,12 @@ pnpm build
 pnpm test
 pnpm attention:build
 pnpm attention:smoke
+pnpm attention:package
 ```
 
 `pnpm attention:smoke` starts the compiled `dist-bin/attention` binary against a temporary
 `ATTENTION_HOME`, checks `/api/status`, validates the MCP URL and schema version, stops the server,
 and removes the temporary data directory.
+
+Use `pnpm attention:package` after the smoke check when preparing a local release archive. It writes
+a platform-specific tarball and checksum under `dist-bin/releases/`.

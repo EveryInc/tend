@@ -31,10 +31,12 @@ Build a Bun binary:
 
 ```bash
 pnpm attention:build
+pnpm attention:smoke
 ./dist-bin/attention start
 ```
 
 The compiled/local server serves built UI assets, API, and MCP from `http://127.0.0.1:4332`.
+For a local release tarball and checksum, run `pnpm attention:package`.
 
 For a scrubbed visual walkthrough:
 

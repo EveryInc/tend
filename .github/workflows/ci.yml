@@ -52,3 +52,6 @@ jobs:
 
       - name: Smoke test local binary
         run: pnpm attention:smoke
+
+      - name: Package local binary
+        run: pnpm attention:package

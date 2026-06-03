@@ -30,10 +30,21 @@ http://127.0.0.1:4332/mcp
 ```sh
 pnpm build
 pnpm attention:build
+pnpm attention:smoke
 ./dist-bin/attention start
 ```
 
 The binary serves built UI assets, API, and MCP from `http://127.0.0.1:4332`.
+
+Package the current platform binary for local distribution:
+
+```sh
+pnpm attention:package
+```
+
+The package command writes `dist-bin/releases/attention-<version>-<platform>-<arch>.tar.gz` plus a
+`.sha256` checksum. The archive contains the `attention` executable, README, contributor notes,
+install/agent/data/security docs, and the operator/capability references.
 
 ## Codex Setup
 
