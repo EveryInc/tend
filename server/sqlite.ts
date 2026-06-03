@@ -2,17 +2,18 @@ import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDbPath } from "./paths";
-import type { Card, FeedEvent, PolicyRevision, RevisionProposal, RoutineActionGroup, SourceRun, SweepBatch, SweepFeedbackTrace, SweepState, WorkItem, WorkspaceRevision } from "../src/types";
+import type { Card, FeedEvent, PolicyRevision, RevisionProposal, RoutineActionGroup, SourceRecipe, SourceRun, SweepBatch, SweepFeedbackTrace, SweepState, WorkItem, WorkspaceRevision } from "../src/types";
 import type { CardRepository } from "./repositories/cards";
 import type { FeedEventRepository } from "./repositories/feedEvents";
 import type { RevisionRepository } from "./repositories/revisions";
 import type { RoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import type { SourceRunRepository } from "./repositories/sourceRuns";
+import { defaultCheckpoint, type SourceRecord, type SourceRepository } from "./repositories/sources";
 import { defaultSweepState, type SweepRepository } from "./repositories/sweeps";
 import type { WorkItemRepository } from "./repositories/workItems";
 import type { WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 export type LocalRuntimeStatus = {
   dbPath: string;
@@ -83,6 +84,17 @@ export class LocalSqliteStore {
       );
       CREATE INDEX IF NOT EXISTS idx_source_runs_feed_source ON source_runs (feed_id, source_id);
       CREATE INDEX IF NOT EXISTS idx_source_runs_trigger_work ON source_runs (trigger_work_id);
+      CREATE TABLE IF NOT EXISTS source_recipes (
+        feed_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        checkpoint_filename TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        content_text TEXT NOT NULL,
+        checkpoint_json TEXT NOT NULL,
+        PRIMARY KEY (feed_id, source_id)
+      );
       CREATE TABLE IF NOT EXISTS revision_proposals (
         id TEXT PRIMARY KEY,
         anchor_feed_id TEXT NOT NULL,
@@ -187,6 +199,10 @@ export class LocalSqliteStore {
 
   sourceRuns(): SourceRunRepository {
     return new SqliteSourceRunRepository(() => this.database());
+  }
+
+  sources(): SourceRepository {
+    return new SqliteSourceRepository(() => this.database());
   }
 
   sweeps(): SweepRepository {
@@ -436,6 +452,81 @@ class SqliteSourceRunRepository implements SourceRunRepository {
           payload_json = excluded.payload_json
       `)
       .run(run.id, run.feedId, run.sourceId, run.triggerWorkId ?? null, run.completedAt ?? null, JSON.stringify(run));
+  }
+}
+
+class SqliteSourceRepository implements SourceRepository {
+  constructor(private readonly database: () => Database) {}
+
+  async init(_feedIds: string[]): Promise<void> {}
+
+  async list(feedId: string): Promise<SourceRecord[]> {
+    const rows = this.database()
+      .query("SELECT source_id, name, filename, checkpoint_filename, summary, content_text, checkpoint_json FROM source_recipes WHERE feed_id = ? ORDER BY name ASC, source_id ASC")
+      .all(feedId) as Array<{ source_id: string; name: string; filename: string; checkpoint_filename: string; summary: string; content_text: string; checkpoint_json: string }>;
+    return rows.map((row) => this.record(feedId, row));
+  }
+
+  async get(feedId: string, sourceId: string): Promise<SourceRecord> {
+    const row = this.database()
+      .query("SELECT source_id, name, filename, checkpoint_filename, summary, content_text, checkpoint_json FROM source_recipes WHERE feed_id = ? AND source_id = ?")
+      .get(feedId, sourceId) as { source_id: string; name: string; filename: string; checkpoint_filename: string; summary: string; content_text: string; checkpoint_json: string } | undefined;
+    if (!row) throw new Error(`Source recipe not found: ${sourceId}`);
+    return this.record(feedId, row);
+  }
+
+  async write(feedId: string, recipe: SourceRecipe, content: string, checkpoint?: unknown): Promise<void> {
+    const existingCheckpoint = await this.existingCheckpoint(feedId, recipe.id);
+    const nextCheckpoint = checkpoint === undefined ? existingCheckpoint ?? defaultCheckpoint(recipe.id) : checkpoint;
+    this.database()
+      .query(`
+        INSERT INTO source_recipes (feed_id, source_id, name, filename, checkpoint_filename, summary, content_text, checkpoint_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(feed_id, source_id) DO UPDATE SET
+          name = excluded.name,
+          filename = excluded.filename,
+          checkpoint_filename = excluded.checkpoint_filename,
+          summary = excluded.summary,
+          content_text = excluded.content_text,
+          checkpoint_json = excluded.checkpoint_json
+      `)
+      .run(feedId, recipe.id, recipe.name, recipe.filename, recipe.checkpointFilename, recipe.summary, content, JSON.stringify(nextCheckpoint));
+  }
+
+  async remove(feedId: string, sourceId: string): Promise<void> {
+    const result = this.database().query("DELETE FROM source_recipes WHERE feed_id = ? AND source_id = ?").run(feedId, sourceId) as { changes: number };
+    if (result.changes === 0) throw new Error(`Source recipe not found: ${sourceId}`);
+  }
+
+  async writeContent(feedId: string, sourceId: string, content: string): Promise<void> {
+    const record = await this.get(feedId, sourceId);
+    await this.write(feedId, record.recipe, content, record.checkpoint);
+  }
+
+  async writeCheckpoint(feedId: string, sourceId: string, checkpoint: unknown): Promise<void> {
+    const record = await this.get(feedId, sourceId);
+    await this.write(feedId, record.recipe, record.content, checkpoint);
+  }
+
+  private record(feedId: string, row: { source_id: string; name: string; filename: string; checkpoint_filename: string; summary: string; content_text: string; checkpoint_json: string }): SourceRecord {
+    return {
+      recipe: {
+        id: row.source_id,
+        name: row.name,
+        filename: row.filename,
+        checkpointFilename: row.checkpoint_filename,
+        summary: row.summary,
+      },
+      content: row.content_text,
+      checkpoint: JSON.parse(row.checkpoint_json) as unknown,
+    };
+  }
+
+  private async existingCheckpoint(feedId: string, sourceId: string): Promise<unknown | null> {
+    const row = this.database()
+      .query("SELECT checkpoint_json FROM source_recipes WHERE feed_id = ? AND source_id = ?")
+      .get(feedId, sourceId) as { checkpoint_json: string } | undefined;
+    return row ? JSON.parse(row.checkpoint_json) as unknown : null;
   }
 }
 

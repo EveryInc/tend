@@ -19,7 +19,7 @@ import type {
 import { AttentionStore, FEED_PROMPT_NAMES } from "./store";
 import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
-import { digest, isoNow, makeId, makeToken, slugify, writeJson, writeText } from "./util";
+import { digest, isoNow, makeId, makeToken, slugify, writeText } from "./util";
 
 function appendHistory(card: Card, type: string, detail?: string): void {
   card.history.push({ at: isoNow(), type, detail });
@@ -1191,7 +1191,7 @@ export class AttentionDomain {
       const runId = makeId("run");
       for (const [index, snapshot] of snapshots.entries()) await this.store.writeRawSnapshot(feedId, runId, sourceId, `snapshot-${index + 1}`, snapshot);
       await this.store.writeRun({ id: runId, feedId, sourceId, snapshots: snapshots.length, judgments, ...(triggerWorkId ? { triggerWorkId } : {}), completedAt: isoNow() });
-      await writeJson(this.store.feedPath(feedId, "checkpoints", `${sourceId}.json`), checkpoint);
+      await this.store.writeSourceCheckpoint(feedId, sourceId, checkpoint);
       await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "source.run_completed", detail: { runId, sourceId, triggerWorkId, snapshots: snapshots.length, judgments: judgments.length } });
       return runId;
     });
@@ -1258,8 +1258,8 @@ export class AttentionDomain {
     const feed = await this.store.readFeed(feedId);
     const sources = await Promise.all(feed.sources.map(async (source) => ({
       ...source,
-      content: await readFile(this.store.feedPath(feedId, "sources", source.filename), "utf8"),
-      checkpoint: await readFile(this.store.feedPath(feedId, "checkpoints", source.checkpointFilename), "utf8"),
+      content: await this.store.readSourceContent(feedId, source.id),
+      checkpoint: JSON.stringify(await this.store.readSourceCheckpoint(feedId, source.id), null, 2),
     })));
     const prompts = await Promise.all(FEED_PROMPT_NAMES.map(async (name) => ({ name, content: await readFile(this.store.feedPath(feedId, "prompts", name), "utf8") })));
     return { feed: feed.config, thread: feed.thread, policy: feed.policy, sources, prompts };

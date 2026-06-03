@@ -6,6 +6,7 @@ import { FileFeedEventRepository, MirroredFeedEventRepository } from "./reposito
 import { FileRevisionRepository, MirroredRevisionRepository } from "./repositories/revisions";
 import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import { FileSourceRunRepository, MirroredSourceRunRepository } from "./repositories/sourceRuns";
+import { FileSourceRepository, MirroredSourceRepository } from "./repositories/sources";
 import { FileSweepRepository, MirroredSweepRepository } from "./repositories/sweeps";
 import { FileWorkItemRepository, MirroredWorkItemRepository } from "./repositories/workItems";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "./repositories/workspaceFeeds";
@@ -44,11 +45,15 @@ export async function createLocalRuntime(dataDir = attentionDataDir()): Promise<
     sqlite.sourceRuns(),
     new FileSourceRunRepository(dataDir),
   );
+  const sources = new MirroredSourceRepository(
+    sqlite.sources(),
+    new FileSourceRepository(dataDir),
+  );
   const sweeps = new MirroredSweepRepository(
     sqlite.sweeps(),
     new FileSweepRepository(dataDir),
   );
-  const store = new AttentionStore(dataDir, { cards, events, revisions, routineActionGroups, sourceRuns, sweeps, workItems, workspaceFeeds });
+  const store = new AttentionStore(dataDir, { cards, events, revisions, routineActionGroups, sourceRuns, sources, sweeps, workItems, workspaceFeeds });
   await store.init();
   return { dataDir, sqlite, store };
 }

@@ -9,6 +9,7 @@ import { FileFeedEventRepository, MirroredFeedEventRepository } from "../server/
 import { FileRevisionRepository, MirroredRevisionRepository } from "../server/repositories/revisions";
 import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository } from "../server/repositories/routineActionGroups";
 import { FileSourceRunRepository, MirroredSourceRunRepository } from "../server/repositories/sourceRuns";
+import { FileSourceRepository, MirroredSourceRepository } from "../server/repositories/sources";
 import { FileSweepRepository, MirroredSweepRepository } from "../server/repositories/sweeps";
 import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/repositories/workItems";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
@@ -384,6 +385,39 @@ describe("filesystem workspace", () => {
     expect(JSON.parse(await readFile(path.join(root, "revision-proposals", `${proposal.id}.json`), "utf8")).status).toBe("rejected");
     expect(JSON.parse(await readFile(path.join(root, "workspace-revisions", `${workspaceRevision.id}.json`), "utf8")).status).toBe("reverted");
     expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "policy-revisions", `${policyRevision.id}.json`), "utf8")).status).toBe("reverted");
+    sqlite.close();
+  });
+
+  test("migrates source recipes and checkpoints from JSON files into SQLite and mirrors updates", async () => {
+    const { root, domain: fileDomain } = await setup();
+    const source = await fileDomain.addSourceFromBrief("inbox", "Read the important local notes.");
+    await fileDomain.recordSourceRun("inbox", source.id, [{ note: "one" }], [{ decision: "keep" }], { cursor: "note-1" });
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      sources: new MirroredSourceRepository(
+        sqlite.sources(),
+        new FileSourceRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.sources().list("inbox")).map((record) => record.recipe.id)).toContain(source.id);
+    expect((await sqlite.sources().get("inbox", source.id)).content).toContain("Read the important local notes.");
+    expect((await sqlite.sources().get("inbox", source.id)).checkpoint).toMatchObject({ cursor: "note-1" });
+
+    await store.writeSourceRecipe("inbox", source.id, "# Updated source\n\nRead only starred local notes.");
+    await store.writeSourceCheckpoint("inbox", source.id, { cursor: "note-2" });
+
+    expect((await sqlite.sources().get("inbox", source.id)).content).toContain("starred local notes");
+    expect((await sqlite.sources().get("inbox", source.id)).checkpoint).toMatchObject({ cursor: "note-2" });
+    expect(await readFile(path.join(root, "feeds", "inbox", "sources", source.filename), "utf8")).toContain("starred local notes");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", source.checkpointFilename), "utf8")).cursor).toBe("note-2");
     sqlite.close();
   });
 

@@ -41,6 +41,7 @@ import { FileFeedEventRepository, type FeedEventRepository } from "./repositorie
 import { FileRevisionRepository, type RevisionRepository } from "./repositories/revisions";
 import { FileRoutineActionGroupRepository, type RoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import { FileSourceRunRepository, type SourceRunRepository } from "./repositories/sourceRuns";
+import { FileSourceRepository, type SourceRepository } from "./repositories/sources";
 import { FileSweepRepository, type SweepRepository } from "./repositories/sweeps";
 import { FileWorkItemRepository, type WorkItemRepository } from "./repositories/workItems";
 import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
@@ -57,17 +58,19 @@ export class AttentionStore {
   private readonly revisions: RevisionRepository;
   private readonly routineActionGroups: RoutineActionGroupRepository;
   private readonly sourceRuns: SourceRunRepository;
+  private readonly sources: SourceRepository;
   private readonly sweeps: SweepRepository;
   private readonly workItems: WorkItemRepository;
   private readonly workspaceFeeds: WorkspaceFeedRepository;
 
-  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; revisions?: RevisionRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; sweeps?: SweepRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
+  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; revisions?: RevisionRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; sources?: SourceRepository; sweeps?: SweepRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
     this.dataDir = dataDir;
     this.cards = options.cards ?? new FileCardRepository(this.dataDir);
     this.events = options.events ?? new FileFeedEventRepository(this.dataDir);
     this.revisions = options.revisions ?? new FileRevisionRepository(this.dataDir);
     this.routineActionGroups = options.routineActionGroups ?? new FileRoutineActionGroupRepository(this.dataDir);
     this.sourceRuns = options.sourceRuns ?? new FileSourceRunRepository(this.dataDir);
+    this.sources = options.sources ?? new FileSourceRepository(this.dataDir);
     this.sweeps = options.sweeps ?? new FileSweepRepository(this.dataDir);
     this.workItems = options.workItems ?? new FileWorkItemRepository(this.dataDir);
     this.workspaceFeeds = options.workspaceFeeds ?? new FileWorkspaceFeedRepository(this.path("workspace.json"));
@@ -90,6 +93,7 @@ export class AttentionStore {
     await this.revisions.init(feedIds);
     await this.routineActionGroups.init(feedIds);
     await this.sourceRuns.init(feedIds);
+    await this.sources.init(feedIds);
     await this.sweeps.init(feedIds);
     await this.workItems.init(feedIds);
     await this.ensureDefaultFeed("inbox");
@@ -216,9 +220,7 @@ export class AttentionStore {
   async readTargetContent(target: VoiceTarget): Promise<string> {
     if (target.kind === "feed") return readFile(this.feedPath(target.feedId, "policy.md"), "utf8");
     if (target.kind === "source_recipe") {
-      const recipe = (await readJson<SourceRecipe[]>(this.feedPath(target.feedId, "sources.json"))).find((item) => item.id === target.sourceId);
-      if (!recipe) throw new Error(`Source recipe not found: ${target.sourceId}`);
-      return readFile(this.feedPath(target.feedId, "sources", recipe.filename), "utf8");
+      return (await this.sources.get(target.feedId, target.sourceId)).content;
     }
     if (target.kind === "prompt_layer") return readFile(this.feedPath(target.feedId, "prompts", target.promptId), "utf8");
     if (target.kind === "global_prompt") return readFile(this.path("prompts", target.promptId), "utf8");
@@ -231,9 +233,7 @@ export class AttentionStore {
     if (!normalized) throw new Error("Workspace content is required.");
     if (target.kind === "feed") return writeText(this.feedPath(target.feedId, "policy.md"), normalized);
     if (target.kind === "source_recipe") {
-      const recipe = (await readJson<SourceRecipe[]>(this.feedPath(target.feedId, "sources.json"))).find((item) => item.id === target.sourceId);
-      if (!recipe) throw new Error(`Source recipe not found: ${target.sourceId}`);
-      return writeText(this.feedPath(target.feedId, "sources", recipe.filename), normalized);
+      return this.sources.writeContent(target.feedId, target.sourceId, normalized);
     }
     if (target.kind === "prompt_layer") return writeText(this.feedPath(target.feedId, "prompts", target.promptId), normalized);
     if (target.kind === "global_prompt") return this.writeGlobalPrompt(target.promptId, normalized);
@@ -243,9 +243,9 @@ export class AttentionStore {
 
   async readFeed(feedId: string): Promise<FeedView> {
     const config = await this.readConfig(feedId);
-    const [thread, sources, policy, cards, routineActions, work, sweep] = await Promise.all([
+    const [thread, sourceRecords, policy, cards, routineActions, work, sweep] = await Promise.all([
       readJson<ThreadBinding>(this.feedPath(feedId, "thread.json")),
-      readJson<SourceRecipe[]>(this.feedPath(feedId, "sources.json")),
+      this.sources.list(feedId),
       readFile(this.feedPath(feedId, "policy.md"), "utf8"),
       this.cards.list(feedId),
       this.routineActionGroups.list(feedId),
@@ -258,7 +258,7 @@ export class AttentionStore {
     return {
       config,
       thread,
-      sources,
+      sources: sourceRecords.map((record) => record.recipe),
       policy,
       cards,
       routineActions,
@@ -375,30 +375,30 @@ export class AttentionStore {
   }
 
   async addSource(feedId: string, recipe: SourceRecipe, markdown: string): Promise<void> {
-    const file = this.feedPath(feedId, "sources.json");
-    const recipes = await readJson<SourceRecipe[]>(file);
-    const next = [...recipes.filter((item) => item.id !== recipe.id), recipe];
-    await writeJson(file, next);
-    await writeText(this.feedPath(feedId, "sources", recipe.filename), markdown);
-    const checkpointPath = this.feedPath(feedId, "checkpoints", recipe.checkpointFilename);
-    if (!existsSync(checkpointPath)) await writeJson(checkpointPath, { sourceId: recipe.id, updatedAt: null, cursor: null });
+    await this.sources.write(feedId, recipe, markdown);
     await this.appendEvent({ feedId, type: "source.recipe_added", detail: { sourceId: recipe.id } });
   }
 
   async removeSource(feedId: string, sourceId: string): Promise<void> {
-    const file = this.feedPath(feedId, "sources.json");
-    const recipes = await readJson<SourceRecipe[]>(file);
-    if (!recipes.some((item) => item.id === sourceId)) throw new Error(`Source recipe not found: ${sourceId}`);
-    await writeJson(file, recipes.filter((item) => item.id !== sourceId));
+    await this.sources.remove(feedId, sourceId);
     await this.appendEvent({ feedId, type: "source.recipe_removed", detail: { sourceId } });
   }
 
   async writeSourceRecipe(feedId: string, sourceId: string, content: string): Promise<void> {
-    const recipes = await readJson<SourceRecipe[]>(this.feedPath(feedId, "sources.json"));
-    const recipe = recipes.find((item) => item.id === sourceId);
-    if (!recipe) throw new Error(`Source recipe not found: ${sourceId}`);
-    await writeText(this.feedPath(feedId, "sources", recipe.filename), content);
+    await this.sources.writeContent(feedId, sourceId, content);
     await this.appendEvent({ feedId, type: "source.recipe_edited", detail: { sourceId } });
+  }
+
+  async readSourceContent(feedId: string, sourceId: string): Promise<string> {
+    return (await this.sources.get(feedId, sourceId)).content;
+  }
+
+  async readSourceCheckpoint(feedId: string, sourceId: string): Promise<unknown> {
+    return (await this.sources.get(feedId, sourceId)).checkpoint;
+  }
+
+  async writeSourceCheckpoint(feedId: string, sourceId: string, checkpoint: unknown): Promise<void> {
+    await this.sources.writeCheckpoint(feedId, sourceId, checkpoint);
   }
 
   async writeRawSnapshot(feedId: string, runId: string, sourceId: string, snapshotId: string, value: unknown): Promise<void> {
@@ -499,8 +499,7 @@ export class AttentionStore {
     if (target.kind === "feed" || target.kind === "sweep") return true;
     if (target.kind === "card") return this.hasCard(target.feedId, target.cardId);
     if (target.kind === "prompt_layer") return FEED_PROMPT_NAMES.includes(target.promptId as (typeof FEED_PROMPT_NAMES)[number]);
-    const recipes = await readJson<SourceRecipe[]>(this.feedPath(target.feedId, "sources.json"));
-    return recipes.some((recipe) => recipe.id === target.sourceId);
+    return (await this.sources.list(target.feedId)).some((record) => record.recipe.id === target.sourceId);
   }
 
   private async ensureText(relativePath: string, value: string): Promise<void> {
