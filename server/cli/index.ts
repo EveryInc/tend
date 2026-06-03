@@ -6,6 +6,7 @@ import { helpCommand } from "./help";
 import { runLegacyCli } from "./legacy";
 import { setupCodexCommand } from "./setup";
 import { startCommand } from "./start";
+import { versionCommand } from "./version";
 
 export async function runAttentionCli(rawArgs: string[]): Promise<void> {
   const args = [...rawArgs];
@@ -13,6 +14,11 @@ export async function runAttentionCli(rawArgs: string[]): Promise<void> {
   const [command = "help", subcommand, ...rest] = args;
 
   switch (command) {
+    case "--version":
+    case "-v":
+    case "version":
+      versionCommand();
+      break;
     case "start":
       await startCommand();
       break;

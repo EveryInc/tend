@@ -1,12 +1,15 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { attentionDataDir } from "../paths";
+import { versionInfo } from "../version";
 import { apiUrl, initRuntime, mcpUrl, print } from "./shared";
 
 export async function startCommand(): Promise<void> {
   await initRuntime();
   process.env.ATTENTION_CLIENT_DIR ??= defaultClientDir();
+  const version = versionInfo();
   print(`attention starting
+Version: ${version.version}
 UI:  ${apiUrl()}
 API: ${apiUrl()}
 MCP: ${mcpUrl()}

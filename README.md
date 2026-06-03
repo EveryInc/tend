@@ -20,10 +20,12 @@ on `4321`, the API listens on `4332`, and the MCP endpoint is `http://127.0.0.1:
 Check local setup:
 
 ```bash
+pnpm attention -- version
 pnpm attention -- doctor
 pnpm attention -- setup codex
 ```
 
+`version` prints the app version, MCP contract version, platform, architecture, and Bun version.
 `doctor` validates local storage and, when `attention start` is running, confirms the API and MCP
 endpoint advertised by `/api/status`.
 
@@ -174,13 +176,20 @@ runner prompts, and typed tools such as `inspect_feed`, `bind_feed_thread`, `lis
 `claim_work`, `complete_work`, `verify_action`, `upsert_card`, and source-run recording.
 
 Read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md), [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md),
-[docs/DATA.md](./docs/DATA.md), and [docs/INSTALL.md](./docs/INSTALL.md) for the local runtime,
-agent setup, storage model, and install flow. [RUNBOOK.md](./RUNBOOK.md) is the feed-thread operator
-guide, and [CAPABILITY_MAP.md](./CAPABILITY_MAP.md) maps user-visible actions to atomic Codex
-primitives.
+[docs/DATA.md](./docs/DATA.md), [docs/INSTALL.md](./docs/INSTALL.md), and
+[docs/RELEASING.md](./docs/RELEASING.md) for the local runtime, agent setup, storage model, install
+flow, and release lifecycle. [RUNBOOK.md](./RUNBOOK.md) is the feed-thread operator guide, and
+[CAPABILITY_MAP.md](./CAPABILITY_MAP.md) maps user-visible actions to atomic Codex primitives.
 
 For contribution workflow, architecture expectations, and local verification gates, read
 [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+## Releases
+
+Attention uses SemVer-tagged release snapshots. `package.json` is the source of truth for the app
+version, while the SQLite schema version and MCP contract version are tracked separately. GitHub
+Releases are reproducible local artifacts, not an auto-update channel or support promise. See
+[CHANGELOG.md](./CHANGELOG.md) and [docs/RELEASING.md](./docs/RELEASING.md).
 
 ## Safety
 

@@ -31,6 +31,7 @@ http://127.0.0.1:4332/mcp
 pnpm build
 pnpm attention:build
 pnpm attention:smoke
+./dist-bin/attention version
 ./dist-bin/attention start
 ```
 
@@ -44,8 +45,8 @@ pnpm attention:package
 
 The package command writes `dist-bin/releases/attention-<version>-<platform>-<arch>.tar.gz` plus a
 `.sha256` checksum. The archive contains the `attention` executable, built `dist/` UI assets, README,
-license, contributor notes, install/agent/data/security docs, and the operator/capability
-references.
+license, contributor notes, install/agent/data/security/releasing docs, changelog, and the
+operator/capability references.
 The packaged executable resolves UI assets from the sibling `dist/` directory, so it can be launched
 from inside the extracted folder or by absolute path from another working directory.
 
@@ -60,13 +61,14 @@ Copy the printed MCP URL and setup prompt into Codex Desktop.
 ## Health Check
 
 ```sh
+pnpm attention -- version
 pnpm attention -- doctor
 pnpm attention -- status
 ```
 
-`doctor` checks local storage immediately. It also calls the running local API at `/api/status`, so
-run `attention start` in another terminal when you want the full server and MCP readiness check to
-be green.
+`version` prints the app version and MCP contract version. `doctor` checks local storage immediately.
+It also calls the running local API at `/api/status`, so run `attention start` in another terminal
+when you want the full server, version contract, and MCP readiness check to be green.
 
 ## Backup And Restore
 

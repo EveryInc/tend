@@ -2,6 +2,9 @@
 
 Attention is designed for Codex Desktop threads. MCP is the canonical agent interface; the CLI is the human/operator interface.
 
+The MCP contract version is reported by `attention version` and `/api/status`. Treat new tools as
+additive by default, and document breaking tool, prompt, or resource changes in `CHANGELOG.md`.
+
 ## Setup
 
 1. Run `attention start`.

@@ -33,6 +33,7 @@ pnpm build
 pnpm test
 pnpm attention:build
 pnpm attention:smoke
+pnpm attention:package
 ```
 
 ## Architecture Expectations
@@ -92,6 +93,7 @@ Update docs when changing behavior:
 - `docs/DATA.md` for persistence and backup changes
 - `docs/INSTALL.md` for setup changes
 - `docs/DEVELOPMENT.md` for local workflow and CI changes
+- `docs/RELEASING.md` and `CHANGELOG.md` for release, version, schema, or MCP contract changes
 - `RUNBOOK.md` for feed-thread operator behavior
 - `CAPABILITY_MAP.md` for user-visible action primitives
 

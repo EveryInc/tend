@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AttentionDomain } from "./domain";
 import type { AttentionStore } from "./store";
+import { APP_VERSION } from "./version";
 
 async function text(value: unknown) {
   const resolved = await value;
@@ -48,7 +49,7 @@ export async function createMcpRequestHandler(domain: AttentionDomain, store: At
 }
 
 function createAttentionMcpServer(domain: AttentionDomain, store: AttentionStore): McpServer {
-  const server = new McpServer({ name: "attention-local", version: "0.1.0" });
+  const server = new McpServer({ name: "attention-local", version: APP_VERSION });
 
   server.registerResource("feed_state", new ResourceTemplate("attention://feeds/{feedId}/state", { list: undefined }), { title: "Feed State" }, async (uri, variables) => {
     const feedId = String(variables.feedId);

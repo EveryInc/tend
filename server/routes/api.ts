@@ -2,13 +2,14 @@ import { Hono } from "hono";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { VoiceTarget } from "../../src/types";
+import { versionInfo } from "../version";
 import { body, mutation, type LocalRouteContext } from "./shared";
 
 export function apiRoutes(context: LocalRouteContext): Hono {
   const { dataDir, domain, notify, port, root, sqlite, store } = context;
   const app = new Hono();
 
-  app.get("/api/status", (c) => c.json({ ok: true, dataDir, sqlite: sqlite.status(), mcpUrl: `http://127.0.0.1:${port}/mcp` }));
+  app.get("/api/status", (c) => c.json({ ok: true, version: versionInfo(), dataDir, sqlite: sqlite.status(), mcpUrl: `http://127.0.0.1:${port}/mcp` }));
   app.get("/api/state", async (c) => c.json(await store.readWorkspace(c.req.query("feed") ?? "inbox")));
   app.get("/api/artifacts/:name", async (c) => {
     const name = c.req.param("name");

@@ -1,12 +1,13 @@
 import { existsSync } from "node:fs";
 import { attentionDataDir, attentionDbPath, attentionHome } from "../paths";
+import { versionInfo } from "../version";
 import { apiUrl, initRuntime, localPaths, mcpUrl, print } from "./shared";
 
 type DoctorCheck = { name: string; ok: boolean; detail: string };
 
 export async function statusCommand(): Promise<void> {
   const sqlite = await initRuntime();
-  print({ ...localPaths(), sqlite: sqlite.status() });
+  print({ version: versionInfo(), ...localPaths(), sqlite: sqlite.status() });
   sqlite.close();
 }
 
@@ -14,6 +15,7 @@ export async function doctorCommand(): Promise<void> {
   const sqlite = await initRuntime();
   const status = sqlite.status();
   const checks = [
+    { name: "app version", ok: true, detail: `${versionInfo().name} ${versionInfo().version}; MCP contract ${versionInfo().mcpContractVersion}` },
     { name: "home", ok: existsSync(attentionHome()), detail: attentionHome() },
     { name: "data directory", ok: existsSync(attentionDataDir()), detail: attentionDataDir() },
     { name: "sqlite database", ok: existsSync(attentionDbPath()) && status.schemaVersion >= 1, detail: `${attentionDbPath()} schema=${status.schemaVersion}` },
@@ -30,8 +32,13 @@ async function checkApiStatus(): Promise<DoctorCheck> {
   try {
     const response = await fetch(url, { signal: controller.signal });
     if (!response.ok) return { name: "local api", ok: false, detail: `${url} returned HTTP ${response.status}` };
-    const status = await response.json() as { ok?: boolean; mcpUrl?: string; sqlite?: { schemaVersion?: number } };
-    const ok = status.ok === true && status.mcpUrl === mcpUrl() && Number(status.sqlite?.schemaVersion ?? 0) >= 1;
+    const status = await response.json() as { ok?: boolean; mcpUrl?: string; version?: { version?: string; mcpContractVersion?: string }; sqlite?: { schemaVersion?: number } };
+    const expected = versionInfo();
+    const ok = status.ok === true &&
+      status.mcpUrl === mcpUrl() &&
+      status.version?.version === expected.version &&
+      status.version?.mcpContractVersion === expected.mcpContractVersion &&
+      Number(status.sqlite?.schemaVersion ?? 0) >= 1;
     return { name: "local api", ok, detail: ok ? `${url} reachable; MCP ${mcpUrl()}` : `${url} returned an unexpected status payload` };
   } catch (error) {
     const reason = error instanceof Error && error.name === "AbortError" ? "timed out" : "not reachable";
