@@ -1,5 +1,6 @@
 import { Navigate, createRootRoute, createRoute, createRouter, useParams } from "@tanstack/react-router";
-import App, { type AttentionScreen, type WorkspaceTab } from "./App";
+import App from "./App";
+import type { AttentionScreen, WorkspaceTab } from "./app/types";
 
 const rootRoute = createRootRoute();
 

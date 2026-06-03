@@ -30,6 +30,10 @@ The current domain model still stores feed artifacts in readable local files. SQ
 - `src/router.tsx` owns UI routes such as `/feed/:feedId`, prompt workspaces, and learning review.
 - TanStack Query owns workspace fetching and invalidation.
 - `src/state/realtime.tsx` hides SSE details behind a provider.
+- `src/App.tsx` is the route-level orchestrator for query state, keyboard shortcuts, and mutations.
+- `src/feed/` owns feed selectors, card rendering, and routine action rendering.
+- `src/workspace/` owns prompt/source editing and learning review surfaces.
+- `src/shell/` owns top navigation, the inspector modal, and the voice/work dock.
 
 ## Agent Model
 
