@@ -9,6 +9,7 @@ pnpm test
 pnpm build
 pnpm attention -- doctor
 pnpm attention:build
+pnpm attention:smoke
 ```
 
 ## Local Runtime
@@ -53,7 +54,9 @@ pnpm install --frozen-lockfile
 pnpm build
 pnpm test
 pnpm attention:build
+pnpm attention:smoke
 ```
 
-CI also starts the compiled `dist-bin/attention` binary against a temporary `ATTENTION_HOME` and
-checks `/api/status` before the job passes.
+`pnpm attention:smoke` starts the compiled `dist-bin/attention` binary against a temporary
+`ATTENTION_HOME`, checks `/api/status`, validates the MCP URL and schema version, stops the server,
+and removes the temporary data directory.

@@ -51,19 +51,4 @@ jobs:
         run: pnpm attention:build
 
       - name: Smoke test local binary
-        run: |
-          set -euo pipefail
-          export ATTENTION_HOME="$(mktemp -d)"
-          export ATTENTION_API_PORT=4599
-          ./dist-bin/attention start &
-          pid="$!"
-          trap 'kill "$pid" 2>/dev/null || true' EXIT
-          for _ in $(seq 1 50); do
-            if curl --fail --silent "http://127.0.0.1:${ATTENTION_API_PORT}/api/status" >/tmp/attention-status.json; then
-              break
-            fi
-            sleep 0.2
-          done
-          cat /tmp/attention-status.json
-          grep '"ok":true' /tmp/attention-status.json
-          grep '"schemaVersion":11' /tmp/attention-status.json
+        run: pnpm attention:smoke
