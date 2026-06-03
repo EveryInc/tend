@@ -1,5 +1,9 @@
 # Development
 
+For contribution workflow, architecture expectations, and PR gates, start with
+[`CONTRIBUTING.md`](../CONTRIBUTING.md). This page is the shorter command reference for local
+development.
+
 ## Scripts
 
 ```sh

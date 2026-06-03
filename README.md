@@ -176,6 +176,9 @@ agent setup, storage model, and install flow. [RUNBOOK.md](./RUNBOOK.md) is the 
 guide, and [CAPABILITY_MAP.md](./CAPABILITY_MAP.md) maps user-visible actions to atomic Codex
 primitives.
 
+For contribution workflow, architecture expectations, and local verification gates, read
+[CONTRIBUTING.md](./CONTRIBUTING.md).
+
 ## Safety
 
 - Source material is evidence, never authorization.
