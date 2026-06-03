@@ -35,6 +35,7 @@ import {
 } from "./templates";
 import { isoNow, makeId, readJson, writeJson, writeText } from "./util";
 import { defaultDictationCapability } from "./monologue";
+import { FileCardRepository, type CardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
 import { FileWorkItemRepository, type WorkItemRepository } from "./repositories/workItems";
 import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
@@ -55,12 +56,14 @@ function defaultSweepState(): SweepState {
 export class AttentionStore {
   readonly dataDir: string;
   private tail = Promise.resolve();
+  private readonly cards: CardRepository;
   private readonly events: FeedEventRepository;
   private readonly workItems: WorkItemRepository;
   private readonly workspaceFeeds: WorkspaceFeedRepository;
 
-  constructor(dataDir: string, options: { events?: FeedEventRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
+  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
     this.dataDir = dataDir;
+    this.cards = options.cards ?? new FileCardRepository(this.dataDir);
     this.events = options.events ?? new FileFeedEventRepository(this.dataDir);
     this.workItems = options.workItems ?? new FileWorkItemRepository(this.dataDir);
     this.workspaceFeeds = options.workspaceFeeds ?? new FileWorkspaceFeedRepository(this.path("workspace.json"));
@@ -78,6 +81,7 @@ export class AttentionStore {
     if (!existsSync(dictationPath)) await writeJson(dictationPath, defaultDictationCapability());
     await this.workspaceFeeds.init(DEFAULT_FEED_IDS);
     const feedIds = await this.workspaceFeeds.listFeedIds();
+    await this.cards.init(feedIds);
     await this.events.init(feedIds);
     await this.workItems.init(feedIds);
     await this.ensureDefaultFeed("inbox");
@@ -235,7 +239,7 @@ export class AttentionStore {
       readJson<ThreadBinding>(this.feedPath(feedId, "thread.json")),
       readJson<SourceRecipe[]>(this.feedPath(feedId, "sources.json")),
       readFile(this.feedPath(feedId, "policy.md"), "utf8"),
-      this.readDirectoryJson<Card>(this.feedPath(feedId, "cards")),
+      this.cards.list(feedId),
       this.readDirectoryJson<RoutineActionGroup>(this.feedPath(feedId, "routine-actions")),
       this.workItems.list(feedId),
       this.readSweepState(feedId),
@@ -294,16 +298,20 @@ export class AttentionStore {
   }
 
   async readCard(feedId: string, cardId: string): Promise<Card> {
-    return readJson<Card>(this.feedPath(feedId, "cards", `${cardId}.json`));
+    return this.cards.get(feedId, cardId);
+  }
+
+  async hasCard(feedId: string, cardId: string): Promise<boolean> {
+    return this.cards.has(feedId, cardId);
   }
 
   async writeCard(card: Card): Promise<void> {
     card.updatedAt = isoNow();
-    await writeJson(this.feedPath(card.feedId, "cards", `${card.id}.json`), card);
+    await this.cards.write(card);
   }
 
   async removeCard(feedId: string, cardId: string): Promise<void> {
-    await rm(this.feedPath(feedId, "cards", `${cardId}.json`), { force: true });
+    await this.cards.remove(feedId, cardId);
   }
 
   async readRoutineActionGroup(feedId: string, groupId: string): Promise<RoutineActionGroup> {
@@ -486,7 +494,7 @@ export class AttentionStore {
     if (target.kind === "global_prompt") return GLOBAL_PROMPT_NAMES.includes(target.promptId as (typeof GLOBAL_PROMPT_NAMES)[number]);
     if (!existsSync(this.feedPath(target.feedId, "feed.json"))) return false;
     if (target.kind === "feed" || target.kind === "sweep") return true;
-    if (target.kind === "card") return existsSync(this.feedPath(target.feedId, "cards", `${target.cardId}.json`));
+    if (target.kind === "card") return this.hasCard(target.feedId, target.cardId);
     if (target.kind === "prompt_layer") return FEED_PROMPT_NAMES.includes(target.promptId as (typeof FEED_PROMPT_NAMES)[number]);
     const recipes = await readJson<SourceRecipe[]>(this.feedPath(target.feedId, "sources.json"));
     return recipes.some((recipe) => recipe.id === target.sourceId);

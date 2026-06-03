@@ -1080,8 +1080,7 @@ export class AttentionDomain {
     return this.store.serialize(async () => {
       const config = await this.store.readConfig(feedId);
       const now = isoNow();
-      const existingPath = this.store.feedPath(feedId, "cards", `${input.id}.json`);
-      const existing = existsSync(existingPath) ? await this.store.readCard(feedId, input.id) : null;
+      const existing = (await this.store.hasCard(feedId, input.id)) ? await this.store.readCard(feedId, input.id) : null;
       const resurfaced = input.status === "to_review_new" || input.status === "to_review_updated";
       const card: Card = {
         id: input.id,
@@ -1144,7 +1143,7 @@ export class AttentionDomain {
   async seedDemo(onlyFeedId?: string): Promise<void> {
     for (const feedId of onlyFeedId ? [onlyFeedId] : ["inbox", "company-attention"]) {
       for (const card of await this.demoReplayCards(feedId)) {
-        if (!existsSync(this.store.feedPath(feedId, "cards", `${card.id}.json`))) await this.store.writeCard(card);
+        if (!(await this.store.hasCard(feedId, card.id))) await this.store.writeCard(card);
       }
     }
   }

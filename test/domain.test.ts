@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { AttentionDomain } from "../server/domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "../server/operator";
+import { FileCardRepository, MirroredCardRepository } from "../server/repositories/cards";
 import { FileFeedEventRepository, MirroredFeedEventRepository } from "../server/repositories/feedEvents";
 import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/repositories/workItems";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
@@ -193,6 +194,35 @@ describe("filesystem workspace", () => {
 
     expect((await sqlite.workItems().get("inbox", queued.id)).status).toBe("cancelled");
     expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "work", `${queued.id}.json`), "utf8")).status).toBe("cancelled");
+    sqlite.close();
+  });
+
+  test("migrates cards from JSON files into SQLite and mirrors updates", async () => {
+    const { root } = await setup();
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      cards: new MirroredCardRepository(
+        sqlite.cards(),
+        new FileCardRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.cards().list("inbox")).map((card) => card.id)).toContain("inbox-ready-to-collect");
+
+    const card = await store.readCard("inbox", "inbox-ready-to-collect");
+    card.status = "done";
+    card.history.push({ at: card.updatedAt, type: "migration.test" });
+    await store.writeCard(card);
+
+    expect((await sqlite.cards().get("inbox", card.id)).status).toBe("done");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "cards", `${card.id}.json`), "utf8")).status).toBe("done");
     sqlite.close();
   });
 

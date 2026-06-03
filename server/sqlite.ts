@@ -2,12 +2,13 @@ import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDbPath } from "./paths";
-import type { FeedEvent, WorkItem } from "../src/types";
+import type { Card, FeedEvent, WorkItem } from "../src/types";
+import type { CardRepository } from "./repositories/cards";
 import type { FeedEventRepository } from "./repositories/feedEvents";
 import type { WorkItemRepository } from "./repositories/workItems";
 import type { WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 export type LocalRuntimeStatus = {
   dbPath: string;
@@ -48,6 +49,17 @@ export class LocalSqliteStore {
         detail_json TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_feed_events_feed_at ON feed_events (feed_id, at);
+      CREATE TABLE IF NOT EXISTS cards (
+        id TEXT PRIMARY KEY,
+        feed_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        ready_for_pass INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_cards_feed_status ON cards (feed_id, status);
       CREATE TABLE IF NOT EXISTS work_items (
         id TEXT PRIMARY KEY,
         feed_id TEXT NOT NULL,
@@ -90,6 +102,10 @@ export class LocalSqliteStore {
     return new SqliteFeedEventRepository(() => this.database());
   }
 
+  cards(): CardRepository {
+    return new SqliteCardRepository(() => this.database());
+  }
+
   workItems(): WorkItemRepository {
     return new SqliteWorkItemRepository(() => this.database());
   }
@@ -109,6 +125,55 @@ export class LocalSqliteStore {
 
   private setMeta(key: string, value: string): void {
     this.database().query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+  }
+}
+
+class SqliteCardRepository implements CardRepository {
+  constructor(private readonly database: () => Database) {}
+
+  async init(_feedIds: string[]): Promise<void> {}
+
+  async list(feedId: string): Promise<Card[]> {
+    const rows = this.database()
+      .query("SELECT payload_json FROM cards WHERE feed_id = ? ORDER BY created_at ASC, id ASC")
+      .all(feedId) as Array<{ payload_json: string }>;
+    return rows.map((row) => JSON.parse(row.payload_json) as Card);
+  }
+
+  async get(feedId: string, cardId: string): Promise<Card> {
+    const row = this.database()
+      .query("SELECT payload_json FROM cards WHERE feed_id = ? AND id = ?")
+      .get(feedId, cardId) as { payload_json: string } | undefined;
+    if (!row) throw new Error(`Card not found: ${cardId}`);
+    return JSON.parse(row.payload_json) as Card;
+  }
+
+  async has(feedId: string, cardId: string): Promise<boolean> {
+    const row = this.database()
+      .query("SELECT 1 AS found FROM cards WHERE feed_id = ? AND id = ?")
+      .get(feedId, cardId) as { found: number } | undefined;
+    return Boolean(row);
+  }
+
+  async write(card: Card): Promise<void> {
+    this.database()
+      .query(`
+        INSERT INTO cards (id, feed_id, kind, status, ready_for_pass, created_at, updated_at, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          feed_id = excluded.feed_id,
+          kind = excluded.kind,
+          status = excluded.status,
+          ready_for_pass = excluded.ready_for_pass,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at,
+          payload_json = excluded.payload_json
+      `)
+      .run(card.id, card.feedId, card.kind, card.status, card.readyForPass, card.createdAt, card.updatedAt, JSON.stringify(card));
+  }
+
+  async remove(feedId: string, cardId: string): Promise<void> {
+    this.database().query("DELETE FROM cards WHERE feed_id = ? AND id = ?").run(feedId, cardId);
   }
 }
 
