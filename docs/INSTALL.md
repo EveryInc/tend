@@ -50,6 +50,10 @@ pnpm attention -- doctor
 pnpm attention -- status
 ```
 
+`doctor` checks local storage immediately. It also calls the running local API at `/api/status`, so
+run `attention start` in another terminal when you want the full server and MCP readiness check to
+be green.
+
 ## Backup And Restore
 
 ```sh

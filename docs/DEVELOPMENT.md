@@ -19,6 +19,14 @@ Use `ATTENTION_HOME` to keep development data separate:
 ATTENTION_HOME=.local-attention pnpm attention -- start
 ```
 
+In another terminal, verify the runtime:
+
+```sh
+ATTENTION_HOME=.local-attention pnpm attention -- doctor
+```
+
+The doctor output is fully green only while the local API is running.
+
 ## Adding Capabilities
 
 Prefer one domain method with thin adapters:

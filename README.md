@@ -24,6 +24,9 @@ pnpm attention -- doctor
 pnpm attention -- setup codex
 ```
 
+`doctor` validates local storage and, when `attention start` is running, confirms the API and MCP
+endpoint advertised by `/api/status`.
+
 Build a Bun binary:
 
 ```bash

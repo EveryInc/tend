@@ -9,6 +9,7 @@ const rawArgs = process.argv.slice(2);
 if (rawArgs[0] === "--") rawArgs.shift();
 const [command = "help", subcommand, ...rest] = rawArgs;
 const apiPort = Number(process.env.ATTENTION_API_PORT ?? 4332);
+type DoctorCheck = { name: string; ok: boolean; detail: string };
 
 function print(value: unknown): void {
   process.stdout.write(`${typeof value === "string" ? value : JSON.stringify(value, null, 2)}\n`);
@@ -38,14 +39,34 @@ async function status(): Promise<void> {
 
 async function doctor(): Promise<void> {
   const sqlite = await initRuntime();
+  const status = sqlite.status();
   const checks = [
     { name: "home", ok: existsSync(attentionHome()), detail: attentionHome() },
     { name: "data directory", ok: existsSync(attentionDataDir()), detail: attentionDataDir() },
-    { name: "sqlite metadata", ok: sqlite.status().schemaVersion >= 1, detail: attentionDbPath() },
-    { name: "mcp endpoint", ok: true, detail: `Run attention start, then configure Codex MCP to http://127.0.0.1:${apiPort}/mcp` },
+    { name: "sqlite database", ok: existsSync(attentionDbPath()) && status.schemaVersion >= 1, detail: `${attentionDbPath()} schema=${status.schemaVersion}` },
+    await checkApiStatus(),
   ];
   print({ ok: checks.every((check) => check.ok), checks });
   sqlite.close();
+}
+
+async function checkApiStatus(): Promise<DoctorCheck> {
+  const url = `http://127.0.0.1:${apiPort}/api/status`;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1000);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) return { name: "local api", ok: false, detail: `${url} returned HTTP ${response.status}` };
+    const status = await response.json() as { ok?: boolean; mcpUrl?: string; sqlite?: { schemaVersion?: number } };
+    const mcpUrl = `http://127.0.0.1:${apiPort}/mcp`;
+    const ok = status.ok === true && status.mcpUrl === mcpUrl && Number(status.sqlite?.schemaVersion ?? 0) >= 1;
+    return { name: "local api", ok, detail: ok ? `${url} reachable; MCP ${mcpUrl}` : `${url} returned an unexpected status payload` };
+  } catch (error) {
+    const reason = error instanceof Error && error.name === "AbortError" ? "timed out" : "not reachable";
+    return { name: "local api", ok: false, detail: `${url} ${reason}. Run attention start, then rerun doctor.` };
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function setupCodex(): void {
