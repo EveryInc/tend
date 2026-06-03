@@ -2,16 +2,17 @@ import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDbPath } from "./paths";
-import type { Card, FeedEvent, RoutineActionGroup, SourceRun, SweepBatch, SweepFeedbackTrace, SweepState, WorkItem } from "../src/types";
+import type { Card, FeedEvent, PolicyRevision, RevisionProposal, RoutineActionGroup, SourceRun, SweepBatch, SweepFeedbackTrace, SweepState, WorkItem, WorkspaceRevision } from "../src/types";
 import type { CardRepository } from "./repositories/cards";
 import type { FeedEventRepository } from "./repositories/feedEvents";
+import type { RevisionRepository } from "./repositories/revisions";
 import type { RoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import type { SourceRunRepository } from "./repositories/sourceRuns";
 import { defaultSweepState, type SweepRepository } from "./repositories/sweeps";
 import type { WorkItemRepository } from "./repositories/workItems";
 import type { WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 export type LocalRuntimeStatus = {
   dbPath: string;
@@ -82,6 +83,33 @@ export class LocalSqliteStore {
       );
       CREATE INDEX IF NOT EXISTS idx_source_runs_feed_source ON source_runs (feed_id, source_id);
       CREATE INDEX IF NOT EXISTS idx_source_runs_trigger_work ON source_runs (trigger_work_id);
+      CREATE TABLE IF NOT EXISTS revision_proposals (
+        id TEXT PRIMARY KEY,
+        anchor_feed_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        target_kind TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_revision_proposals_anchor_status ON revision_proposals (anchor_feed_id, status);
+      CREATE TABLE IF NOT EXISTS workspace_revisions (
+        id TEXT PRIMARY KEY,
+        anchor_feed_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        source TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_workspace_revisions_anchor_created ON workspace_revisions (anchor_feed_id, created_at);
+      CREATE TABLE IF NOT EXISTS policy_revisions (
+        id TEXT PRIMARY KEY,
+        feed_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        source TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_policy_revisions_feed_created ON policy_revisions (feed_id, created_at);
       CREATE TABLE IF NOT EXISTS sweep_states (
         feed_id TEXT PRIMARY KEY,
         payload_json TEXT NOT NULL
@@ -145,6 +173,10 @@ export class LocalSqliteStore {
     return new SqliteFeedEventRepository(() => this.database());
   }
 
+  revisions(): RevisionRepository {
+    return new SqliteRevisionRepository(() => this.database());
+  }
+
   cards(): CardRepository {
     return new SqliteCardRepository(() => this.database());
   }
@@ -180,6 +212,102 @@ export class LocalSqliteStore {
 
   private setMeta(key: string, value: string): void {
     this.database().query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+  }
+}
+
+class SqliteRevisionRepository implements RevisionRepository {
+  constructor(private readonly database: () => Database) {}
+
+  async init(_feedIds: string[]): Promise<void> {}
+
+  async listProposals(): Promise<RevisionProposal[]> {
+    const rows = this.database()
+      .query("SELECT payload_json FROM revision_proposals ORDER BY created_at ASC, id ASC")
+      .all() as Array<{ payload_json: string }>;
+    return rows.map((row) => JSON.parse(row.payload_json) as RevisionProposal);
+  }
+
+  async getProposal(proposalId: string): Promise<RevisionProposal> {
+    const row = this.database()
+      .query("SELECT payload_json FROM revision_proposals WHERE id = ?")
+      .get(proposalId) as { payload_json: string } | undefined;
+    if (!row) throw new Error(`Revision proposal not found: ${proposalId}`);
+    return JSON.parse(row.payload_json) as RevisionProposal;
+  }
+
+  async writeProposal(proposal: RevisionProposal): Promise<void> {
+    this.database()
+      .query(`
+        INSERT INTO revision_proposals (id, anchor_feed_id, status, target_kind, created_at, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          anchor_feed_id = excluded.anchor_feed_id,
+          status = excluded.status,
+          target_kind = excluded.target_kind,
+          created_at = excluded.created_at,
+          payload_json = excluded.payload_json
+      `)
+      .run(proposal.id, proposal.anchorFeedId, proposal.status, proposal.target.kind, proposal.createdAt, JSON.stringify(proposal));
+  }
+
+  async listWorkspaceRevisions(): Promise<WorkspaceRevision[]> {
+    const rows = this.database()
+      .query("SELECT payload_json FROM workspace_revisions ORDER BY created_at ASC, id ASC")
+      .all() as Array<{ payload_json: string }>;
+    return rows.map((row) => JSON.parse(row.payload_json) as WorkspaceRevision);
+  }
+
+  async getWorkspaceRevision(revisionId: string): Promise<WorkspaceRevision> {
+    const row = this.database()
+      .query("SELECT payload_json FROM workspace_revisions WHERE id = ?")
+      .get(revisionId) as { payload_json: string } | undefined;
+    if (!row) throw new Error(`Workspace revision not found: ${revisionId}`);
+    return JSON.parse(row.payload_json) as WorkspaceRevision;
+  }
+
+  async writeWorkspaceRevision(revision: WorkspaceRevision): Promise<void> {
+    this.database()
+      .query(`
+        INSERT INTO workspace_revisions (id, anchor_feed_id, status, source, created_at, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          anchor_feed_id = excluded.anchor_feed_id,
+          status = excluded.status,
+          source = excluded.source,
+          created_at = excluded.created_at,
+          payload_json = excluded.payload_json
+      `)
+      .run(revision.id, revision.anchorFeedId, revision.status, revision.source, revision.createdAt, JSON.stringify(revision));
+  }
+
+  async listPolicyRevisions(feedId: string): Promise<PolicyRevision[]> {
+    const rows = this.database()
+      .query("SELECT payload_json FROM policy_revisions WHERE feed_id = ? ORDER BY created_at ASC, id ASC")
+      .all(feedId) as Array<{ payload_json: string }>;
+    return rows.map((row) => JSON.parse(row.payload_json) as PolicyRevision);
+  }
+
+  async getPolicyRevision(feedId: string, revisionId: string): Promise<PolicyRevision> {
+    const row = this.database()
+      .query("SELECT payload_json FROM policy_revisions WHERE feed_id = ? AND id = ?")
+      .get(feedId, revisionId) as { payload_json: string } | undefined;
+    if (!row) throw new Error(`Policy revision not found: ${revisionId}`);
+    return JSON.parse(row.payload_json) as PolicyRevision;
+  }
+
+  async writePolicyRevision(revision: PolicyRevision): Promise<void> {
+    this.database()
+      .query(`
+        INSERT INTO policy_revisions (id, feed_id, status, source, created_at, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          feed_id = excluded.feed_id,
+          status = excluded.status,
+          source = excluded.source,
+          created_at = excluded.created_at,
+          payload_json = excluded.payload_json
+      `)
+      .run(revision.id, revision.feedId, revision.status, revision.source, revision.createdAt, JSON.stringify(revision));
   }
 }
 

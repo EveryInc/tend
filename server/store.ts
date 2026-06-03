@@ -38,6 +38,7 @@ import { isoNow, makeId, readJson, writeJson, writeText } from "./util";
 import { defaultDictationCapability } from "./monologue";
 import { FileCardRepository, type CardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
+import { FileRevisionRepository, type RevisionRepository } from "./repositories/revisions";
 import { FileRoutineActionGroupRepository, type RoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import { FileSourceRunRepository, type SourceRunRepository } from "./repositories/sourceRuns";
 import { FileSweepRepository, type SweepRepository } from "./repositories/sweeps";
@@ -53,16 +54,18 @@ export class AttentionStore {
   private tail = Promise.resolve();
   private readonly cards: CardRepository;
   private readonly events: FeedEventRepository;
+  private readonly revisions: RevisionRepository;
   private readonly routineActionGroups: RoutineActionGroupRepository;
   private readonly sourceRuns: SourceRunRepository;
   private readonly sweeps: SweepRepository;
   private readonly workItems: WorkItemRepository;
   private readonly workspaceFeeds: WorkspaceFeedRepository;
 
-  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; sweeps?: SweepRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
+  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; revisions?: RevisionRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; sweeps?: SweepRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
     this.dataDir = dataDir;
     this.cards = options.cards ?? new FileCardRepository(this.dataDir);
     this.events = options.events ?? new FileFeedEventRepository(this.dataDir);
+    this.revisions = options.revisions ?? new FileRevisionRepository(this.dataDir);
     this.routineActionGroups = options.routineActionGroups ?? new FileRoutineActionGroupRepository(this.dataDir);
     this.sourceRuns = options.sourceRuns ?? new FileSourceRunRepository(this.dataDir);
     this.sweeps = options.sweeps ?? new FileSweepRepository(this.dataDir);
@@ -84,6 +87,7 @@ export class AttentionStore {
     const feedIds = await this.workspaceFeeds.listFeedIds();
     await this.cards.init(feedIds);
     await this.events.init(feedIds);
+    await this.revisions.init(feedIds);
     await this.routineActionGroups.init(feedIds);
     await this.sourceRuns.init(feedIds);
     await this.sweeps.init(feedIds);
@@ -142,7 +146,7 @@ export class AttentionStore {
   }
 
   async readRevisionProposals(anchorFeedId: string): Promise<RevisionProposal[]> {
-    const proposals = await this.readDirectoryJson<RevisionProposal>(this.path("revision-proposals"));
+    const proposals = await this.revisions.listProposals();
     return proposals
       .filter((proposal) =>
         proposal.status === "proposed" &&
@@ -152,15 +156,15 @@ export class AttentionStore {
   }
 
   async readRevisionProposal(proposalId: string): Promise<RevisionProposal> {
-    return readJson<RevisionProposal>(this.path("revision-proposals", `${proposalId}.json`));
+    return this.revisions.getProposal(proposalId);
   }
 
   async writeRevisionProposal(proposal: RevisionProposal): Promise<void> {
-    await writeJson(this.path("revision-proposals", `${proposal.id}.json`), proposal);
+    await this.revisions.writeProposal(proposal);
   }
 
   async readWorkspaceRevision(revisionId: string): Promise<WorkspaceRevision> {
-    return readJson<WorkspaceRevision>(this.path("workspace-revisions", `${revisionId}.json`));
+    return this.revisions.getWorkspaceRevision(revisionId);
   }
 
   async writeWorkspaceRevision(anchorFeedId: string, target: VoiceTarget, next: string, reason: string, source: WorkspaceRevision["source"]): Promise<WorkspaceRevision> {
@@ -179,7 +183,7 @@ export class AttentionStore {
       createdAt: isoNow(),
     };
     await this.writeTargetContent(validated, next);
-    await writeJson(this.path("workspace-revisions", `${revision.id}.json`), revision);
+    await this.revisions.writeWorkspaceRevision(revision);
     await this.appendEvent({ feedId: anchorFeedId, type: "revision.applied", detail: { revisionId: revision.id, target: validated, source } });
     return revision;
   }
@@ -192,7 +196,7 @@ export class AttentionStore {
     revision.status = "reverted";
     revision.revertedAt = isoNow();
     await this.writeTargetContent(revision.target, revision.previous);
-    await writeJson(this.path("workspace-revisions", `${revision.id}.json`), revision);
+    await this.revisions.writeWorkspaceRevision(revision);
     await this.appendEvent({ feedId: revision.anchorFeedId, type: "revision.reverted", detail: { revisionId, target: revision.target } });
     return revision;
   }
@@ -354,19 +358,18 @@ export class AttentionStore {
     const previous = await readFile(this.feedPath(feedId, "policy.md"), "utf8");
     const revision: PolicyRevision = { id: makeId("policy"), feedId, previous, next, reason, source, status: "applied", createdAt: isoNow() };
     await writeText(this.feedPath(feedId, "policy.md"), next);
-    await writeJson(this.feedPath(feedId, "policy-revisions", `${revision.id}.json`), revision);
+    await this.revisions.writePolicyRevision(revision);
     await this.appendEvent({ feedId, type: "policy.applied", detail: { revisionId: revision.id, source, reason } });
     return revision;
   }
 
   async revertPolicy(feedId: string, revisionId: string): Promise<PolicyRevision> {
-    const file = this.feedPath(feedId, "policy-revisions", `${revisionId}.json`);
-    const revision = await readJson<PolicyRevision>(file);
+    const revision = await this.revisions.getPolicyRevision(feedId, revisionId);
     if (revision.status !== "applied") throw new Error("Policy revision is not active.");
     revision.status = "reverted";
     revision.revertedAt = isoNow();
     await writeText(this.feedPath(feedId, "policy.md"), revision.previous);
-    await writeJson(file, revision);
+    await this.revisions.writePolicyRevision(revision);
     await this.appendEvent({ feedId, type: "policy.reverted", detail: { revisionId } });
     return revision;
   }

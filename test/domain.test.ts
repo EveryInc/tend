@@ -6,6 +6,7 @@ import { AttentionDomain } from "../server/domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "../server/operator";
 import { FileCardRepository, MirroredCardRepository } from "../server/repositories/cards";
 import { FileFeedEventRepository, MirroredFeedEventRepository } from "../server/repositories/feedEvents";
+import { FileRevisionRepository, MirroredRevisionRepository } from "../server/repositories/revisions";
 import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository } from "../server/repositories/routineActionGroups";
 import { FileSourceRunRepository, MirroredSourceRunRepository } from "../server/repositories/sourceRuns";
 import { FileSweepRepository, MirroredSweepRepository } from "../server/repositories/sweeps";
@@ -339,6 +340,50 @@ describe("filesystem workspace", () => {
     expect((await sqlite.sweeps().getFeedback("inbox", "feedback-old")).rejudgedAt).toBe(createdAt);
     expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "sweep-state.json"), "utf8")).lastFeedbackId).toBeNull();
     expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "sweep-feedback", "feedback-old.json"), "utf8")).rejudgedAt).toBe(createdAt);
+    sqlite.close();
+  });
+
+  test("migrates revision records from JSON files into SQLite and mirrors updates", async () => {
+    const { root, store: fileStore, domain: fileDomain } = await setup();
+    const sourceTarget = { kind: "source_recipe" as const, feedId: "inbox", sourceId: "gmail-inbox" };
+    const promptTarget = { kind: "prompt_layer" as const, feedId: "inbox", promptId: "judge.md" };
+    const sourceOriginal = await fileStore.readTargetContent(sourceTarget);
+    const promptOriginal = await fileStore.readTargetContent(promptTarget);
+    const proposal = await fileDomain.proposeRevision("inbox", sourceTarget, "Tighten the inbox recipe.", `${sourceOriginal}\n\n- Ignore bulk newsletters.`);
+    const workspaceRevision = await fileDomain.updateWorkspaceDocument("inbox", promptTarget, `${promptOriginal}\n- Prefer explicit user impact.`);
+    const policyRevision = await fileDomain.applyPolicyRevision("inbox", "# Inbox policy\n\n- Prefer reversible changes.", "Migration test.", "micro_learning");
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      revisions: new MirroredRevisionRepository(
+        sqlite.revisions(),
+        new FileRevisionRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.revisions().listProposals()).map((item) => item.id)).toContain(proposal.id);
+    expect((await sqlite.revisions().getWorkspaceRevision(workspaceRevision.id)).status).toBe("applied");
+    expect((await sqlite.revisions().getPolicyRevision("inbox", policyRevision.id)).status).toBe("applied");
+
+    const migratedProposal = await store.readRevisionProposal(proposal.id);
+    migratedProposal.status = "rejected";
+    migratedProposal.rejectedAt = new Date().toISOString();
+    await store.writeRevisionProposal(migratedProposal);
+    await store.revertWorkspaceRevision(workspaceRevision.id);
+    await store.revertPolicy("inbox", policyRevision.id);
+
+    expect((await sqlite.revisions().getProposal(proposal.id)).status).toBe("rejected");
+    expect((await sqlite.revisions().getWorkspaceRevision(workspaceRevision.id)).status).toBe("reverted");
+    expect((await sqlite.revisions().getPolicyRevision("inbox", policyRevision.id)).status).toBe("reverted");
+    expect(JSON.parse(await readFile(path.join(root, "revision-proposals", `${proposal.id}.json`), "utf8")).status).toBe("rejected");
+    expect(JSON.parse(await readFile(path.join(root, "workspace-revisions", `${workspaceRevision.id}.json`), "utf8")).status).toBe("reverted");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "policy-revisions", `${policyRevision.id}.json`), "utf8")).status).toBe("reverted");
     sqlite.close();
   });
 

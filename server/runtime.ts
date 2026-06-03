@@ -3,6 +3,7 @@ import path from "node:path";
 import { attentionDataDir } from "./paths";
 import { FileCardRepository, MirroredCardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, MirroredFeedEventRepository } from "./repositories/feedEvents";
+import { FileRevisionRepository, MirroredRevisionRepository } from "./repositories/revisions";
 import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import { FileSourceRunRepository, MirroredSourceRunRepository } from "./repositories/sourceRuns";
 import { FileSweepRepository, MirroredSweepRepository } from "./repositories/sweeps";
@@ -22,6 +23,10 @@ export async function createLocalRuntime(dataDir = attentionDataDir()): Promise<
   const events = new MirroredFeedEventRepository(
     sqlite.feedEvents(),
     new FileFeedEventRepository(dataDir),
+  );
+  const revisions = new MirroredRevisionRepository(
+    sqlite.revisions(),
+    new FileRevisionRepository(dataDir),
   );
   const workItems = new MirroredWorkItemRepository(
     sqlite.workItems(),
@@ -43,7 +48,7 @@ export async function createLocalRuntime(dataDir = attentionDataDir()): Promise<
     sqlite.sweeps(),
     new FileSweepRepository(dataDir),
   );
-  const store = new AttentionStore(dataDir, { cards, events, routineActionGroups, sourceRuns, sweeps, workItems, workspaceFeeds });
+  const store = new AttentionStore(dataDir, { cards, events, revisions, routineActionGroups, sourceRuns, sweeps, workItems, workspaceFeeds });
   await store.init();
   return { dataDir, sqlite, store };
 }
