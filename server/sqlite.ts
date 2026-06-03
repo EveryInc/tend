@@ -2,13 +2,14 @@ import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDbPath } from "./paths";
-import type { Card, FeedEvent, WorkItem } from "../src/types";
+import type { Card, FeedEvent, RoutineActionGroup, WorkItem } from "../src/types";
 import type { CardRepository } from "./repositories/cards";
 import type { FeedEventRepository } from "./repositories/feedEvents";
+import type { RoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import type { WorkItemRepository } from "./repositories/workItems";
 import type { WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 export type LocalRuntimeStatus = {
   dbPath: string;
@@ -60,6 +61,15 @@ export class LocalSqliteStore {
         payload_json TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_cards_feed_status ON cards (feed_id, status);
+      CREATE TABLE IF NOT EXISTS routine_action_groups (
+        id TEXT PRIMARY KEY,
+        feed_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_routine_action_groups_feed_status ON routine_action_groups (feed_id, status);
       CREATE TABLE IF NOT EXISTS work_items (
         id TEXT PRIMARY KEY,
         feed_id TEXT NOT NULL,
@@ -104,6 +114,10 @@ export class LocalSqliteStore {
 
   cards(): CardRepository {
     return new SqliteCardRepository(() => this.database());
+  }
+
+  routineActionGroups(): RoutineActionGroupRepository {
+    return new SqliteRoutineActionGroupRepository(() => this.database());
   }
 
   workItems(): WorkItemRepository {
@@ -174,6 +188,49 @@ class SqliteCardRepository implements CardRepository {
 
   async remove(feedId: string, cardId: string): Promise<void> {
     this.database().query("DELETE FROM cards WHERE feed_id = ? AND id = ?").run(feedId, cardId);
+  }
+}
+
+class SqliteRoutineActionGroupRepository implements RoutineActionGroupRepository {
+  constructor(private readonly database: () => Database) {}
+
+  async init(_feedIds: string[]): Promise<void> {}
+
+  async list(feedId: string): Promise<RoutineActionGroup[]> {
+    const rows = this.database()
+      .query("SELECT payload_json FROM routine_action_groups WHERE feed_id = ? ORDER BY created_at ASC, id ASC")
+      .all(feedId) as Array<{ payload_json: string }>;
+    return rows.map((row) => JSON.parse(row.payload_json) as RoutineActionGroup);
+  }
+
+  async get(feedId: string, groupId: string): Promise<RoutineActionGroup> {
+    const row = this.database()
+      .query("SELECT payload_json FROM routine_action_groups WHERE feed_id = ? AND id = ?")
+      .get(feedId, groupId) as { payload_json: string } | undefined;
+    if (!row) throw new Error(`Routine action group not found: ${groupId}`);
+    return JSON.parse(row.payload_json) as RoutineActionGroup;
+  }
+
+  async has(feedId: string, groupId: string): Promise<boolean> {
+    const row = this.database()
+      .query("SELECT 1 AS found FROM routine_action_groups WHERE feed_id = ? AND id = ?")
+      .get(feedId, groupId) as { found: number } | undefined;
+    return Boolean(row);
+  }
+
+  async write(group: RoutineActionGroup): Promise<void> {
+    this.database()
+      .query(`
+        INSERT INTO routine_action_groups (id, feed_id, status, created_at, updated_at, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          feed_id = excluded.feed_id,
+          status = excluded.status,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at,
+          payload_json = excluded.payload_json
+      `)
+      .run(group.id, group.feedId, group.status, group.createdAt, group.updatedAt, JSON.stringify(group));
   }
 }
 

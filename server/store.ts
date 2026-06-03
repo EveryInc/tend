@@ -37,6 +37,7 @@ import { isoNow, makeId, readJson, writeJson, writeText } from "./util";
 import { defaultDictationCapability } from "./monologue";
 import { FileCardRepository, type CardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
+import { FileRoutineActionGroupRepository, type RoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import { FileWorkItemRepository, type WorkItemRepository } from "./repositories/workItems";
 import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
@@ -58,13 +59,15 @@ export class AttentionStore {
   private tail = Promise.resolve();
   private readonly cards: CardRepository;
   private readonly events: FeedEventRepository;
+  private readonly routineActionGroups: RoutineActionGroupRepository;
   private readonly workItems: WorkItemRepository;
   private readonly workspaceFeeds: WorkspaceFeedRepository;
 
-  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
+  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; routineActionGroups?: RoutineActionGroupRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
     this.dataDir = dataDir;
     this.cards = options.cards ?? new FileCardRepository(this.dataDir);
     this.events = options.events ?? new FileFeedEventRepository(this.dataDir);
+    this.routineActionGroups = options.routineActionGroups ?? new FileRoutineActionGroupRepository(this.dataDir);
     this.workItems = options.workItems ?? new FileWorkItemRepository(this.dataDir);
     this.workspaceFeeds = options.workspaceFeeds ?? new FileWorkspaceFeedRepository(this.path("workspace.json"));
   }
@@ -83,6 +86,7 @@ export class AttentionStore {
     const feedIds = await this.workspaceFeeds.listFeedIds();
     await this.cards.init(feedIds);
     await this.events.init(feedIds);
+    await this.routineActionGroups.init(feedIds);
     await this.workItems.init(feedIds);
     await this.ensureDefaultFeed("inbox");
     await this.ensureDefaultFeed("company-attention");
@@ -240,7 +244,7 @@ export class AttentionStore {
       readJson<SourceRecipe[]>(this.feedPath(feedId, "sources.json")),
       readFile(this.feedPath(feedId, "policy.md"), "utf8"),
       this.cards.list(feedId),
-      this.readDirectoryJson<RoutineActionGroup>(this.feedPath(feedId, "routine-actions")),
+      this.routineActionGroups.list(feedId),
       this.workItems.list(feedId),
       this.readSweepState(feedId),
     ]);
@@ -315,12 +319,16 @@ export class AttentionStore {
   }
 
   async readRoutineActionGroup(feedId: string, groupId: string): Promise<RoutineActionGroup> {
-    return readJson<RoutineActionGroup>(this.feedPath(feedId, "routine-actions", `${groupId}.json`));
+    return this.routineActionGroups.get(feedId, groupId);
+  }
+
+  async hasRoutineActionGroup(feedId: string, groupId: string): Promise<boolean> {
+    return this.routineActionGroups.has(feedId, groupId);
   }
 
   async writeRoutineActionGroup(group: RoutineActionGroup): Promise<void> {
     group.updatedAt = isoNow();
-    await writeJson(this.feedPath(group.feedId, "routine-actions", `${group.id}.json`), group);
+    await this.routineActionGroups.write(group);
   }
 
   async readWork(feedId: string, workId: string): Promise<WorkItem> {

@@ -3,6 +3,7 @@ import path from "node:path";
 import { attentionDataDir } from "./paths";
 import { FileCardRepository, MirroredCardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, MirroredFeedEventRepository } from "./repositories/feedEvents";
+import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import { FileWorkItemRepository, MirroredWorkItemRepository } from "./repositories/workItems";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 import { LocalSqliteStore } from "./sqlite";
@@ -28,7 +29,11 @@ export async function createLocalRuntime(dataDir = attentionDataDir()): Promise<
     sqlite.cards(),
     new FileCardRepository(dataDir),
   );
-  const store = new AttentionStore(dataDir, { cards, events, workItems, workspaceFeeds });
+  const routineActionGroups = new MirroredRoutineActionGroupRepository(
+    sqlite.routineActionGroups(),
+    new FileRoutineActionGroupRepository(dataDir),
+  );
+  const store = new AttentionStore(dataDir, { cards, events, routineActionGroups, workItems, workspaceFeeds });
   await store.init();
   return { dataDir, sqlite, store };
 }

@@ -1,4 +1,3 @@
-import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import type {
   Card,
@@ -581,8 +580,7 @@ export class AttentionDomain {
     if (new Set(itemIds).size !== itemIds.length) throw new Error("Routine action item IDs must be unique.");
     if (new Set(cardIds).size !== cardIds.length) throw new Error("A card cannot appear twice in one routine action group.");
     return this.store.serialize(async () => {
-      const existingPath = this.store.feedPath(feedId, "routine-actions", `${input.id}.json`);
-      const existing = existsSync(existingPath) ? await this.store.readRoutineActionGroup(feedId, input.id) : null;
+      const existing = (await this.store.hasRoutineActionGroup(feedId, input.id)) ? await this.store.readRoutineActionGroup(feedId, input.id) : null;
       if (existing && (existing.status === "queued" || existing.status === "working" || existing.status === "completed")) {
         throw new Error("Routine action group cannot change after approval or completion.");
       }

@@ -6,6 +6,7 @@ import { AttentionDomain } from "../server/domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "../server/operator";
 import { FileCardRepository, MirroredCardRepository } from "../server/repositories/cards";
 import { FileFeedEventRepository, MirroredFeedEventRepository } from "../server/repositories/feedEvents";
+import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository } from "../server/repositories/routineActionGroups";
 import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/repositories/workItems";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
@@ -223,6 +224,46 @@ describe("filesystem workspace", () => {
 
     expect((await sqlite.cards().get("inbox", card.id)).status).toBe("done");
     expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "cards", `${card.id}.json`), "utf8")).status).toBe("done");
+    sqlite.close();
+  });
+
+  test("migrates routine action groups from JSON files into SQLite and mirrors updates", async () => {
+    const { root, domain: fileDomain } = await setup();
+    const group = await fileDomain.upsertRoutineActionGroup("inbox", {
+      id: "likely-archive",
+      label: "Likely archive",
+      summary: "Low-attention threads with an obvious shared cleanup.",
+      proposedAction: { label: "Archive all", instruction: "Reread and archive each listed Gmail thread.", externalMutation: true },
+      items: [{ id: "setup-noise", cardId: "inbox-ready-to-collect", title: "Routine notice", reason: "No reply or decision is needed." }],
+    });
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      cards: new MirroredCardRepository(
+        sqlite.cards(),
+        new FileCardRepository(root),
+      ),
+      routineActionGroups: new MirroredRoutineActionGroupRepository(
+        sqlite.routineActionGroups(),
+        new FileRoutineActionGroupRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.routineActionGroups().list("inbox")).map((item) => item.id)).toContain(group.id);
+
+    const migrated = await store.readRoutineActionGroup("inbox", group.id);
+    migrated.status = "failed";
+    migrated.error = "Failed by migration test.";
+    await store.writeRoutineActionGroup(migrated);
+
+    expect((await sqlite.routineActionGroups().get("inbox", group.id)).status).toBe("failed");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "routine-actions", `${group.id}.json`), "utf8")).status).toBe("failed");
     sqlite.close();
   });
 
