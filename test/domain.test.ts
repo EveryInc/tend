@@ -5,6 +5,7 @@ import path from "node:path";
 import { AttentionDomain } from "../server/domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "../server/operator";
 import { FileFeedEventRepository, MirroredFeedEventRepository } from "../server/repositories/feedEvents";
+import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/repositories/workItems";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
@@ -162,6 +163,36 @@ describe("filesystem workspace", () => {
     expect((await sqlite.feedEvents().list("inbox")).map((event) => event.type)).toContain("heartbeat.proposed");
     const mirrored = (await readFile(path.join(root, "feeds", "inbox", "events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
     expect(mirrored.map((event) => event.type)).toContain("heartbeat.proposed");
+    sqlite.close();
+  });
+
+  test("migrates queued work from JSON files into SQLite and mirrors updates", async () => {
+    const { root, domain: fileDomain } = await setup();
+    const queued = await fileDomain.queueFeedInstruction("inbox", "Check the queue migration.");
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      workItems: new MirroredWorkItemRepository(
+        sqlite.workItems(),
+        new FileWorkItemRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.workItems().list("inbox")).map((work) => work.id)).toContain(queued.id);
+
+    const work = await store.readWork("inbox", queued.id);
+    work.status = "cancelled";
+    work.error = "Cancelled by migration test.";
+    await store.writeWork(work);
+
+    expect((await sqlite.workItems().get("inbox", queued.id)).status).toBe("cancelled");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "work", `${queued.id}.json`), "utf8")).status).toBe("cancelled");
     sqlite.close();
   });
 

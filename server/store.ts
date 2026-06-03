@@ -36,6 +36,7 @@ import {
 import { isoNow, makeId, readJson, writeJson, writeText } from "./util";
 import { defaultDictationCapability } from "./monologue";
 import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
+import { FileWorkItemRepository, type WorkItemRepository } from "./repositories/workItems";
 import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
 export const GLOBAL_PROMPT_NAMES = ["judge.md", "compose-card.md", "execute-work.md", "distill-policy.md", "compound.md"] as const;
@@ -55,11 +56,13 @@ export class AttentionStore {
   readonly dataDir: string;
   private tail = Promise.resolve();
   private readonly events: FeedEventRepository;
+  private readonly workItems: WorkItemRepository;
   private readonly workspaceFeeds: WorkspaceFeedRepository;
 
-  constructor(dataDir: string, options: { events?: FeedEventRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
+  constructor(dataDir: string, options: { events?: FeedEventRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
     this.dataDir = dataDir;
     this.events = options.events ?? new FileFeedEventRepository(this.dataDir);
+    this.workItems = options.workItems ?? new FileWorkItemRepository(this.dataDir);
     this.workspaceFeeds = options.workspaceFeeds ?? new FileWorkspaceFeedRepository(this.path("workspace.json"));
   }
 
@@ -74,7 +77,9 @@ export class AttentionStore {
     const dictationPath = this.path("integrations/dictation.json");
     if (!existsSync(dictationPath)) await writeJson(dictationPath, defaultDictationCapability());
     await this.workspaceFeeds.init(DEFAULT_FEED_IDS);
-    await this.events.init(await this.workspaceFeeds.listFeedIds());
+    const feedIds = await this.workspaceFeeds.listFeedIds();
+    await this.events.init(feedIds);
+    await this.workItems.init(feedIds);
     await this.ensureDefaultFeed("inbox");
     await this.ensureDefaultFeed("company-attention");
     await Promise.all((await this.workspaceFeeds.listFeedIds()).map((feedId) => this.ensureFeedPrompts(feedId)));
@@ -232,7 +237,7 @@ export class AttentionStore {
       readFile(this.feedPath(feedId, "policy.md"), "utf8"),
       this.readDirectoryJson<Card>(this.feedPath(feedId, "cards")),
       this.readDirectoryJson<RoutineActionGroup>(this.feedPath(feedId, "routine-actions")),
-      this.readDirectoryJson<WorkItem>(this.feedPath(feedId, "work")),
+      this.workItems.list(feedId),
       this.readSweepState(feedId),
     ]);
     cards.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -311,12 +316,12 @@ export class AttentionStore {
   }
 
   async readWork(feedId: string, workId: string): Promise<WorkItem> {
-    return readJson<WorkItem>(this.feedPath(feedId, "work", `${workId}.json`));
+    return this.workItems.get(feedId, workId);
   }
 
   async writeWork(work: WorkItem): Promise<void> {
     work.updatedAt = isoNow();
-    await writeJson(this.feedPath(work.feedId, "work", `${work.id}.json`), work);
+    await this.workItems.write(work);
   }
 
   async readThread(feedId: string): Promise<ThreadBinding> {

@@ -2,11 +2,12 @@ import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDbPath } from "./paths";
-import type { FeedEvent } from "../src/types";
+import type { FeedEvent, WorkItem } from "../src/types";
 import type { FeedEventRepository } from "./repositories/feedEvents";
+import type { WorkItemRepository } from "./repositories/workItems";
 import type { WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 export type LocalRuntimeStatus = {
   dbPath: string;
@@ -47,6 +48,17 @@ export class LocalSqliteStore {
         detail_json TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_feed_events_feed_at ON feed_events (feed_id, at);
+      CREATE TABLE IF NOT EXISTS work_items (
+        id TEXT PRIMARY KEY,
+        feed_id TEXT NOT NULL,
+        card_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_work_items_feed_status ON work_items (feed_id, status);
     `);
     const now = new Date().toISOString();
     this.setMeta("schema_version", String(SCHEMA_VERSION));
@@ -78,6 +90,10 @@ export class LocalSqliteStore {
     return new SqliteFeedEventRepository(() => this.database());
   }
 
+  workItems(): WorkItemRepository {
+    return new SqliteWorkItemRepository(() => this.database());
+  }
+
   private database(): Database {
     if (!this.db) {
       this.db = new Database(this.dbPath, { create: true });
@@ -93,6 +109,44 @@ export class LocalSqliteStore {
 
   private setMeta(key: string, value: string): void {
     this.database().query("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+  }
+}
+
+class SqliteWorkItemRepository implements WorkItemRepository {
+  constructor(private readonly database: () => Database) {}
+
+  async init(_feedIds: string[]): Promise<void> {}
+
+  async list(feedId: string): Promise<WorkItem[]> {
+    const rows = this.database()
+      .query("SELECT payload_json FROM work_items WHERE feed_id = ? ORDER BY created_at ASC, id ASC")
+      .all(feedId) as Array<{ payload_json: string }>;
+    return rows.map((row) => JSON.parse(row.payload_json) as WorkItem);
+  }
+
+  async get(feedId: string, workId: string): Promise<WorkItem> {
+    const row = this.database()
+      .query("SELECT payload_json FROM work_items WHERE feed_id = ? AND id = ?")
+      .get(feedId, workId) as { payload_json: string } | undefined;
+    if (!row) throw new Error(`Work item not found: ${workId}`);
+    return JSON.parse(row.payload_json) as WorkItem;
+  }
+
+  async write(work: WorkItem): Promise<void> {
+    this.database()
+      .query(`
+        INSERT INTO work_items (id, feed_id, card_id, kind, status, created_at, updated_at, payload_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          feed_id = excluded.feed_id,
+          card_id = excluded.card_id,
+          kind = excluded.kind,
+          status = excluded.status,
+          created_at = excluded.created_at,
+          updated_at = excluded.updated_at,
+          payload_json = excluded.payload_json
+      `)
+      .run(work.id, work.feedId, work.cardId, work.kind, work.status, work.createdAt, work.updatedAt, JSON.stringify(work));
   }
 }
 
