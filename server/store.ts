@@ -35,9 +35,11 @@ import {
 } from "./templates";
 import { isoNow, makeId, readJson, writeJson, writeText } from "./util";
 import { defaultDictationCapability } from "./monologue";
+import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
 export const GLOBAL_PROMPT_NAMES = ["judge.md", "compose-card.md", "execute-work.md", "distill-policy.md", "compound.md"] as const;
 export const FEED_PROMPT_NAMES = ["judge.md", "compose-card.md"] as const;
+const DEFAULT_FEED_IDS = ["inbox", "company-attention"];
 
 function defaultSweepState(): SweepState {
   return {
@@ -51,9 +53,11 @@ function defaultSweepState(): SweepState {
 export class AttentionStore {
   readonly dataDir: string;
   private tail = Promise.resolve();
+  private readonly workspaceFeeds: WorkspaceFeedRepository;
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, options: { workspaceFeeds?: WorkspaceFeedRepository } = {}) {
     this.dataDir = dataDir;
+    this.workspaceFeeds = options.workspaceFeeds ?? new FileWorkspaceFeedRepository(this.path("workspace.json"));
   }
 
   async init(): Promise<void> {
@@ -66,12 +70,10 @@ export class AttentionStore {
     await this.ensureText("prompts/compound.md", COMPOUND_PROMPT);
     const dictationPath = this.path("integrations/dictation.json");
     if (!existsSync(dictationPath)) await writeJson(dictationPath, defaultDictationCapability());
-    const workspacePath = this.path("workspace.json");
-    if (!existsSync(workspacePath)) await writeJson(workspacePath, { version: 1, feedIds: ["inbox", "company-attention"], createdAt: isoNow() });
+    await this.workspaceFeeds.init(DEFAULT_FEED_IDS);
     await this.ensureDefaultFeed("inbox");
     await this.ensureDefaultFeed("company-attention");
-    const workspace = await readJson<{ feedIds: string[] }>(workspacePath);
-    await Promise.all(workspace.feedIds.map((feedId) => this.ensureFeedPrompts(feedId)));
+    await Promise.all((await this.workspaceFeeds.listFeedIds()).map((feedId) => this.ensureFeedPrompts(feedId)));
   }
 
   path(...parts: string[]): string {
@@ -84,12 +86,12 @@ export class AttentionStore {
 
   async readWorkspace(feedId = "inbox"): Promise<WorkspaceView> {
     await this.init();
-    const workspace = await readJson<{ feedIds: string[] }>(this.path("workspace.json"));
-    const feeds = await Promise.all(workspace.feedIds.map(async (id) => {
+    const feedIds = await this.workspaceFeeds.listFeedIds();
+    const feeds = await Promise.all(feedIds.map(async (id) => {
       const config = await this.readConfig(id);
       return { id: config.id, name: config.name, purpose: config.purpose };
     }));
-    const selected = workspace.feedIds.includes(feedId) ? feedId : workspace.feedIds[0];
+    const selected = feedIds.includes(feedId) ? feedId : feedIds[0];
     return {
       feeds,
       active: await this.readFeed(selected),
@@ -402,16 +404,15 @@ export class AttentionStore {
 
   async createFeed(config: FeedConfig, homeThreadId: string | null = null): Promise<FeedView> {
     return this.serialize(async () => {
-      const workspace = await readJson<{ version: number; feedIds: string[]; createdAt: string }>(this.path("workspace.json"));
-      if (workspace.feedIds.includes(config.id)) throw new Error(`Feed already exists: ${config.id}`);
-      workspace.feedIds.push(config.id);
-      await writeJson(this.path("workspace.json"), workspace);
+      const feedIds = await this.workspaceFeeds.listFeedIds();
+      if (feedIds.includes(config.id)) throw new Error(`Feed already exists: ${config.id}`);
       await writeJson(this.feedPath(config.id, "feed.json"), config);
       await writeText(this.feedPath(config.id, "feed.md"), `# ${config.name}\n\n${config.purpose}\n`);
       await writeText(this.feedPath(config.id, "policy.md"), `# ${config.name} policy\n\n- Start with a high attention bar. Learn from explicit corrections and outcomes.\n`);
       await writeJson(this.feedPath(config.id, "thread.json"), { ...threadBinding(), homeThreadId, boundAt: homeThreadId ? isoNow() : null });
       await writeJson(this.feedPath(config.id, "sources.json"), []);
       await this.ensureFeedPrompts(config.id);
+      await this.workspaceFeeds.addFeedId(config.id);
       await this.appendEvent({ feedId: config.id, type: "feed.created", detail: { homeThreadId } });
       return this.readFeed(config.id);
     });
@@ -420,11 +421,10 @@ export class AttentionStore {
   async archiveFeed(feedId: string): Promise<void> {
     await this.serialize(async () => {
       if (feedId === "inbox" || feedId === "company-attention") throw new Error("Default feeds cannot be archived.");
-      const workspace = await readJson<{ version: number; feedIds: string[]; createdAt: string }>(this.path("workspace.json"));
-      if (!workspace.feedIds.includes(feedId)) throw new Error(`Feed not found: ${feedId}`);
+      const feedIds = await this.workspaceFeeds.listFeedIds();
+      if (!feedIds.includes(feedId)) throw new Error(`Feed not found: ${feedId}`);
       await this.appendEvent({ feedId, type: "feed.archived" });
-      workspace.feedIds = workspace.feedIds.filter((id) => id !== feedId);
-      await writeJson(this.path("workspace.json"), workspace);
+      await this.workspaceFeeds.removeFeedId(feedId);
       await mkdir(this.path("archived-feeds"), { recursive: true });
       await rename(this.feedPath(feedId), this.path("archived-feeds", `${feedId}-${Date.now()}`));
     });

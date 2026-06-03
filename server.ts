@@ -1,32 +1,22 @@
 import { Hono } from "hono";
-import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AttentionDomain } from "./server/domain";
 import { createMcpRequestHandler } from "./server/mcp";
-import { attentionDataDir } from "./server/paths";
 import { apiRoutes } from "./server/routes/api";
 import { assetRoutes } from "./server/routes/assets";
 import { createRealtimeHub } from "./server/routes/realtime";
-import { LocalSqliteStore } from "./server/sqlite";
-import { AttentionStore } from "./server/store";
+import { createLocalRuntime } from "./server/runtime";
 
 declare const Bun: {
   serve(options: { port: number; hostname: string; idleTimeout: number; fetch: (...args: any[]) => any }): { stop(force?: boolean): void };
 };
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const dataDir = attentionDataDir();
 const port = Number(process.env.ATTENTION_API_PORT ?? 4332);
 const clientDir = process.env.ATTENTION_CLIENT_DIR ?? path.join(root, "dist");
-
-const store = new AttentionStore(dataDir);
+const { dataDir, sqlite, store } = await createLocalRuntime();
 const domain = new AttentionDomain(store);
-const sqlite = new LocalSqliteStore();
-await mkdir(dataDir, { recursive: true });
-await sqlite.init();
-await store.init();
-
 const realtime = createRealtimeHub();
 const mcpHandler = await createMcpRequestHandler(domain, store);
 const app = new Hono();

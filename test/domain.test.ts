@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { AttentionDomain } from "../server/domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "../server/operator";
+import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
+import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
 import type { WorkItem } from "../src/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
@@ -102,6 +104,34 @@ describe("filesystem workspace", () => {
     const [archived] = await readdir(path.join(root, "archived-feeds"));
     expect(await readFile(path.join(root, "archived-feeds", archived, "feed.json"), "utf8")).toContain("Research Watch");
     await expect(domain.archiveFeed("inbox")).rejects.toThrow("Default feeds");
+  });
+
+  test("migrates active feed membership from workspace.json into SQLite and mirrors future changes", async () => {
+    const { root, domain: fileDomain } = await setup();
+    await fileDomain.createFeedFromBrief("Research Watch\nTrack a narrow research topic.", "thread-research");
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+    const domain = new AttentionDomain(store);
+
+    expect((await store.readWorkspace("research-watch")).feeds.map((feed) => feed.id)).toContain("research-watch");
+    expect(await sqlite.workspaceFeeds().listFeedIds()).toContain("research-watch");
+
+    await domain.createFeedFromBrief("Model Vibe Check\nNotice meaningful model usage changes.", "thread-models");
+    expect(await sqlite.workspaceFeeds().listFeedIds()).toContain("model-vibe-check");
+    expect(JSON.parse(await readFile(path.join(root, "workspace.json"), "utf8")).feedIds).toContain("model-vibe-check");
+
+    await domain.archiveFeed("model-vibe-check");
+    expect(await sqlite.workspaceFeeds().listFeedIds()).not.toContain("model-vibe-check");
+    expect(JSON.parse(await readFile(path.join(root, "workspace.json"), "utf8")).feedIds).not.toContain("model-vibe-check");
+    sqlite.close();
   });
 
   test("normalizes escaped newlines and removes a source recipe without deleting evidence files", async () => {

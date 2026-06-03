@@ -1,12 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { AttentionDomain } from "./server/domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "./server/operator";
-import { attentionDataDir } from "./server/paths";
-import { AttentionStore } from "./server/store";
+import { createLocalRuntime } from "./server/runtime";
 
-const store = new AttentionStore(attentionDataDir());
+const { store } = await createLocalRuntime();
 const domain = new AttentionDomain(store);
-await store.init();
 
 const [command = "help", ...argv] = process.argv.slice(2);
 const value = (name: string) => {

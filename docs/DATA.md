@@ -25,8 +25,9 @@ ATTENTION_DB_PATH=/path/to/attention.db attention start
 
 ## Current Storage
 
-- `attention.db` stores local runtime metadata and is the migration anchor for the local app.
-- `data/` stores current feed state, cards, prompts, source recipes, runs, checkpoints, work queue, revisions, and events.
+- `attention.db` stores local runtime metadata and the active workspace feed membership list.
+- `data/workspace.json` mirrors active feed membership for backup compatibility and migration from older local installs.
+- `data/` stores current feed artifacts: cards, prompts, source recipes, runs, checkpoints, work queue, revisions, and events.
 
 ## Connector Credentials
 
@@ -40,4 +41,4 @@ attention backup export ./attention-backup
 attention backup import ./attention-backup
 ```
 
-The export command copies the local feed data directory. Future versions should include SQLite export/import once feed state is fully repository-backed.
+The export command copies the local feed data directory. Active feed membership is mirrored in `data/workspace.json`, so feed visibility survives data-directory backup even though SQLite is now the local runtime authority for that list.

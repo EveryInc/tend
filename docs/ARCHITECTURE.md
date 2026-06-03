@@ -14,12 +14,14 @@ attention executable
   └─ local feed state
 ```
 
-The current domain model still stores feed artifacts in readable local files. SQLite is introduced as the durable local metadata and migration anchor; feed state can move behind repositories without changing the UI, CLI, or MCP contract.
+The current domain model still stores rich feed artifacts in readable local files. SQLite is introduced as the durable local metadata and migration anchor; active feed membership is now behind a repository interface with SQLite as the runtime authority and `workspace.json` as a backup-compatible mirror.
 
 ## Boundaries
 
 - `server/domain.ts` owns product behavior and invariants.
 - `server/store.ts` owns current local feed persistence.
+- `server/repositories/` owns typed persistence interfaces and adapters.
+- `server/runtime.ts` composes SQLite-backed repositories with filesystem mirrors for local execution.
 - `server/mcp.ts` adapts domain behavior to MCP tools, prompts, and resources.
 - `server.ts` composes local route modules and starts Bun.
 - `server/routes/api.ts` owns browser-facing Hono API routes.
