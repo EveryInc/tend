@@ -21,7 +21,10 @@ The current domain model still stores feed artifacts in readable local files. SQ
 - `server/domain.ts` owns product behavior and invariants.
 - `server/store.ts` owns current local feed persistence.
 - `server/mcp.ts` adapts domain behavior to MCP tools, prompts, and resources.
-- `server.ts` composes the local Hono API, SSE, and MCP endpoint.
+- `server.ts` composes local route modules and starts Bun.
+- `server/routes/api.ts` owns browser-facing Hono API routes.
+- `server/routes/realtime.ts` owns the SSE event stream.
+- `server/routes/assets.ts` owns built UI asset serving.
 - `attention.ts` is the human-facing CLI entrypoint.
 - `cli.ts` remains the low-level operator command surface.
 - `src/state/realtime.tsx` hides SSE details behind a provider.
