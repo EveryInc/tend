@@ -27,7 +27,8 @@ The current domain model keeps the richest authoring artifacts readable in local
 - `server/routes/api.ts` owns browser-facing Hono API routes.
 - `server/routes/realtime.ts` owns the SSE event stream.
 - `server/routes/assets.ts` owns built UI asset serving.
-- `attention.ts` is the human-facing CLI entrypoint.
+- `attention.ts` is the tiny human-facing CLI executable shim.
+- `server/cli/` owns human-facing CLI commands for start, status, doctor, setup, backup, and legacy operator delegation.
 - `cli.ts` remains the low-level operator command surface.
 - `src/router.tsx` owns UI routes such as `/feed/:feedId`, prompt workspaces, and learning review.
 - TanStack Query owns workspace fetching and invalidation.
