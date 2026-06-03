@@ -49,3 +49,12 @@ Copy the printed MCP URL and setup prompt into Codex Desktop.
 pnpm attention -- doctor
 pnpm attention -- status
 ```
+
+## Backup And Restore
+
+```sh
+pnpm attention -- backup export ./attention-backup
+pnpm attention -- backup import ./attention-backup
+```
+
+Backups include `attention.db`, the readable `data/` mirrors, and a manifest. Legacy data-directory-only backups can still be imported; Attention removes the existing SQLite files so the imported mirrors become the source for rehydration on the next start.

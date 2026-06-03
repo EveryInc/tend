@@ -179,6 +179,7 @@ export class LocalSqliteStore {
   }
 
   close(): void {
+    this.db?.exec("PRAGMA wal_checkpoint(TRUNCATE);");
     this.db?.close();
     this.db = null;
   }

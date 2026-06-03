@@ -82,8 +82,8 @@ Runtime data lives under `~/.attention/` by default:
   exports/
 ```
 
-Set `ATTENTION_HOME` or `ATTENTION_DATA_DIR` to override paths. Current feed artifacts live in the
-data directory:
+Set `ATTENTION_HOME`, `ATTENTION_DATA_DIR`, or `ATTENTION_DB_PATH` to override paths. SQLite is the
+runtime authority; the data directory keeps readable mirrors and immutable raw evidence snapshots:
 
 ```text
 data/
@@ -113,8 +113,18 @@ data/
 ```
 
 Prompt files describe how to judge, compose cards, execute work, distill small policy improvements,
-and compound deeper learnings. Feed policy files remain compact and human-readable. Raw snapshots
-stay immutable so the policy can be rebuilt or evaluated later.
+and compound deeper learnings. Feed policy files remain compact and human-readable mirrors of the
+SQLite records. Raw snapshots stay immutable so the policy can be rebuilt or evaluated later.
+
+Backups include `attention.db`, `data/`, and a manifest:
+
+```bash
+pnpm attention -- backup export ./attention-backup
+pnpm attention -- backup import ./attention-backup
+```
+
+Older data-directory-only backups can still be imported; Attention removes the existing SQLite files
+so the imported mirrors can rehydrate the database on the next start.
 
 At the end of a meaningful sweep, the idle CLI handshake tells the feed thread to ask whether to
 compound learnings. After the user agrees, Codex queues `learning:request`, reviews the durable

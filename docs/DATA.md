@@ -50,4 +50,15 @@ attention backup export ./attention-backup
 attention backup import ./attention-backup
 ```
 
-The export command copies the local feed data directory. Active feed membership, editable prompt/policy documents, cards, routine action groups, source recipes/checkpoints, source run records, sweep artifacts, revision records, audit events, and work items are mirrored into `data/`, so feed visibility, UI artifacts, provenance, audit history, and queued agent work survive data-directory backup even though SQLite is now the local runtime authority for those records.
+The export command writes a backup directory with:
+
+```text
+attention-backup/
+  attention.db
+  data/
+  manifest.json
+```
+
+`attention.db` is the SQLite runtime authority. `data/` contains readable file mirrors and immutable raw evidence snapshots. Importing this backup restores both.
+
+Older data-directory-only backups are still accepted. When importing a legacy data-only backup, Attention replaces `data/` and removes the existing SQLite files so the next local runtime start rehydrates `attention.db` from the imported file mirrors.
