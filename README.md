@@ -7,9 +7,54 @@ for feed sweeps, approvals, and queued work.
 This is an experimental local app, not a hosted service. Codex Desktop remains the agent runtime;
 Attention is the local workspace and coordination layer.
 
-## Start
+## Get Started
 
-```bash
+There are two good ways to try Attention.
+
+### Use The Binary
+
+Download the latest release archive from [GitHub Releases](https://github.com/EveryInc/tend/releases),
+unpack it, and start the local app:
+
+```sh
+tar -xzf attention-<version>-<platform>-<arch>.tar.gz
+cd attention-<version>-<platform>-<arch>
+./attention start
+```
+
+The binary serves the UI, API, and MCP endpoint from one local process:
+
+```text
+UI:  http://127.0.0.1:4332
+API: http://127.0.0.1:4332
+MCP: http://127.0.0.1:4332/mcp
+```
+
+In another terminal, print the Codex setup prompt:
+
+```sh
+./attention setup codex
+```
+
+Add the printed MCP server URL to Codex Desktop, then paste the printed setup prompt into a fresh
+Codex thread. Use one Codex thread per feed. That thread binds itself to the feed, creates or updates
+its heartbeat automation, drains queued work, and refreshes sources through local connectors.
+
+Useful binary checks:
+
+```sh
+./attention version
+./attention doctor
+./attention backup export ./attention-backup
+```
+
+### Clone And Extend
+
+If you want to inspect the code, change the product, or build your own version:
+
+```sh
+git clone https://github.com/EveryInc/tend.git
+cd tend
 pnpm install
 pnpm start
 ```
@@ -17,35 +62,33 @@ pnpm start
 Open `http://127.0.0.1:4321/` in the Codex in-app browser. During development, Vite serves the UI
 on `4321`, the API listens on `4332`, and the MCP endpoint is `http://127.0.0.1:4332/mcp`.
 
-Check local setup:
+Development checks:
 
-```bash
+```sh
 pnpm attention -- version
 pnpm attention -- doctor
 pnpm attention -- setup codex
+pnpm build
+pnpm test
 ```
 
-`version` prints the app version, MCP contract version, platform, architecture, and Bun version.
-`doctor` validates local storage and, when `attention start` is running, confirms the API and MCP
-endpoint advertised by `/api/status`.
+Build and package a local binary:
 
-Build a Bun binary:
-
-```bash
+```sh
 pnpm attention:build
 pnpm attention:smoke
-./dist-bin/attention start
+pnpm attention:package
 ```
-
-The compiled/local server serves built UI assets, API, and MCP from `http://127.0.0.1:4332`.
-For a local release tarball with the binary, built UI assets, docs, and checksum, run
-`pnpm attention:package`.
 
 For a scrubbed visual walkthrough:
 
-```bash
+```sh
 pnpm seed:demo
 ```
+
+Read [docs/INSTALL.md](./docs/INSTALL.md) for setup details, [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
+for the local runtime, [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md) for the Codex/MCP contract,
+and [CONTRIBUTING.md](./CONTRIBUTING.md) if you want to extend the repo.
 
 ## Product Boundary
 
