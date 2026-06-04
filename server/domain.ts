@@ -1,4 +1,5 @@
 import type {
+  AppFeedback,
   Card,
   CardAction,
   CardBlock,
@@ -167,6 +168,158 @@ function queuedWork(feedId: string, cardId: string, instruction: string, extra: 
   };
 }
 
+const CARD_BLOCK_TYPES = new Set<CardBlock["type"]>([
+  "rich_text",
+  "evidence",
+  "editable_text",
+  "memo",
+  "options",
+  "checklist",
+  "diff",
+  "clarification",
+  "email_thread",
+  "profile",
+  "video",
+  "chart",
+  "receipt",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasText(value: unknown): value is string {
+  return typeof value === "string" && Boolean(value.trim());
+}
+
+function blockDescription(block: Record<string, unknown>, index: number): string {
+  const type = typeof block.type === "string" ? block.type : "unknown type";
+  const id = typeof block.id === "string" && block.id.trim() ? ` "${block.id}"` : "";
+  return `Card block ${index + 1} (${type}${id})`;
+}
+
+function validateTextBlock(block: Record<string, unknown>, index: number, hint?: string): void {
+  if (hasText(block.text)) return;
+  throw new Error(`${blockDescription(block, index)} needs a non-empty \`text\` string.${hint ? ` ${hint}` : ""}`);
+}
+
+function validateListBlock(block: Record<string, unknown>, index: number): void {
+  if (!Array.isArray(block.items) || !block.items.length) {
+    throw new Error(`${blockDescription(block, index)} needs a non-empty \`items\` array.`);
+  }
+  for (const [itemIndex, item] of block.items.entries()) {
+    if (hasText(item)) continue;
+    if (!isRecord(item) || !hasText(item.label)) {
+      throw new Error(`${blockDescription(block, index)} item ${itemIndex + 1} must be a non-empty string or an object with a non-empty \`label\`.`);
+    }
+    if (item.detail !== undefined && typeof item.detail !== "string") {
+      throw new Error(`${blockDescription(block, index)} item ${itemIndex + 1} has a non-string \`detail\`.`);
+    }
+    if (item.checked !== undefined && typeof item.checked !== "boolean") {
+      throw new Error(`${blockDescription(block, index)} item ${itemIndex + 1} has a non-boolean \`checked\`.`);
+    }
+  }
+}
+
+function validateCardBlocks(blocks: unknown): asserts blocks is CardBlock[] {
+  if (!Array.isArray(blocks)) throw new Error("Card blocks must be an array.");
+  const ids = new Set<string>();
+  for (const [index, block] of blocks.entries()) {
+    if (!isRecord(block)) throw new Error(`Card block ${index + 1} must be an object.`);
+    if (!hasText(block.id)) throw new Error(`${blockDescription(block, index)} needs a non-empty \`id\` string.`);
+    if (ids.has(block.id)) throw new Error(`${blockDescription(block, index)} repeats block id "${block.id}". Block ids must be unique within a card.`);
+    ids.add(block.id);
+    if (typeof block.type !== "string" || !CARD_BLOCK_TYPES.has(block.type as CardBlock["type"])) {
+      throw new Error(`${blockDescription(block, index)} has an unsupported \`type\`.`);
+    }
+    if (block.label !== undefined && typeof block.label !== "string") {
+      throw new Error(`${blockDescription(block, index)} has a non-string \`label\`.`);
+    }
+    switch (block.type) {
+      case "memo":
+        validateTextBlock(block, index, "Use `text`, not `title` or `body`.");
+        break;
+      case "receipt":
+        validateTextBlock(block, index, "Put source links in `text` using Markdown link syntax, not a loose `url` field.");
+        break;
+      case "rich_text":
+      case "clarification":
+      case "email_thread":
+        validateTextBlock(block, index);
+        break;
+      case "evidence":
+      case "options":
+      case "checklist":
+        validateListBlock(block, index);
+        break;
+      case "editable_text":
+        if (typeof block.value !== "string") throw new Error(`${blockDescription(block, index)} needs a string \`value\`.`);
+        break;
+      case "diff":
+        if (typeof block.before !== "string" || typeof block.after !== "string") {
+          throw new Error(`${blockDescription(block, index)} needs string \`before\` and \`after\` values.`);
+        }
+        break;
+      case "profile":
+        if (
+          !isRecord(block.profile) ||
+          !hasText(block.profile.name) ||
+          !hasText(block.profile.href) ||
+          !hasText(block.profile.imageUrl)
+        ) {
+          throw new Error(`${blockDescription(block, index)} needs \`profile.name\`, \`profile.href\`, and \`profile.imageUrl\` strings.`);
+        }
+        if (block.profile.links !== undefined) {
+          if (!Array.isArray(block.profile.links) || block.profile.links.some((link) => !isRecord(link) || !hasText(link.label) || !hasText(link.href))) {
+            throw new Error(`${blockDescription(block, index)} profile links need non-empty \`label\` and \`href\` strings.`);
+          }
+        }
+        break;
+      case "video":
+        if (!isRecord(block.video) || !hasText(block.video.title) || !hasText(block.video.href)) {
+          throw new Error(`${blockDescription(block, index)} needs \`video.title\` and \`video.href\` strings.`);
+        }
+        break;
+      case "chart":
+        if (!isRecord(block.chart) || typeof block.chart.max !== "number" || !Number.isFinite(block.chart.max) || block.chart.max <= 0) {
+          throw new Error(`${blockDescription(block, index)} needs a positive numeric \`chart.max\`.`);
+        }
+        const max = block.chart.max;
+        if (
+          !Array.isArray(block.chart.series) ||
+          block.chart.series.length !== 2 ||
+          block.chart.series.some((series) => !isRecord(series) || !hasText(series.label))
+        ) {
+          throw new Error(`${blockDescription(block, index)} needs exactly two \`chart.series\` entries with non-empty \`label\` strings.`);
+        }
+        if (!Array.isArray(block.chart.rows) || !block.chart.rows.length) {
+          throw new Error(`${blockDescription(block, index)} needs a non-empty \`chart.rows\` array.`);
+        }
+        for (const [rowIndex, row] of block.chart.rows.entries()) {
+          if (
+            !isRecord(row) ||
+            !hasText(row.label) ||
+            !Array.isArray(row.values) ||
+            row.values.length !== 2 ||
+            row.values.some((value) => typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > max)
+          ) {
+            throw new Error(`${blockDescription(block, index)} chart row ${rowIndex + 1} needs a non-empty \`label\` and exactly two numeric \`values\` between 0 and \`chart.max\`.`);
+          }
+          if (row.detail !== undefined && typeof row.detail !== "string") {
+            throw new Error(`${blockDescription(block, index)} chart row ${rowIndex + 1} has a non-string \`detail\`.`);
+          }
+        }
+        if (block.chart.unit !== undefined && typeof block.chart.unit !== "string") {
+          throw new Error(`${blockDescription(block, index)} has a non-string \`chart.unit\`.`);
+        }
+        if (block.chart.note !== undefined && typeof block.chart.note !== "string") {
+          throw new Error(`${blockDescription(block, index)} has a non-string \`chart.note\`.`);
+        }
+        break;
+    }
+  }
+}
+
 export class AttentionDomain {
   constructor(readonly store: AttentionStore) {}
 
@@ -294,7 +447,15 @@ export class AttentionDomain {
       const trace = await this.store.readSweepFeedback(feedId, feedbackId);
       if (trace.rejudgedAt) throw new Error("Sweep feedback has already been rejudged.");
       const sweep = await this.store.readSweepState(feedId);
-      if ((trace.batchId ?? null) !== sweep.currentBatchId) throw new Error("Sweep feedback is stale because a newer batch is active.");
+      if ((trace.batchId ?? null) !== sweep.currentBatchId) {
+        work.status = "stale";
+        work.error = "Sweep feedback is stale because a newer batch is active.";
+        await this.store.writeWork(work);
+        if (sweep.lastFeedbackId === feedbackId) await this.restoreAbandonedSweepFeedback(feedId, sweep.currentBatchId, work);
+        await this.store.appendEvent({ feedId, workId: work.id, type: "sweep.feedback_stale", detail: { feedbackId, activeBatchId: sweep.currentBatchId, feedbackBatchId: trace.batchId ?? null } });
+        await this.store.appendEvent({ feedId, cardId: work.cardId, workId: work.id, type: "work.stale", detail: { reason: work.error } });
+        throw new Error(work.error);
+      }
       const combined = [...orderedCardIds, ...removedCardIds];
       const expected = new Set(trace.visibleCardIds);
       if (new Set(combined).size !== combined.length || combined.length !== expected.size || combined.some((cardId) => !expected.has(cardId))) {
@@ -662,6 +823,34 @@ export class AttentionDomain {
     });
   }
 
+  async returnCardToReview(feedId: string, cardId: string): Promise<Card> {
+    return this.store.serialize(async () => {
+      const feed = await this.store.readFeed(feedId);
+      const card = await this.store.readCard(feedId, cardId);
+      if (card.routineActionGroupId) throw new Error("This card belongs to a routine action group. Review the group instead.");
+      const activeWork = feed.work.filter((work) =>
+        work.cardId === cardId &&
+        (work.status === "queued" || work.status === "working" || work.status === "approved_blocked")
+      );
+      if (activeWork.some((work) => work.status === "working")) {
+        throw new Error("Codex already started this card. Wait for it to finish before moving it back to review.");
+      }
+      for (const work of activeWork) {
+        work.status = "cancelled";
+        work.error = "Returned to review by the user.";
+        await this.store.writeWork(work);
+        await this.store.appendEvent({ feedId, cardId, workId: work.id, type: "work.cancelled", detail: { reason: work.error } });
+      }
+      card.status = "to_review_updated";
+      card.readyForPass = feed.config.currentPass;
+      card.completedAt = undefined;
+      appendHistory(card, "user.returned_to_review");
+      await this.store.writeCard(card);
+      await this.store.appendEvent({ feedId, cardId, type: "card.returned_to_review", detail: { cancelledWorkIds: activeWork.map((work) => work.id) } });
+      return card;
+    });
+  }
+
   async updateBlock(feedId: string, cardId: string, blockId: string, value: string): Promise<Card> {
     return this.store.serialize(async () => {
       const card = await this.store.readCard(feedId, cardId);
@@ -673,6 +862,29 @@ export class AttentionDomain {
       await this.store.writeCard(card);
       await this.store.appendEvent({ feedId, cardId, type: "card.block_edited", detail: { blockId } });
       return card;
+    });
+  }
+
+  async updateQueuedWorkInstruction(feedId: string, workId: string, instruction: string): Promise<WorkItem> {
+    if (!instruction.trim()) throw new Error("Instruction is required.");
+    return this.store.serialize(async () => {
+      const work = await this.store.readWork(feedId, workId);
+      if (work.status !== "queued") throw new Error("Only queued notes can be edited before Codex starts.");
+      if (
+        work.cardId === "__feed__" ||
+        work.cardId === "__routine__" ||
+        (work.kind !== "instruction" && work.kind !== "scoped_instruction") ||
+        (work.intent && work.intent !== "voice_instruction")
+      ) {
+        throw new Error("This queued work item is not an editable card note.");
+      }
+      work.instruction = instruction.trim();
+      await this.store.writeWork(work);
+      const card = await this.store.readCard(feedId, work.cardId);
+      appendHistory(card, "user.edited_queued_instruction", work.instruction);
+      await this.store.writeCard(card);
+      await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.instruction_edited" });
+      return work;
     });
   }
 
@@ -781,6 +993,7 @@ export class AttentionDomain {
   }
 
   async completeWork(feedId: string, workId: string, token: string, result: { response: string; blocks?: CardBlock[]; proposedAction?: ProposedAction; actions?: CardAction[]; done?: boolean }): Promise<WorkItem> {
+    if (result.blocks) validateCardBlocks(result.blocks);
     return this.store.serialize(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "working") throw new Error("Work item is not currently claimed.");
@@ -1074,6 +1287,7 @@ export class AttentionDomain {
   }
 
   async upsertCard(feedId: string, input: Partial<Card> & Pick<Card, "id" | "title" | "why" | "blocks">): Promise<Card> {
+    validateCardBlocks(input.blocks);
     return this.store.serialize(async () => {
       const config = await this.store.readConfig(feedId);
       const now = isoNow();
@@ -1126,6 +1340,39 @@ export class AttentionDomain {
     await this.store.writeCard(card);
     await this.store.appendEvent({ feedId, cardId: card.id, type: "proposal.created" });
     return card;
+  }
+
+  async recordAppFeedback(feedId: string, title: string, detail: string, sourceThreadId?: string): Promise<AppFeedback> {
+    if (!title.trim()) throw new Error("Feedback title is required.");
+    if (!detail.trim()) throw new Error("Feedback detail is required.");
+    return this.store.serialize(async () => {
+      await this.store.readConfig(feedId);
+      const feedback: AppFeedback = {
+        id: makeId("feedback"),
+        feedId,
+        title: title.trim(),
+        detail: detail.trim(),
+        ...(sourceThreadId?.trim() ? { sourceThreadId: sourceThreadId.trim() } : {}),
+        status: "open",
+        createdAt: isoNow(),
+      };
+      await this.store.writeAppFeedback(feedback);
+      await this.store.appendEvent({ feedId, type: "app.feedback_recorded", detail: { feedbackId: feedback.id, title: feedback.title, sourceThreadId: feedback.sourceThreadId } });
+      return feedback;
+    });
+  }
+
+  async resolveAppFeedback(feedbackId: string, resolution: string): Promise<AppFeedback> {
+    if (!resolution.trim()) throw new Error("Feedback resolution is required.");
+    return this.store.serialize(async () => {
+      const feedback = await this.store.readAppFeedbackItem(feedbackId);
+      feedback.status = "resolved";
+      feedback.resolution = resolution.trim();
+      feedback.resolvedAt = isoNow();
+      await this.store.writeAppFeedback(feedback);
+      await this.store.appendEvent({ feedId: feedback.feedId, type: "app.feedback_resolved", detail: { feedbackId, resolution: feedback.resolution } });
+      return feedback;
+    });
   }
 
   async applyPolicyRevision(feedId: string, next: string, reason: string, source: PolicyRevision["source"]): Promise<PolicyRevision> {

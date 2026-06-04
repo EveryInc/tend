@@ -4,7 +4,12 @@ export function helpCommand(): void {
   print({
     commands: [
       "attention version",
-      "attention start",
+      "attention start [--background]",
+      "attention stop",
+      "attention restart",
+      "attention health",
+      "attention logs",
+      "attention validate",
       "attention status",
       "attention doctor",
       "attention setup codex",

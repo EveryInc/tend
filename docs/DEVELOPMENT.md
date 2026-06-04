@@ -34,6 +34,14 @@ ATTENTION_HOME=.local-attention pnpm attention -- doctor
 
 The doctor output is fully green only while the local API is running.
 
+For a background service on macOS, use:
+
+```sh
+ATTENTION_HOME=.local-attention pnpm attention -- start --background
+ATTENTION_HOME=.local-attention pnpm attention -- health
+ATTENTION_HOME=.local-attention pnpm attention -- stop
+```
+
 ## Adding Capabilities
 
 Prefer one domain method with thin adapters:

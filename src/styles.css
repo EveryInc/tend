@@ -72,6 +72,26 @@ h2 { margin: 0; font: 500 26px/1.12 var(--serif); letter-spacing: -.02em; }
 .profile-subtitle { color: var(--ink-3); font-size: 13px; }
 .profile-links { display: flex; flex-wrap: wrap; gap: 5px 11px; margin-top: 4px; }
 .profile-links a { color: #4164b5; font-size: 12px; font-weight: 600; text-decoration-color: #a8b6d9; text-underline-offset: 2px; }
+.block-video { display: grid; gap: 8px; }
+.video-frame { aspect-ratio: 16 / 9; overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: #111; }
+.video-frame iframe { display: block; width: 100%; height: 100%; border: 0; }
+.video-link { font-size: 13px; font-weight: 600; }
+.block-chart { padding: 13px 14px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper-warm); }
+.chart-legend { display: flex; flex-wrap: wrap; gap: 6px 15px; margin-bottom: 10px; color: var(--ink-3); font-size: 12px; }
+.chart-legend span { display: flex; align-items: center; gap: 5px; }
+.chart-swatch { width: 8px; height: 8px; border-radius: 2px; }
+.chart-rows { display: grid; gap: 10px; }
+.chart-row { display: grid; grid-template-columns: minmax(74px, 1fr) minmax(130px, 2fr) minmax(130px, 2fr); align-items: center; gap: 9px; }
+.chart-row-label { display: grid; gap: 1px; min-width: 0; }
+.chart-row-label b { color: var(--ink-2); font-size: 12px; }
+.chart-row-label span { color: var(--ink-4); font-size: 11px; }
+.chart-metric { display: grid; grid-template-columns: 38px minmax(0, 1fr); align-items: center; gap: 6px; }
+.chart-value { color: var(--ink); font: 700 12px/1 var(--mono); text-align: right; }
+.chart-track { display: block; height: 8px; overflow: hidden; border-radius: 99px; background: #e8e6df; }
+.chart-bar { display: block; min-width: 2px; height: 100%; border-radius: inherit; }
+.chart-series-1 { background: var(--blue); }
+.chart-series-2 { background: var(--sage); }
+.chart-note { margin-top: 10px !important; color: var(--ink-3); font-size: 12px; }
 .block-memo { padding: 15px 16px; background: #f5f3ec; border-left: 3px solid #c9c3b0; }
 .block-evidence ul, .block-checklist ul { display: grid; gap: 4px; margin: 0; padding-left: 19px; }
 .block-evidence li::marker { color: var(--sage); }
@@ -103,6 +123,13 @@ h2 { margin: 0; font: 500 26px/1.12 var(--serif); letter-spacing: -.02em; }
 .card-history li.needs-attention b { color: #986c31; }
 .history-toggle { padding: 0; border: 0; background: transparent; color: var(--ink-3); font-size: 12px; }
 .history-toggle:hover { color: var(--ink); }
+.queued-note { display: grid; gap: 7px; margin: 15px -29px 0; padding: 14px 20px 15px 50px; border-top: 1px solid var(--line); background: #f5f3ec; }
+.queued-note-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.queued-note-head > div { display: flex; align-items: center; gap: 6px; }
+.queued-note-head small { color: var(--ink-3); font-size: 11px; }
+.queued-note textarea { width: 100%; resize: vertical; padding: 9px 10px; border: 1px solid var(--line-2); border-radius: 7px; outline: 0; background: #fffefa; color: var(--ink); line-height: 1.45; }
+.queued-note textarea:focus { border-color: #a9b8dc; box-shadow: 0 0 0 3px rgba(68,106,203,.11); }
+.queued-note-error { color: #a14238; font-size: 11px; }
 .card-action { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin: 0 -29px; padding: 15px 20px 15px 50px; border-top: 1px solid var(--line); background: #fbfaf6; }
 .card-action > div:first-child { display: flex; flex-direction: column; gap: 2px; }
 .card-action b { font-size: 14px; }
@@ -130,6 +157,9 @@ h2 { margin: 0; font: 500 26px/1.12 var(--serif); letter-spacing: -.02em; }
 .revision-proposal { padding: 17px; border: 1px solid #d8d2c2; border-radius: 9px; background: #fbf9f1; }
 .revision-proposal h2 { margin: 4px 0 6px; font-size: 22px; }
 .revision-proposal p { margin: 0 0 12px; color: var(--ink-2); }
+.proposal-summary { margin: 0 0 14px; padding: 12px 13px; border-left: 3px solid #c9b07d; background: #f5f1e6; }
+.proposal-summary span { color: var(--ink-3); font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
+.proposal-summary p { margin: 5px 0 0; }
 .proposal-diff { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 12px; }
 .proposal-diff span { color: var(--ink-3); font-size: 11px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .proposal-diff pre { max-height: 190px; margin: 4px 0 0; }
@@ -222,7 +252,7 @@ pre { overflow: auto; padding: 12px; background: #f4f2eb; color: var(--ink-2); w
 .learning-review details { margin-bottom: 16px; }
 .learning-review summary { color: var(--ink-3); cursor: pointer; font-size: 13px; font-weight: 700; }
 .learning-review label { color: var(--ink-3); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
-.learning-review textarea { width: 100%; margin-top: 7px; resize: vertical; padding: 14px 15px; border: 1px solid var(--line-2); border-radius: 7px; outline: 0; background: #fff; color: var(--ink-2); font: 13px/1.6 var(--mono); }
+.learning-review textarea { width: 100%; min-height: 520px; margin-top: 7px; resize: vertical; padding: 16px 17px; border: 1px solid var(--line-2); border-radius: 7px; outline: 0; background: #fff; color: var(--ink-2); font: 15px/1.65 var(--mono); }
 .learning-review textarea:focus { border-color: #aab8dc; box-shadow: 0 0 0 3px var(--blue-soft); }
 .learning-actions { display: flex; gap: 7px; margin-top: 13px; }
 .toast { position: fixed; z-index: 80; left: 50%; bottom: 136px; transform: translateX(-50%); padding: 9px 13px; border-radius: 99px; background: #272722; color: #fff; box-shadow: var(--shadow); font-size: 13px; }
@@ -235,8 +265,11 @@ pre { overflow: auto; padding: 12px; background: #f4f2eb; color: var(--ink-2); w
   .tabs { gap: 19px; padding: 0 14px; }
   .attention-card { padding: 22px 17px 0; }
   .why, .blocks { margin-left: 0; }
+  .chart-row { grid-template-columns: minmax(70px, .8fr) minmax(105px, 1fr) minmax(105px, 1fr); gap: 6px; }
+  .chart-metric { grid-template-columns: 34px minmax(0, 1fr); gap: 4px; }
   .card-history { margin: 0 -17px; padding: 13px 17px; }
   .card-history li { grid-template-columns: 1fr; gap: 1px; }
+  .queued-note { margin: 15px -17px 0; padding: 13px 17px; }
   .card-action { align-items: flex-start; flex-direction: column; margin: 0 -17px; padding: 13px 17px; }
   .end-cap { align-items: flex-start; flex-direction: column; }
   .dock { padding: 10px 9px; }

@@ -2,9 +2,14 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { attentionDataDir } from "../paths";
 import { versionInfo } from "../version";
+import { startBackgroundCommand } from "./service";
 import { apiUrl, initRuntime, mcpUrl, print } from "./shared";
 
-export async function startCommand(): Promise<void> {
+export async function startCommand(args: string[] = []): Promise<void> {
+  if (args.includes("--background")) {
+    await startBackgroundCommand();
+    return;
+  }
   await initRuntime();
   process.env.ATTENTION_CLIENT_DIR ??= defaultClientDir();
   const version = versionInfo();

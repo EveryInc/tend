@@ -5,6 +5,7 @@ import type { AttentionStore } from "../store";
 export type Notify = (data: unknown) => void;
 
 export type LocalRouteContext = {
+  artifactsDir: string;
   dataDir: string;
   domain: AttentionDomain;
   notify: Notify;

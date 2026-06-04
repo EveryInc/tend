@@ -6,7 +6,7 @@ import { createMcpRequestHandler } from "./server/mcp";
 import { apiRoutes } from "./server/routes/api";
 import { assetRoutes } from "./server/routes/assets";
 import { createRealtimeHub } from "./server/routes/realtime";
-import { createLocalRuntime } from "./server/runtime";
+import { createLocalRuntime, resolveArtifactsDir } from "./server/runtime";
 
 declare const Bun: {
   serve(options: { port: number; hostname: string; idleTimeout: number; fetch: (...args: any[]) => any }): { stop(force?: boolean): void };
@@ -15,13 +15,14 @@ declare const Bun: {
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.ATTENTION_API_PORT ?? 4332);
 const clientDir = process.env.ATTENTION_CLIENT_DIR ?? path.join(root, "dist");
+const artifactsDir = resolveArtifactsDir(root);
 const { dataDir, sqlite, store } = await createLocalRuntime();
 const domain = new AttentionDomain(store);
 const realtime = createRealtimeHub();
 const mcpHandler = await createMcpRequestHandler(domain, store);
 const app = new Hono();
 
-app.route("/", apiRoutes({ dataDir, domain, notify: realtime.notify, port, root, sqlite, store }));
+app.route("/", apiRoutes({ artifactsDir, dataDir, domain, notify: realtime.notify, port, root, sqlite, store }));
 app.route("/", realtime.routes());
 app.all("/mcp", async (c) => mcpHandler(c.req.raw));
 app.route("/", assetRoutes(clientDir));

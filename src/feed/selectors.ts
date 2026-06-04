@@ -30,8 +30,12 @@ export function countFor(feed: FeedView, tab: Tab): number {
 }
 
 export function visibleCardActions(card: Card): CardAction[] {
-  if (card.actions?.length) return card.actions;
   const archive: CardAction = { id: "default-cleanup", label: "Archive", behavior: "default_cleanup", variant: "secondary", shortcut: "x" };
+  if (card.actions?.length) {
+    return card.actions.some((action) => action.behavior === "default_cleanup")
+      ? card.actions
+      : [archive, ...card.actions];
+  }
   if (!card.proposedAction || card.proposedAction.label === "Decide disposition") return [archive];
   if (card.proposedAction.label === "Archive" || card.proposedAction.label === "Archive this thread") {
     return [{ ...archive, variant: "primary" }];

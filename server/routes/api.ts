@@ -6,11 +6,12 @@ import { versionInfo } from "../version";
 import { body, mutation, type LocalRouteContext } from "./shared";
 
 export function apiRoutes(context: LocalRouteContext): Hono {
-  const { dataDir, domain, notify, port, root, sqlite, store } = context;
+  const { artifactsDir, dataDir, domain, notify, port, sqlite, store } = context;
   const app = new Hono();
 
   app.get("/api/status", (c) => c.json({ ok: true, version: versionInfo(), dataDir, sqlite: sqlite.status(), mcpUrl: `http://127.0.0.1:${port}/mcp` }));
   app.get("/api/state", async (c) => c.json(await store.readWorkspace(c.req.query("feed") ?? "inbox")));
+  app.get("/api/health", (c) => c.json({ ok: true }));
   app.get("/api/artifacts/:name", async (c) => {
     const name = c.req.param("name");
     const artifactTypes: Record<string, { directory: string; contentType: string }> = {
@@ -22,7 +23,7 @@ export function apiRoutes(context: LocalRouteContext): Hono {
     const artifactType = artifactTypes[path.extname(name).toLowerCase()];
     if (path.basename(name) !== name || !artifactType) return c.text("Artifact not found.", 404);
     try {
-      const contents = await readFile(path.join(root, "output", artifactType.directory, name));
+      const contents = await readFile(path.join(artifactsDir, artifactType.directory, name));
       return c.body(contents, 200, { "content-type": artifactType.contentType, "content-disposition": `inline; filename="${name}"` });
     } catch {
       return c.text("Artifact not found.", 404);
@@ -65,12 +66,14 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   app.post("/api/feeds/:feed/instructions", async (c) => mutation(c, notify, async () => domain.queueFeedInstruction(c.req.param("feed"), String((await body(c)).instruction ?? ""))));
   app.post("/api/feeds/:feed/cards/:card/instructions", async (c) => mutation(c, notify, async () => domain.queueInstruction(c.req.param("feed"), c.req.param("card"), String((await body(c)).instruction ?? ""))));
   app.post("/api/feeds/:feed/work/:work/cancel", async (c) => mutation(c, notify, async () => domain.cancelQueuedWork(c.req.param("feed"), c.req.param("work"), String((await body(c)).reason ?? "Cancelled from the browser before Codex started work."))));
+  app.post("/api/feeds/:feed/work/:work/instruction", async (c) => mutation(c, notify, async () => domain.updateQueuedWorkInstruction(c.req.param("feed"), c.req.param("work"), String((await body(c)).instruction ?? ""))));
   app.post("/api/feeds/:feed/work/:work/retry", async (c) => mutation(c, notify, async () => domain.retryApprovedWork(c.req.param("feed"), c.req.param("work"))));
   app.post("/api/feeds/:feed/routine-actions/:group/approve", async (c) => mutation(c, notify, async () => domain.approveRoutineActionGroup(c.req.param("feed"), c.req.param("group"))));
   app.post("/api/feeds/:feed/cards/:card/actions/:action", async (c) => mutation(c, notify, async () => domain.runCardAction(c.req.param("feed"), c.req.param("card"), c.req.param("action"))));
   app.post("/api/feeds/:feed/cards/:card/approve", async (c) => mutation(c, notify, async () => domain.approveAction(c.req.param("feed"), c.req.param("card"))));
   app.post("/api/feeds/:feed/cards/:card/dismiss", async (c) => mutation(c, notify, async () => domain.dismissCard(c.req.param("feed"), c.req.param("card"))));
   app.post("/api/feeds/:feed/cards/:card/undo-dismiss", async (c) => mutation(c, notify, async () => domain.undoDismiss(c.req.param("feed"), c.req.param("card"))));
+  app.post("/api/feeds/:feed/cards/:card/return-to-review", async (c) => mutation(c, notify, async () => domain.returnCardToReview(c.req.param("feed"), c.req.param("card"))));
   app.post("/api/feeds/:feed/cards/:card/blocks/:block", async (c) => mutation(c, notify, async () => domain.updateBlock(c.req.param("feed"), c.req.param("card"), c.req.param("block"), String((await body(c)).value ?? ""))));
   app.post("/api/feeds/:feed/next-pass", async (c) => mutation(c, notify, async () => domain.beginNextPass(c.req.param("feed"))));
   app.post("/api/feeds/:feed/compound", async (c) => mutation(c, notify, async () => domain.queueCompound(c.req.param("feed"))));

@@ -22,6 +22,8 @@ export type BlockType =
   | "clarification"
   | "email_thread"
   | "profile"
+  | "video"
+  | "chart"
   | "receipt";
 
 export interface SourceRecipe {
@@ -80,6 +82,17 @@ export interface CardBlock {
     imageUrl: string;
     fallbackImageUrl?: string;
     links?: Array<{ label: string; href: string }>;
+  };
+  video?: {
+    title: string;
+    href: string;
+  };
+  chart?: {
+    unit?: string;
+    max: number;
+    series: [{ label: string }, { label: string }];
+    rows: Array<{ label: string; values: [number, number]; detail?: string }>;
+    note?: string;
   };
 }
 
@@ -224,6 +237,18 @@ export interface SourceRun {
   judgments: unknown[];
   triggerWorkId?: string;
   completedAt?: string;
+}
+
+export interface AppFeedback {
+  id: string;
+  feedId: FeedId;
+  title: string;
+  detail: string;
+  sourceThreadId?: string;
+  status: "open" | "resolved";
+  createdAt: string;
+  resolvedAt?: string;
+  resolution?: string;
 }
 
 export interface RevisionProposal {

@@ -14,37 +14,38 @@ can automate collection and drain later without changing the product contract.
 
 ## Filesystem Model
 
-All runtime state is local and git-ignored under `data/`.
+All runtime state is local and git-ignored under `~/.attention/` by default. SQLite is the runtime
+authority, while `data/` keeps readable mirrors and immutable evidence artifacts. Use
+`ATTENTION_HOME`, `ATTENTION_DATA_DIR`, or `ATTENTION_DB_PATH` to isolate development or validation
+state.
+
+The installed `attention` executable is the canonical entrypoint. `attention start --background`
+uses `launchctl` to re-launch that same executable with the current `PATH`, `ATTENTION_HOME`, and
+port settings. There is no separate live runner.
+
+When a checkout-local runtime is retired, its runtime root receives a marker naming the canonical
+replacement and becomes read-only, including `attention.db` and `data/`. Reconciliation can still
+inspect readable mirrors and copy missing immutable evidence, but stale UIs and CLIs cannot keep
+accepting writes after cutover.
 
 ```text
-data/
-  global-policy.md
-  integrations/dictation.json
-  prompts/
-    judge.md
-    compose-card.md
-    execute-work.md
-    distill-policy.md
-    compound.md
-  feeds/<feed-id>/
-    feed.md
-    policy.md
-    thread.json
-    sources.json
-    sources/*.md
-    prompts/*.md
-    checkpoints/*.json
-    raw/<run-id>/<source-id>/*.json
-    runs/*.json
-    sweeps/*.json
-    cards/*.json
-    work/*.json
-    policy-revisions/*.json
-    sweep-feedback/*.json
-    sweep-state.json
-    events.jsonl
-  revision-proposals/*.json
-  workspace-revisions/*.json
+~/.attention/
+  attention.db
+  data/
+    global-policy.md
+    integrations/dictation.json
+    prompts/
+    feeds/<feed-id>/
+      feed.md
+      policy.md
+      raw/<run-id>/<source-id>/*.json
+      runs/*.json
+      sweeps/*.json
+      cards/*.json
+      work/*.json
+      events.jsonl
+  logs/
+  exports/
 ```
 
 The compact Markdown files are the editable prompt layer. The JSON files preserve structured

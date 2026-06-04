@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { post } from "../app/api";
-import type { Card, CardAction, CardBlock } from "../types";
+import type { Card, CardAction, CardBlock, WorkItem } from "../types";
 import { FormattedText } from "../ui/FormattedText";
 import { visibleCardActions } from "./selectors";
 
@@ -23,6 +23,12 @@ function readableHistory(card: Card): Array<{ at: string; label: string; detail:
     }
     if (entry.type === "user.cancelled_queued_work") {
       return [{ at: entry.at, label: "You cancelled", detail: "The queued instruction." }];
+    }
+    if (entry.type === "user.edited_queued_instruction") {
+      return [{ at: entry.at, label: "You corrected", detail: entry.detail ?? "The queued note." }];
+    }
+    if (entry.type === "user.returned_to_review") {
+      return [{ at: entry.at, label: "Back for review", detail: "You moved this card back into the sweep." }];
     }
     if (entry.type === "codex.completed") {
       return [{ at: entry.at, label: "Codex did", detail: entry.detail ?? "Finished the requested work." }];
@@ -139,6 +145,31 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
       </section>
     );
   }
+  if (block.type === "chart" && block.chart) {
+    const unit = block.chart.unit ?? "";
+    return (
+      <section className="block block-chart">
+        {block.label && <h3>{block.label}</h3>}
+        <div className="chart-legend">
+          {block.chart.series.map((series, index) => <span key={series.label}><i className={`chart-swatch chart-series-${index + 1}`} />{series.label}</span>)}
+        </div>
+        <div className="chart-rows">
+          {block.chart.rows.map((row) => (
+            <div className="chart-row" key={row.label}>
+              <div className="chart-row-label"><b>{row.label}</b>{row.detail && <span>{row.detail}</span>}</div>
+              {row.values.map((value, index) => (
+                <div className="chart-metric" key={`${row.label}-${index}`} aria-label={`${row.label}: ${block.chart?.series[index].label} ${value}${unit}`}>
+                  <span className="chart-value">{value}{unit}</span>
+                  <span className="chart-track"><i className={`chart-bar chart-series-${index + 1}`} style={{ width: `${value / block.chart!.max * 100}%` }} /></span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+        {block.chart.note && <p className="chart-note">{block.chart.note}</p>}
+      </section>
+    );
+  }
   if (block.type === "diff") {
     return (
       <section className="block block-diff">
@@ -165,18 +196,46 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
   return <section className={`block block-${block.type}`}>{block.label && <h3>{block.label}</h3>}<p><FormattedText text={block.text} /></p></section>;
 }
 
+function QueuedNoteEditor({ work, onChanged }: { work: WorkItem; onChanged: () => void }) {
+  const [value, setValue] = useState(work.instruction);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setValue(work.instruction), [work.instruction]);
+  const save = async () => {
+    const next = value.trim();
+    if (!next || next === work.instruction) return;
+    setSaving(true);
+    try {
+      await post(`/api/feeds/${work.feedId}/work/${work.id}/instruction`, { instruction: next });
+      onChanged();
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <section className="queued-note">
+      <span className="action-label">Queued note</span>
+      <textarea value={value} onChange={(event) => setValue(event.target.value)} onBlur={() => void save()} rows={Math.max(2, value.split("\n").length)} />
+      <small>{saving ? "Saving..." : "Edit before Codex claims it."}</small>
+    </section>
+  );
+}
+
 export function CardView({
   card,
+  queuedNote,
   active,
   onActivate,
   onChanged,
   onAction,
+  onReturnToReview,
 }: {
   card: Card;
+  queuedNote?: WorkItem;
   active: boolean;
   onActivate: () => void;
   onChanged: () => void;
   onAction: (action: CardAction) => void;
+  onReturnToReview: () => void;
 }) {
   const actions = visibleCardActions(card);
   const nextThing = card.proposedAction?.label === "Decide disposition"
@@ -196,6 +255,7 @@ export function CardView({
       <div className="blocks">
         {card.blocks.map((block) => <Block key={block.id} feedId={card.feedId} cardId={card.id} block={block} onChanged={onChanged} />)}
       </div>
+      {queuedNote && <QueuedNoteEditor work={queuedNote} onChanged={onChanged} />}
       <CardHistory card={card} />
       {card.status === "approved_blocked" && (
         <footer className="card-action">
@@ -224,6 +284,19 @@ export function CardView({
                 {action.label}{action.shortcut && <kbd>{action.shortcut.toUpperCase()}</kbd>}
               </button>
             ))}
+          </div>
+        </footer>
+      )}
+      {(card.status === "queued" || card.status === "done") && (
+        <footer className="card-action">
+          <div>
+            <span className="action-label">{card.status === "queued" ? "Queued for Codex" : "Done"}</span>
+            <b>{card.status === "queued" ? "Waiting for the feed thread" : "Completed"}</b>
+          </div>
+          <div className="action-buttons">
+            <button className="button ghost" onClick={(event) => { event.stopPropagation(); onReturnToReview(); }}>
+              {card.status === "queued" ? "Move back to review" : "Review again"}
+            </button>
           </div>
         </footer>
       )}

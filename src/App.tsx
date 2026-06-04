@@ -12,7 +12,7 @@ import { TopBar } from "./shell/TopBar";
 import { useActiveCard } from "./state/activeCard";
 import { RealtimeProvider } from "./state/realtime";
 import { preferredTarget, sameTarget } from "./state/voiceTarget";
-import type { Card, CardAction, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkspaceRevision, WorkspaceView } from "./types";
+import type { Card, CardAction, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkItem, WorkspaceRevision, WorkspaceView } from "./types";
 import { LearningReview, RevisionProposals } from "./workspace/LearningReview";
 import { PromptWorkspace } from "./workspace/PromptWorkspace";
 
@@ -67,6 +67,15 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const cardIds = useMemo(() => cards.map((card) => card.id), [cards]);
   const { activeCardId, setActiveCardId, navTo } = useActiveCard(pageRef, cardIds);
   const activeCard = cards.find((card) => card.id === activeCardId) ?? cards[0];
+  const editableQueuedNote = useCallback((card: Card): WorkItem | undefined => {
+    if (!feed) return undefined;
+    return [...feed.work].reverse().find((work) =>
+      work.cardId === card.id &&
+      work.status === "queued" &&
+      (work.kind === "instruction" || work.kind === "scoped_instruction") &&
+      (!work.intent || work.intent === "voice_instruction")
+    );
+  }, [feed]);
   const ladder = useMemo<VoiceTarget[]>(() => {
     if (!feed) return [{ kind: "attention" }];
     if (screen === "feed") return [
@@ -276,6 +285,10 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
       }
     })();
   };
+  const returnToReview = (card: Card) => void withRefresh(
+    () => post(`/api/feeds/${card.feedId}/cards/${card.id}/return-to-review`),
+    card.status === "queued" ? "Moved back to review" : "Ready for review again",
+  );
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
@@ -348,7 +361,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
         {cards.map((card, index) => (
           <Fragment key={card.id}>
             {tab === "review" && index === updated.length && fresh.length > 0 && <div className="section-label" key={`${card.id}-label`}>New <span>{fresh.length}</span></div>}
-            <CardView key={card.id} card={card} active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()} onAction={(action) => runCardAction(card, action)} />
+            <CardView key={card.id} card={card} queuedNote={editableQueuedNote(card)} active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()} onAction={(action) => runCardAction(card, action)} onReturnToReview={() => returnToReview(card)} />
           </Fragment>
         ))}
         {feedWork.map((work) => (

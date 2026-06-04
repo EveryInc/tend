@@ -5,7 +5,7 @@
 | Review a feed | Scroll the active feed | `pnpm cli -- state --feed <id>` |
 | Configure local dictation | Hold the detected Monologue shortcut and speak | `setup:detect-monologue` discovers the installed app and records its local shortcut without a setup form |
 | Submit scoped intent | Use the persistent dock and its labeled `Broader` / `Narrower` controls, or press plain arrows while its empty input is focused | `work:list`, `work:claim`, interpret the attached `target`, then `work:complete` |
-| Cancel accidental dictated text | Use the brief Undo toast or ask Codex before work starts | `work:cancel --feed ... --work ...` restores the card without executing the queued instruction |
+| Correct or cancel accidental dictated text | Edit `Your note to Codex` on the queued card, use its persistent `Move back to review` control, or use the brief Undo toast | `work:edit --feed ... --work ...` corrects unclaimed text; `card:return-to-review --feed ... --card ...` cancels unstarted local work and restores the card |
 | Choose a card-specific next move | Press the concrete action button or its shortcut, such as `Send reply`, `Draft a pass`, `Research`, or `Archive` | Card `actions[]` route preparation through `queue_instruction`, exact visible actions through digest-bound `approve_action`, and dismissal through `default_cleanup` |
 | Dismiss and run default cleanup | Press the card's cleanup action, often `Archive`, with brief Undo | Queue one digest-bound `default_cleanup`, call `action:verify`, drain it through Codex, and record the verified outcome |
 | Approve a conservative routine batch | Expand a collapsed group if useful, then press its one-click action | `routine:upsert` proposes the exact visible items; approval queues one digest-bound `routine_action_batch`; Codex rereads every authoritative source before acting and returns the batch to individual review if anything changed or needs judgment |
@@ -19,7 +19,7 @@
 | Verify an approved external action or cleanup | Choose the exact visible mutation, cleanup, or routine group | `action:verify` rereads the selected card-action ID, current artifact, cleanup, or batch digest immediately before mutation and records verification durably; Inbox replies additionally require `--mailbox <authenticated-gmail-email>` to match the source message's received-at mailbox |
 | Collect evidence | Render the resulting cards | `source:record-run` or `source:import-json-file` writes immutable snapshots and checkpoints; `sweep:record-batch` records the judged batch separately |
 | Rejudge sweep feedback | Submit dock feedback to `This sweep` | `sweep:rejudge` writes an explicit kept order and removed-card set before recollection is offered |
-| Render a judged item | Review its structured blocks | `card:upsert --feed ... --card ...` |
+| Render a judged item | Review its validated structured blocks, including compact two-series charts for comparative metrics | `card:upsert --feed ... --card-file ...` |
 | Compound learning | Answer yes when the feed thread offers its end-of-sweep learning pass; review and edit the resulting full-screen policy proposal before applying it | An idle `work:list` or `work:claim` reminds Codex to offer the pass after meaningful sweep work; `learning:request --feed ...` queues one `compound_learnings` job; Codex reviews durable evidence and uses `revision:propose --source compound`; the browser applies only the user-reviewed Markdown |
 | Revert micro-learning | Review policy history | `policy:revert --feed ... --revision ...` |
 

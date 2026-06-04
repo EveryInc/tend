@@ -36,6 +36,15 @@ pnpm attention:smoke
 ```
 
 The binary serves built UI assets, API, and MCP from `http://127.0.0.1:4332`.
+On macOS, the same binary can run as a managed local service:
+
+```sh
+./dist-bin/attention start --background
+./dist-bin/attention health
+./dist-bin/attention logs
+./dist-bin/attention restart
+./dist-bin/attention stop
+```
 
 Package the current platform binary for local distribution:
 
@@ -62,6 +71,8 @@ Copy the printed MCP URL and setup prompt into Codex Desktop.
 
 ```sh
 pnpm attention -- version
+pnpm attention -- start --background
+pnpm attention -- health
 pnpm attention -- doctor
 pnpm attention -- status
 ```

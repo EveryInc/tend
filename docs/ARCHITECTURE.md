@@ -16,6 +16,11 @@ attention executable
 
 The current domain model keeps the richest authoring artifacts readable in local file mirrors while moving active runtime records into SQLite. Active feed membership, editable prompt/policy documents, feed cards, routine action groups, source recipes/checkpoints, source run records, sweep state/artifacts, revision records, feed audit events, and work items are now behind repository interfaces with SQLite as the runtime authority and readable files as backup-compatible mirrors.
 
+The installed `attention` executable is the canonical runtime entrypoint. When a background service
+is desired, `attention start --background` re-launches the same executable with the current `PATH`,
+`ATTENTION_HOME`, and port settings under `launchctl`; it does not introduce a separate runner or
+second CLI.
+
 ## Boundaries
 
 - `server/domain.ts` owns product behavior and invariants.

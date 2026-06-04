@@ -30,6 +30,16 @@ API: http://127.0.0.1:4332
 MCP: http://127.0.0.1:4332/mcp
 ```
 
+On macOS, run the same executable as a managed local service:
+
+```sh
+./attention start --background
+./attention health
+./attention logs
+./attention restart
+./attention stop
+```
+
 In another terminal, print the Codex setup prompt:
 
 ```sh
@@ -120,6 +130,8 @@ object, current sweep, feed, and Attention scopes. Arrow keys remain available f
 dock contains text, and ordinary page scrolling never changes the rung. Every dock utterance becomes scoped work for Codex. Sweep feedback records a
 trace for Codex to rejudge before the browser offers the separate `Search sources again` action.
 On Inbox cards, use `O` to toggle the collapsed full email thread without leaving the sweep.
+Claimed Inbox work repeats the source mailbox as reply-draft sender guidance: drafts preserve that
+mailbox owner's voice and signature unless the user's instruction explicitly changes sender.
 
 ## Local Data
 

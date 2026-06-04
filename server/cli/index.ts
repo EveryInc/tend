@@ -4,6 +4,7 @@ import { backupExportCommand, backupImportCommand } from "./backup";
 import { doctorCommand, statusCommand } from "./health";
 import { helpCommand } from "./help";
 import { runLegacyCli } from "./legacy";
+import { healthCommand, logsCommand, restartCommand, stopCommand, validateCommand } from "./service";
 import { setupCodexCommand } from "./setup";
 import { startCommand } from "./start";
 import { versionCommand } from "./version";
@@ -20,7 +21,22 @@ export async function runAttentionCli(rawArgs: string[]): Promise<void> {
       versionCommand();
       break;
     case "start":
-      await startCommand();
+      await startCommand([subcommand, ...rest].filter((value): value is string => Boolean(value)));
+      break;
+    case "stop":
+      await stopCommand();
+      break;
+    case "restart":
+      await restartCommand();
+      break;
+    case "health":
+      await healthCommand();
+      break;
+    case "logs":
+      await logsCommand();
+      break;
+    case "validate":
+      await validateCommand();
       break;
     case "status":
       await statusCommand();

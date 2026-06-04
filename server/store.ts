@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type {
+  AppFeedback,
   Card,
   DictationCapability,
   FeedConfig,
@@ -46,6 +47,7 @@ import { FileSweepRepository, type SweepRepository } from "./repositories/sweeps
 import { FileTextDocumentRepository, type TextDocumentRepository, type TextDocumentSeed } from "./repositories/textDocuments";
 import { FileWorkItemRepository, type WorkItemRepository } from "./repositories/workItems";
 import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
+import { assertRuntimeWritable } from "./runtime";
 
 export const GLOBAL_PROMPT_NAMES = ["judge.md", "compose-card.md", "execute-work.md", "distill-policy.md", "compound.md"] as const;
 export const FEED_PROMPT_NAMES = ["judge.md", "compose-card.md"] as const;
@@ -80,6 +82,7 @@ export class AttentionStore {
   }
 
   async init(): Promise<void> {
+    await assertRuntimeWritable(this.dataDir);
     await mkdir(this.dataDir, { recursive: true });
     const dictationPath = this.path("integrations/dictation.json");
     if (!existsSync(dictationPath)) await writeJson(dictationPath, defaultDictationCapability());
@@ -164,6 +167,19 @@ export class AttentionStore {
 
   async writeRevisionProposal(proposal: RevisionProposal): Promise<void> {
     await this.revisions.writeProposal(proposal);
+  }
+
+  async readAppFeedback(): Promise<AppFeedback[]> {
+    return (await this.readDirectoryJson<AppFeedback>(this.path("app-feedback")))
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+  }
+
+  async writeAppFeedback(feedback: AppFeedback): Promise<void> {
+    await writeJson(this.path("app-feedback", `${feedback.id}.json`), feedback);
+  }
+
+  async readAppFeedbackItem(feedbackId: string): Promise<AppFeedback> {
+    return readJson<AppFeedback>(this.path("app-feedback", `${feedbackId}.json`));
   }
 
   async readWorkspaceRevision(revisionId: string): Promise<WorkspaceRevision> {

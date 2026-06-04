@@ -1,9 +1,13 @@
 import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { AttentionDomain } from "./server/domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "./server/operator";
-import { createLocalRuntime } from "./server/runtime";
+import { createLocalRuntime, inspectRuntimeDrift, readRuntimeHandoffMarker, reconcileMissingRuntimeFiles, resolveArtifactsDir, resolveDbPath, resolveRuntimeRoot, writeRuntimeHandoffMarker } from "./server/runtime";
 
-const { store } = await createLocalRuntime();
+const root = path.dirname(fileURLToPath(import.meta.url));
+const runtimeRoot = resolveRuntimeRoot(root);
+const { dataDir, store } = await createLocalRuntime();
 const domain = new AttentionDomain(store);
 
 const [command = "help", ...argv] = process.argv.slice(2);
@@ -21,6 +25,10 @@ const required = (name: string) => {
 const text = async (name: string) => {
   const filename = value(`${name}-file`);
   return filename ? readFile(filename, "utf8") : required(name);
+};
+const structured = async (name: string) => {
+  const filename = value(`${name}-file`);
+  return filename ? JSON.parse(await readFile(filename, "utf8")) : json(required(name));
 };
 
 let output: unknown;
@@ -75,7 +83,7 @@ switch (command) {
     break;
   }
   case "card:upsert":
-    output = await domain.upsertCard(required("feed"), json(required("card")));
+    output = await domain.upsertCard(required("feed"), await structured("card"));
     break;
   case "routine:upsert":
     output = await domain.upsertRoutineActionGroup(required("feed"), json(required("group")));
@@ -182,6 +190,9 @@ switch (command) {
   case "card:undo-dismiss":
     output = await domain.undoDismiss(required("feed"), required("card"));
     break;
+  case "card:return-to-review":
+    output = await domain.returnCardToReview(required("feed"), required("card"));
+    break;
   case "work:list":
     {
       const feedId = required("feed");
@@ -191,11 +202,16 @@ switch (command) {
   case "work:claim":
     {
       const feedId = required("feed");
-      output = formatWorkClaimOutput(feedId, await domain.claimWork(feedId, required("thread"), flag("cross-feed")));
+      const work = await domain.claimWork(feedId, required("thread"), flag("cross-feed"));
+      const card = work && !work.cardId.startsWith("__") ? await store.readCard(feedId, work.cardId) : undefined;
+      output = formatWorkClaimOutput(feedId, work, card);
     }
     break;
   case "work:cancel":
     output = await domain.cancelQueuedWork(required("feed"), required("work"), value("reason"));
+    break;
+  case "work:edit":
+    output = await domain.updateQueuedWorkInstruction(required("feed"), required("work"), required("instruction"));
     break;
   case "work:complete":
     output = await domain.completeWork(required("feed"), required("work"), required("token"), json(required("result")));
@@ -224,6 +240,9 @@ switch (command) {
   case "revision:update":
     output = await domain.updateRevisionProposal(required("proposal"), await text("content"));
     break;
+  case "revision:reject":
+    output = await domain.rejectRevisionProposal(required("proposal"));
+    break;
   case "learning:request":
     output = await domain.queueCompound(required("feed"));
     break;
@@ -238,6 +257,30 @@ switch (command) {
   case "proposal:create":
     output = await domain.createImprovementCard(required("feed"), required("title"), required("brief"), required("instruction"));
     break;
+  case "feedback:record":
+    output = await domain.recordAppFeedback(required("feed"), required("title"), required("detail"), value("source-thread"));
+    break;
+  case "feedback:list":
+    output = await store.readAppFeedback();
+    break;
+  case "feedback:resolve":
+    output = await domain.resolveAppFeedback(required("feedback"), required("resolution"));
+    break;
+  case "runtime:where":
+    output = { appRoot: root, runtimeRoot, dataDir, dbPath: resolveDbPath(root), artifactsDir: resolveArtifactsDir(root) };
+    break;
+  case "runtime:mark-handoff":
+    output = await writeRuntimeHandoffMarker(runtimeRoot, dataDir, value("legacy-data") ?? path.join(required("legacy-home"), "data"));
+    break;
+  case "runtime:reconcile": {
+    const legacyDataDir = value("legacy-data") ?? path.join(required("legacy-home"), "data");
+    const marker = await readRuntimeHandoffMarker(runtimeRoot);
+    const since = value("since") ?? (marker?.legacyDataDirs.includes(path.resolve(legacyDataDir)) ? marker.createdAt : undefined);
+    output = flag("apply-missing")
+      ? await reconcileMissingRuntimeFiles(dataDir, legacyDataDir, since)
+      : await inspectRuntimeDrift(dataDir, legacyDataDir, since);
+    break;
+  }
   case "inspect":
     output = await domain.inspectHowFeedWorks(required("feed"));
     break;
@@ -265,16 +308,18 @@ switch (command) {
         "sweep:rejudge --feed <id> --feedback <id> --ordered-cards <json-array> --removed-cards <json-array>",
         "source:import-json-file --feed <id> --source <id> --path <local-json-file>",
         "source:import-file --feed <id> --source <id> --path <local-text-or-jsonl-file>",
-        "card:upsert --feed <id> --card <json>",
+        "card:upsert --feed <id> (--card <json> | --card-file <path>)",
         "routine:upsert --feed <id> --group <json>",
         "routine:approve --feed <id> --group <id>",
         "legacy:import-attention-card --feed <id> --path <attention-batch-json> --card-id <id>",
         "legacy:import-inbox-card --feed inbox --path <inbox-sweep-brief-json> --card-id <id> [--mailbox <received-at-email>]",
         "card:dismiss --feed <id> --card <id>",
         "card:undo-dismiss --feed <id> --card <id>",
+        "card:return-to-review --feed <id> --card <id>",
         "work:list --feed <id> --thread <id> [--cross-feed]",
         "work:claim --feed <id> --thread <id> [--cross-feed]",
         "work:cancel --feed <id> --work <id> [--reason <text>]",
+        "work:edit --feed <id> --work <id> --instruction <text>",
         "work:complete --feed <id> --work <id> --token <token> --result <json>",
         "action:verify --feed <id> --work <id> --token <token> [--mailbox <authenticated-gmail-email>]",
         "work:fail --feed <id> --work <id> --token <token> --error <text>",
@@ -284,10 +329,17 @@ switch (command) {
         "policy:revert --feed <id> --revision <id>",
         "revision:propose --feed <anchor-id> --target <json> --instruction <text> (--content <markdown> | --content-file <path>) [--source compound]",
         "revision:update --proposal <id> (--content <markdown> | --content-file <path>)",
+        "revision:reject --proposal <id>",
         "learning:request --feed <id>",
         "global-policy:update --content <markdown>",
         "global-prompt:update --prompt <allowlisted-name.md> --content <markdown>",
         "proposal:create --feed <id> --title <text> --brief <text> --instruction <text>",
+        "feedback:record --feed <id> --title <text> --detail <text> [--source-thread <Codex thread id>]",
+        "feedback:list",
+        "feedback:resolve --feedback <id> --resolution <text>",
+        "runtime:where",
+        "runtime:mark-handoff (--legacy-home <retired-runtime-root> | --legacy-data <retired-data-dir>)",
+        "runtime:reconcile (--legacy-home <retired-runtime-root> | --legacy-data <retired-data-dir>) [--since <ISO timestamp>] [--apply-missing]",
         "inspect --feed <id>",
         "demo:seed [--feed inbox]",
         "demo:clear [--feed inbox]",
