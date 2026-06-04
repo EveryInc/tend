@@ -6,7 +6,7 @@ import { AttentionDomain } from "../server/domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "../server/operator";
 import { AttentionStore } from "../server/store";
 import { assertRuntimeWritable, inspectRuntimeDrift, readRetiredRuntimeMarker, reconcileMissingRuntimeFiles, unfreezeRetiredRuntimeDataDir, writeRuntimeHandoffMarker } from "../server/runtime";
-import type { CardBlock, WorkItem } from "../src/types";
+import type { Card, CardBlock, WorkItem } from "../src/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
 
 const roots: string[] = [];
@@ -42,11 +42,22 @@ describe("feed thread operator handshake", () => {
     expect(formatWorkListOutput("inbox", [work])).toEqual([work]);
     expect(formatWorkClaimOutput("inbox", work)).toBe(work);
   });
+
+  test("reminds Inbox claims to draft as the source mailbox owner", () => {
+    const work = { id: "work-1" } as WorkItem;
+    const card = { sourceMailbox: "dan@every.to" } as Card;
+    expect(formatWorkClaimOutput("inbox", work, card)).toMatchObject({
+      operatorGuidance: {
+        replyDraftSender: expect.stringContaining("owner of sourceMailbox (dan@every.to)"),
+      },
+    });
+    expect(formatWorkClaimOutput("company-attention", work, card)).toBe(work);
+  });
 });
 
 describe("filesystem workspace", () => {
   test("creates real Inbox and Company defaults with inspectable recipes and setup cards", async () => {
-    const { store, domain } = await setup();
+    const { root, store, domain } = await setup();
     const workspace = await store.readWorkspace();
     expect(workspace.feeds.map((feed) => feed.id)).toEqual(["inbox", "company-attention"]);
     expect(workspace.active.sources[0].id).toBe("gmail-inbox");
@@ -54,6 +65,10 @@ describe("filesystem workspace", () => {
     expect(workspace.dictation.status).toBe("not_checked");
     const company = await domain.inspectHowFeedWorks("company-attention");
     expect((company.sources as Array<{ content: string }>)[0].content).toContain("Return no card rather than padding");
+    const inbox = await domain.inspectHowFeedWorks("inbox");
+    expect((inbox.sources as Array<{ content: string }>)[0].content).toContain("Default every reply draft to the owner of `sourceMailbox`");
+    expect(await readFile(path.join(root, "prompts", "compose-card.md"), "utf8")).toContain("Default every reply draft to the owner of `sourceMailbox`");
+    expect(await readFile(path.join(root, "prompts", "execute-work.md"), "utf8")).toContain("write as the owner of `sourceMailbox`");
   });
 
   test("lets Codex detect Monologue and persist its configured recording shortcut", async () => {

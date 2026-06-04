@@ -1,4 +1,4 @@
-import type { WorkItem } from "../src/types";
+import type { Card, WorkItem } from "../src/types";
 
 export interface IdleWorkHandshake {
   status: "idle";
@@ -8,6 +8,12 @@ export interface IdleWorkHandshake {
     meaning: string;
     ifApproved: string;
     ifApprovedWithSearch: string;
+  };
+}
+
+export interface ClaimedWorkOutput extends WorkItem {
+  operatorGuidance?: {
+    replyDraftSender: string;
   };
 }
 
@@ -28,6 +34,13 @@ export function formatWorkListOutput(feedId: string, work: WorkItem[]): WorkItem
   return work.length > 0 ? work : idleWorkHandshake(feedId);
 }
 
-export function formatWorkClaimOutput(feedId: string, work: WorkItem | null): WorkItem | IdleWorkHandshake {
-  return work ?? idleWorkHandshake(feedId);
+export function formatWorkClaimOutput(feedId: string, work: WorkItem | null, card?: Card): ClaimedWorkOutput | IdleWorkHandshake {
+  if (!work) return idleWorkHandshake(feedId);
+  if (feedId !== "inbox" || !card?.sourceMailbox) return work;
+  return {
+    ...work,
+    operatorGuidance: {
+      replyDraftSender: `Write any reply draft as the owner of sourceMailbox (${card.sourceMailbox}). Preserve that sender's voice and signature. Do not sign as an assistant or delegate unless the user's instruction explicitly changes sender.`,
+    },
+  };
 }

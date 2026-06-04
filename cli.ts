@@ -205,7 +205,9 @@ switch (command) {
   case "work:claim":
     {
       const feedId = required("feed");
-      output = formatWorkClaimOutput(feedId, await domain.claimWork(feedId, required("thread"), flag("cross-feed")));
+      const work = await domain.claimWork(feedId, required("thread"), flag("cross-feed"));
+      const card = work && !work.cardId.startsWith("__") ? await store.readCard(feedId, work.cardId) : undefined;
+      output = formatWorkClaimOutput(feedId, work, card);
     }
     break;
   case "work:cancel":

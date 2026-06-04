@@ -91,6 +91,11 @@ pnpm cli -- work:complete \
   --result '{"response":"What changed, what happened, and any uncertainty."}'
 ```
 
+For Inbox work, honor any `operatorGuidance.replyDraftSender` returned by `work:claim`. Default
+reply drafts and revisions to the owner of `sourceMailbox`: preserve that person's voice and
+signature unless the user's instruction explicitly changes sender. Never sign as an assistant or
+delegate by default.
+
 Before an external mutation, verify the exact current approved action or default cleanup immediately
 before acting:
 

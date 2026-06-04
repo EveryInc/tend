@@ -125,6 +125,8 @@ Queued cards keep their dictated note editable until Codex claims the work, and 
 has a durable `Move back to review` control after the short-lived toast disappears.
 An external mutation still requires an exact visible approval bound to the selected action and
 current editable artifact. Inbox reply cards also show the mailbox that received the source email.
+Claimed Inbox work repeats that mailbox as reply-draft sender guidance: drafts preserve the mailbox
+owner's voice and signature unless the user's instruction explicitly changes sender.
 Immediately before sending, Codex fetches the authenticated Gmail profile and passes that mailbox
 to `action:verify`; a mismatch is a hard refusal.
 
