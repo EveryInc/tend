@@ -23,7 +23,7 @@ pnpm attention:package
 Use `ATTENTION_HOME` to keep development data separate:
 
 ```sh
-ATTENTION_HOME=.local-attention pnpm attention -- start
+ATTENTION_HOME=.local-attention pnpm attention -- start --foreground
 ```
 
 In another terminal, verify the runtime:
@@ -34,10 +34,10 @@ ATTENTION_HOME=.local-attention pnpm attention -- doctor
 
 The doctor output is fully green only while the local API is running.
 
-For a background service on macOS, use:
+For the background runner, use:
 
 ```sh
-ATTENTION_HOME=.local-attention pnpm attention -- start --background
+ATTENTION_HOME=.local-attention pnpm attention -- start
 ATTENTION_HOME=.local-attention pnpm attention -- health
 ATTENTION_HOME=.local-attention pnpm attention -- stop
 ```
@@ -72,7 +72,7 @@ pnpm attention:smoke
 pnpm attention:package
 ```
 
-`pnpm attention:smoke` starts the compiled `dist-bin/attention` binary against a temporary
+`pnpm attention:smoke` starts the compiled `dist-bin/attention` binary in foreground mode against a temporary
 `ATTENTION_HOME`, checks `attention version`, checks `/api/status`, validates the app version, MCP
 contract version, MCP URL, and schema version, verifies the built UI is served, confirms MCP
 reconnect/tool discovery works, stops the server, and removes the temporary data directory.

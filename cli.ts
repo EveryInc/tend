@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AttentionDomain } from "./server/domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "./server/operator";
-import { createLocalRuntime, inspectRuntimeDrift, readRuntimeHandoffMarker, reconcileMissingRuntimeFiles, resolveArtifactsDir, resolveDbPath, resolveRuntimeRoot, writeRuntimeHandoffMarker } from "./server/runtime";
+import { createLocalRuntime, resolveArtifactsDir, resolveDbPath, resolveRuntimeRoot } from "./server/runtime";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const runtimeRoot = resolveRuntimeRoot(root);
@@ -269,18 +269,6 @@ switch (command) {
   case "runtime:where":
     output = { appRoot: root, runtimeRoot, dataDir, dbPath: resolveDbPath(root), artifactsDir: resolveArtifactsDir(root) };
     break;
-  case "runtime:mark-handoff":
-    output = await writeRuntimeHandoffMarker(runtimeRoot, dataDir, value("legacy-data") ?? path.join(required("legacy-home"), "data"));
-    break;
-  case "runtime:reconcile": {
-    const legacyDataDir = value("legacy-data") ?? path.join(required("legacy-home"), "data");
-    const marker = await readRuntimeHandoffMarker(runtimeRoot);
-    const since = value("since") ?? (marker?.legacyDataDirs.includes(path.resolve(legacyDataDir)) ? marker.createdAt : undefined);
-    output = flag("apply-missing")
-      ? await reconcileMissingRuntimeFiles(dataDir, legacyDataDir, since)
-      : await inspectRuntimeDrift(dataDir, legacyDataDir, since);
-    break;
-  }
   case "inspect":
     output = await domain.inspectHowFeedWorks(required("feed"));
     break;
@@ -338,8 +326,6 @@ switch (command) {
         "feedback:list",
         "feedback:resolve --feedback <id> --resolution <text>",
         "runtime:where",
-        "runtime:mark-handoff (--legacy-home <retired-runtime-root> | --legacy-data <retired-data-dir>)",
-        "runtime:reconcile (--legacy-home <retired-runtime-root> | --legacy-data <retired-data-dir>) [--since <ISO timestamp>] [--apply-missing]",
         "inspect --feed <id>",
         "demo:seed [--feed inbox]",
         "demo:clear [--feed inbox]",

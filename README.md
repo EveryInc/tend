@@ -22,7 +22,8 @@ cd attention-<version>-<platform>-<arch>
 ./attention start
 ```
 
-The binary serves the UI, API, and MCP endpoint from one local process:
+The binary starts the local app in the background and serves the UI, API, and MCP endpoint from one
+local port:
 
 ```text
 UI:  http://127.0.0.1:4332
@@ -30,17 +31,17 @@ API: http://127.0.0.1:4332
 MCP: http://127.0.0.1:4332/mcp
 ```
 
-On macOS, run the same executable as a managed local service:
-
 ```sh
-./attention start --background
 ./attention health
 ./attention logs
 ./attention restart
 ./attention stop
 ```
 
-In another terminal, print the Codex setup prompt:
+For development or smoke tests, `./attention start --foreground` keeps the server attached to the
+current terminal.
+
+Print the Codex setup prompt:
 
 ```sh
 ./attention setup codex
@@ -145,8 +146,8 @@ Runtime data lives under `~/.attention/` by default:
   exports/
 ```
 
-Set `ATTENTION_HOME`, `ATTENTION_DATA_DIR`, or `ATTENTION_DB_PATH` to override paths. SQLite is the
-runtime authority; the data directory keeps readable mirrors and immutable raw evidence snapshots:
+Set `ATTENTION_HOME` to choose a different runtime root. SQLite is the runtime authority; the data
+directory keeps readable mirrors and immutable raw evidence snapshots:
 
 ```text
 data/

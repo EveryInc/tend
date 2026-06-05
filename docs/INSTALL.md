@@ -35,16 +35,18 @@ pnpm attention:smoke
 ./dist-bin/attention start
 ```
 
-The binary serves built UI assets, API, and MCP from `http://127.0.0.1:4332`.
-On macOS, the same binary can run as a managed local service:
+The binary starts the local app in the background and serves built UI assets, API, and MCP from
+`http://127.0.0.1:4332`.
 
 ```sh
-./dist-bin/attention start --background
 ./dist-bin/attention health
 ./dist-bin/attention logs
 ./dist-bin/attention restart
 ./dist-bin/attention stop
 ```
+
+Use `./dist-bin/attention start --foreground` when you want the server attached to the current
+terminal.
 
 Package the current platform binary for local distribution:
 
@@ -71,15 +73,15 @@ Copy the printed MCP URL and setup prompt into Codex Desktop.
 
 ```sh
 pnpm attention -- version
-pnpm attention -- start --background
+pnpm attention -- start
 pnpm attention -- health
 pnpm attention -- doctor
 pnpm attention -- status
 ```
 
 `version` prints the app version and MCP contract version. `doctor` checks local storage immediately.
-It also calls the running local API at `/api/status`, so run `attention start` in another terminal
-when you want the full server, version contract, and MCP readiness check to be green.
+It also calls the running local API at `/api/status`, so run `attention start` first when you want
+the full server, version contract, and MCP readiness check to be green.
 
 ## Backup And Restore
 

@@ -47,7 +47,6 @@ import { FileSweepRepository, type SweepRepository } from "./repositories/sweeps
 import { FileTextDocumentRepository, type TextDocumentRepository, type TextDocumentSeed } from "./repositories/textDocuments";
 import { FileWorkItemRepository, type WorkItemRepository } from "./repositories/workItems";
 import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
-import { assertRuntimeWritable } from "./runtime";
 
 export const GLOBAL_PROMPT_NAMES = ["judge.md", "compose-card.md", "execute-work.md", "distill-policy.md", "compound.md"] as const;
 export const FEED_PROMPT_NAMES = ["judge.md", "compose-card.md"] as const;
@@ -82,7 +81,6 @@ export class AttentionStore {
   }
 
   async init(): Promise<void> {
-    await assertRuntimeWritable(this.dataDir);
     await mkdir(this.dataDir, { recursive: true });
     const dictationPath = this.path("integrations/dictation.json");
     if (!existsSync(dictationPath)) await writeJson(dictationPath, defaultDictationCapability());

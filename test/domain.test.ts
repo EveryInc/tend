@@ -16,7 +16,6 @@ import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/re
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
-import { assertRuntimeWritable, readRetiredRuntimeMarker, unfreezeRetiredRuntimeDataDir, writeRuntimeHandoffMarker } from "../server/runtime";
 import type { Card, WorkItem } from "../src/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
 
@@ -80,27 +79,6 @@ describe("filesystem workspace", () => {
     expect((inbox.sources as Array<{ content: string }>)[0].content).toContain("Default every reply draft to the owner of `sourceMailbox`");
     expect(await readFile(path.join(root, "prompts", "compose-card.md"), "utf8")).toContain("Default every reply draft to the owner of `sourceMailbox`");
     expect(await readFile(path.join(root, "prompts", "execute-work.md"), "utf8")).toContain("write as the owner of `sourceMailbox`");
-  });
-
-  test("runtime handoff marks the SQLite runtime root and blocks retired writes", async () => {
-    const liveRoot = await mkdtemp(path.join(os.tmpdir(), "attention-live-"));
-    const legacyRoot = await mkdtemp(path.join(os.tmpdir(), "attention-legacy-"));
-    roots.push(liveRoot, legacyRoot);
-    const liveData = path.join(liveRoot, "data");
-    const legacyData = path.join(legacyRoot, "data");
-    await mkdir(liveData, { recursive: true });
-    await mkdir(legacyData, { recursive: true });
-    await writeFile(path.join(liveRoot, "attention.db"), "live");
-    await writeFile(path.join(legacyRoot, "attention.db"), "legacy");
-
-    const marker = await writeRuntimeHandoffMarker(liveRoot, liveData, legacyData);
-    expect(marker.liveRuntimeRoot).toBe(liveRoot);
-    expect(marker.liveDbPath).toBe(path.join(liveRoot, "attention.db"));
-    expect(marker.legacyRuntimeRoots).toEqual([legacyRoot]);
-    expect((await readRetiredRuntimeMarker(legacyRoot))?.liveRuntimeRoot).toBe(liveRoot);
-    await expect(assertRuntimeWritable(legacyData)).rejects.toThrow(liveRoot);
-
-    await unfreezeRetiredRuntimeDataDir(legacyData);
   });
 
   test("lets Codex detect Monologue and persist its configured recording shortcut", async () => {

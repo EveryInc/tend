@@ -25,7 +25,7 @@ if (binaryVersion.mcpContractVersion !== MCP_CONTRACT_VERSION) {
   throw new Error(`Compiled binary reported MCP contract ${binaryVersion.mcpContractVersion} instead of ${MCP_CONTRACT_VERSION}.`);
 }
 
-const server = Bun.spawn([binaryPath, "start"], {
+const server = Bun.spawn([binaryPath, "start", "--foreground"], {
   cwd,
   env: { ...process.env, ATTENTION_HOME: home, ATTENTION_API_PORT: port },
   stderr: "inherit",

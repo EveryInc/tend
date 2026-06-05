@@ -16,17 +16,12 @@ can automate collection and drain later without changing the product contract.
 
 All runtime state is local and git-ignored under `~/.attention/` by default. SQLite is the runtime
 authority, while `data/` keeps readable mirrors and immutable evidence artifacts. Use
-`ATTENTION_HOME`, `ATTENTION_DATA_DIR`, or `ATTENTION_DB_PATH` to isolate development or validation
-state.
+`ATTENTION_HOME` to isolate development or validation state.
 
-The installed `attention` executable is the canonical entrypoint. `attention start --background`
-uses `launchctl` to re-launch that same executable with the current `PATH`, `ATTENTION_HOME`, and
-port settings. There is no separate live runner.
-
-When a checkout-local runtime is retired, its runtime root receives a marker naming the canonical
-replacement and becomes read-only, including `attention.db` and `data/`. Reconciliation can still
-inspect readable mirrors and copy missing immutable evidence, but stale UIs and CLIs cannot keep
-accepting writes after cutover.
+The installed `attention` executable is the canonical entrypoint. `attention start` re-launches
+that same executable in the background with the current `PATH`, `ATTENTION_HOME`, and port settings.
+`attention start --foreground` keeps the server attached to the current terminal. There is no
+separate live runner.
 
 ```text
 ~/.attention/

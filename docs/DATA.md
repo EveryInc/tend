@@ -10,17 +10,10 @@ Attention is local-first. By default, user data lives under:
   exports/
 ```
 
-Override the location with:
+Override the runtime root with:
 
 ```sh
 ATTENTION_HOME=/path/to/attention attention start
-```
-
-or:
-
-```sh
-ATTENTION_DATA_DIR=/path/to/data attention start
-ATTENTION_DB_PATH=/path/to/attention.db attention start
 ```
 
 ## Current Storage

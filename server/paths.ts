@@ -6,13 +6,13 @@ export function attentionHome(): string {
 }
 
 export function attentionDataDir(): string {
-  return process.env.ATTENTION_DATA_DIR ?? path.join(attentionHome(), "data");
+  return path.join(attentionHome(), "data");
 }
 
 export function attentionDbPath(): string {
-  return process.env.ATTENTION_DB_PATH ?? path.join(attentionHome(), "attention.db");
+  return path.join(attentionHome(), "attention.db");
 }
 
 export function attentionLogDir(): string {
-  return process.env.ATTENTION_LOG_DIR ?? path.join(attentionHome(), "logs");
+  return path.join(attentionHome(), "logs");
 }

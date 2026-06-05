@@ -8,7 +8,7 @@ threads should prefer the installed executable once it exists.
 The live local app is owned by one CLI:
 
 ```bash
-attention start --background
+attention start
 attention health
 attention restart
 attention stop
@@ -17,8 +17,8 @@ attention logs
 
 It owns API/UI/MCP port `4332`, the live PID lock, and the live health check. Feed threads run
 `attention health` before operating through the API or CLI. They never start servers, kill ports, or
-choose worktrees themselves. For branch validation, use `attention validate`; it uses temporary
-runtime state plus port `14333`.
+choose worktrees themselves. Use `attention doctor` for diagnostics. Use `ATTENTION_HOME=<tmp>`
+with `attention start --foreground` when validating a branch against isolated runtime state.
 
 Feed threads own their feed work end to end through the canonical API or CLI. When a feed pass
 reveals a cross-app UX or code problem, record it without editing Tend product code from the feed
@@ -35,29 +35,6 @@ pnpm cli -- feedback:record \
 Then hand the same concise packet to the `Improve Tend workflow` thread. The improvement lane can
 review the durable inbox with `pnpm cli -- feedback:list` and close landed fixes with
 `pnpm cli -- feedback:resolve --feedback <id> --resolution "<what changed>"`.
-
-## Runtime Handoff
-
-When retiring an older checkout-local runtime, record the handoff immediately after the one-time
-copy:
-
-```bash
-attention cli runtime:mark-handoff --legacy-home <retired-runtime-root>
-```
-
-If a feed lane was already mid-turn, inspect for late writes:
-
-```bash
-attention cli runtime:reconcile --legacy-home <retired-runtime-root>
-attention cli runtime:reconcile --legacy-home <retired-runtime-root> --apply-missing
-```
-
-The apply pass copies only missing immutable evidence artifacts such as raw snapshots, runs, and
-sweep batches. It reports cards, work items, policies, event ledgers, and conflicting mutable files
-without overwriting live state. Carry reviewed mutable changes such as a late policy revision
-forward through the canonical CLI. The handoff command marks the retired runtime root with its live
-replacement and freezes the old tree read-only, including `attention.db` and `data/`. If a retired
-checkout is accidentally restarted, it must not accept another approval, note, or card write.
 
 ## First Local Setup
 

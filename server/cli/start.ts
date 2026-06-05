@@ -6,7 +6,7 @@ import { startBackgroundCommand } from "./service";
 import { apiUrl, initRuntime, mcpUrl, print } from "./shared";
 
 export async function startCommand(args: string[] = []): Promise<void> {
-  if (args.includes("--background")) {
+  if (!args.includes("--foreground")) {
     await startBackgroundCommand();
     return;
   }
