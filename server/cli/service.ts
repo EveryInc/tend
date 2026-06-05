@@ -25,12 +25,11 @@ export async function startBackgroundCommand(): Promise<void> {
     await launchService();
     for (let index = 0; index < 40; index += 1) {
       if (await serviceHealthy()) {
-        const pid = servicePid();
+        const pid = servicePid() ?? listenerPid(apiPort());
         if (pid) await writeFile(pidFile(), `${pid}\n`);
         print(`Attention is healthy (pid ${pid ?? "unknown"}, url ${apiUrl()}, runtime ${attentionHome()}).`);
         return;
       }
-      if (!serviceExists()) break;
       await Bun.sleep(250);
     }
     runLaunchctl(["remove", SERVICE_LABEL], { allowFailure: true });
@@ -42,7 +41,7 @@ export async function startBackgroundCommand(): Promise<void> {
 export async function stopCommand(): Promise<void> {
   await withServiceLock(async () => {
     ensureLaunchctl();
-    const pid = servicePid() ?? await readPid();
+    const pid = servicePid() ?? await readPid() ?? listenerPid(apiPort());
     if (!pid && !serviceExists()) {
       print("Attention is not running as a background service.");
       return;
@@ -65,9 +64,8 @@ export async function restartCommand(): Promise<void> {
 
 export async function healthCommand(): Promise<void> {
   ensureLaunchctl();
-  const pid = servicePid() ?? await readPid();
-  if (!serviceExists()) throw new Error("Attention is not running as a background service.");
-  if (!await serviceHealthy()) throw new Error(`Attention pid ${pid ?? "unknown"} is running but unhealthy.`);
+  const pid = servicePid() ?? await readPid() ?? listenerPid(apiPort());
+  if (!await serviceHealthy()) throw new Error(`Attention${pid ? ` pid ${pid}` : ""} is not healthy at ${apiUrl()}.`);
   print(`Attention is healthy (pid ${pid ?? "unknown"}, url ${apiUrl()}, runtime ${attentionHome()}).`);
 }
 
@@ -116,10 +114,9 @@ function currentCliCommand(): string[] {
 }
 
 async function serviceHealthy(): Promise<boolean> {
-  if (!serviceExists()) return false;
   const health = await checkUrl(`${apiUrl()}/api/health`);
   const ui = await checkUrl(apiUrl());
-  return health && ui;
+  return (health && ui) || Boolean(listenerPid(apiPort()));
 }
 
 async function checkUrl(url: string): Promise<boolean> {
