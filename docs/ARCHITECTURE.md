@@ -4,14 +4,17 @@ Attention is a local-first Codex-native app. The local executable owns the UI, H
 
 ## Runtime
 
-```text
-attention executable
-  ├─ Hono HTTP API
-  ├─ SSE realtime endpoint at /api/events
-  ├─ JSON CLI command contract
-  ├─ React UI
-  ├─ local SQLite metadata
-  └─ local feed state
+```mermaid
+flowchart LR
+  Thread["Codex feed thread"] --> CLI["attention cli"]
+  CLI --> Domain["Domain invariants"]
+  UI["React UI"] --> API["Hono HTTP API"]
+  API --> Domain
+  Domain --> SQLite["SQLite authority"]
+  SQLite --> Mirrors["Readable file mirrors"]
+  Domain --> SSE["/api/events"]
+  SSE --> UI
+  Thread --> Connectors["Codex Desktop connectors"]
 ```
 
 The current domain model keeps the richest authoring artifacts readable in local file mirrors while moving active runtime records into SQLite. Active feed membership, editable prompt/policy documents, feed cards, routine action groups, source recipes/checkpoints, source run records, sweep state/artifacts, revision records, feed audit events, and work items are now behind repository interfaces with SQLite as the runtime authority and readable files as backup-compatible mirrors.

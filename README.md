@@ -7,6 +7,26 @@ sweeps, approvals, and queued work.
 This is an experimental local app, not a hosted service. Codex Desktop remains the agent runtime;
 Attention is the local workspace and coordination layer.
 
+## Mental Model
+
+```mermaid
+flowchart LR
+  User["User reviews feed UI"] --> UI["Attention UI"]
+  UI --> API["Local HTTP API"]
+  API --> DB["SQLite authority"]
+  DB --> Mirror["Readable file mirrors"]
+  DB --> Events["SSE changes"]
+  Events --> UI
+
+  Thread["Codex feed thread"] --> CLI["attention cli"]
+  CLI --> DB
+  Thread --> Connectors["Local Codex connectors"]
+  Connectors --> Thread
+```
+
+Codex owns connector access and agent work. Attention owns local state, approval gates, feed
+configuration, and the browser UI.
+
 ## Get Started
 
 There are two good ways to try Attention.

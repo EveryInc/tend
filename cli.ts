@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AttentionDomain } from "./server/domain";
+import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS } from "./server/cli/contract";
 import { formatWorkClaimOutput, formatWorkListOutput } from "./server/operator";
 import { createLocalRuntime, resolveArtifactsDir, resolveDbPath, resolveRuntimeRoot } from "./server/runtime";
 
@@ -31,8 +32,9 @@ const structured = async (name: string) => {
   return filename ? JSON.parse(await readFile(filename, "utf8")) : json(required(name));
 };
 
-let output: unknown;
-switch (command) {
+try {
+  let output: unknown;
+  switch (command) {
   case "state":
     output = await store.readWorkspace(value("feed"));
     break;
@@ -280,57 +282,28 @@ switch (command) {
     await domain.clearDemo(value("feed"));
     output = { ok: true };
     break;
+  case "help:internal":
+    output = { commands: CLI_COMMANDS, internalCommands: INTERNAL_CLI_COMMANDS };
+    break;
   default:
     output = {
-      commands: [
-        "state [--feed inbox]",
-        "setup:detect-monologue",
-        "feed:create --brief <plain-English brief> [--thread <current Codex thread id>]",
-        "feed:bind --feed <id> --thread <Codex thread id>",
-        "feed:archive --feed <id>",
-        "feed:heartbeat:propose --feed <id> --cadence <plain-English cadence>",
-        "source:add --feed <id> --brief <plain-English source recipe>",
-        "source:remove --feed <id> --source <id>",
-        "source:record-run --feed <id> --source <id> --snapshots <json> --judgments <json> --checkpoint <json> [--work <recollection-work-id>]",
-        "sweep:record-batch --feed <id> --runs <json-array> [--work <recollection-work-id>]",
-        "sweep:rejudge --feed <id> --feedback <id> --ordered-cards <json-array> --removed-cards <json-array>",
-        "source:import-json-file --feed <id> --source <id> --path <local-json-file>",
-        "source:import-file --feed <id> --source <id> --path <local-text-or-jsonl-file>",
-        "card:upsert --feed <id> (--card <json> | --card-file <path>)",
-        "routine:upsert --feed <id> --group <json>",
-        "routine:approve --feed <id> --group <id>",
-        "legacy:import-attention-card --feed <id> --path <attention-batch-json> --card-id <id>",
-        "legacy:import-inbox-card --feed inbox --path <inbox-sweep-brief-json> --card-id <id> [--mailbox <received-at-email>]",
-        "card:dismiss --feed <id> --card <id>",
-        "card:undo-dismiss --feed <id> --card <id>",
-        "card:return-to-review --feed <id> --card <id>",
-        "work:list --feed <id> --thread <id> [--cross-feed]",
-        "work:claim --feed <id> --thread <id> [--cross-feed]",
-        "work:cancel --feed <id> --work <id> [--reason <text>]",
-        "work:edit --feed <id> --work <id> --instruction <text>",
-        "work:complete --feed <id> --work <id> --token <token> --result <json>",
-        "action:verify --feed <id> --work <id> --token <token> [--mailbox <authenticated-gmail-email>]",
-        "work:fail --feed <id> --work <id> --token <token> --error <text>",
-        "work:block --feed <id> --work <id> --token <token> --error <text>",
-        "work:retry --feed <id> --work <id>",
-        "policy:apply --feed <id> (--content <markdown> | --content-file <path>) --reason <text> [--source micro_learning]",
-        "policy:revert --feed <id> --revision <id>",
-        "revision:propose --feed <anchor-id> --target <json> --instruction <text> (--content <markdown> | --content-file <path>) [--source compound]",
-        "revision:update --proposal <id> (--content <markdown> | --content-file <path>)",
-        "revision:reject --proposal <id>",
-        "learning:request --feed <id>",
-        "global-policy:update --content <markdown>",
-        "global-prompt:update --prompt <allowlisted-name.md> --content <markdown>",
-        "proposal:create --feed <id> --title <text> --brief <text> --instruction <text>",
-        "feedback:record --feed <id> --title <text> --detail <text> [--source-thread <Codex thread id>]",
-        "feedback:list",
-        "feedback:resolve --feedback <id> --resolution <text>",
-        "runtime:where",
-        "inspect --feed <id>",
-        "demo:seed [--feed inbox]",
-        "demo:clear [--feed inbox]",
-      ],
+      commands: CLI_COMMANDS,
     };
+  }
+
+  process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`${JSON.stringify({ ok: false, error: message, hint: errorHint(message, command) }, null, 2)}\n`);
+  process.exit(1);
 }
 
-process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
+function errorHint(message: string, activeCommand: string): string {
+  if (message.startsWith("Missing --")) return `Run attention cli help and retry ${activeCommand} with the required flag.`;
+  if (message.includes("does not own the feed")) return "Use the feed's bound home thread id, or pass --cross-feed only for explicit cross-feed operation.";
+  if (message.includes("Invalid scoped work capability token")) return "Use the capabilityToken returned by the latest successful work:claim for this work item.";
+  if (message.includes("Approved action must pass action:verify")) return "Call attention cli action:verify immediately before the external mutation, then complete with the same token.";
+  if (message.includes("Approval stale")) return "Reread the current card or routine group, then return it to review or ask the user to approve the current snapshot.";
+  if (message.includes("Source recipe not found")) return "Inspect the feed sources with attention cli inspect --feed <id>, then use a configured source id.";
+  return "Run attention cli help for the command contract and retry with current feed/work state.";
+}
