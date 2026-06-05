@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS, cliCommandName } from "../server/cli/contract";
 import { MissingFlagError, formatCliError } from "../server/cli/errors";
+import { setupCodexPrompt } from "../server/cli/setup";
 
 describe("CLI contract", () => {
   test("keeps public help focused on the v0 agent surface", () => {
@@ -39,5 +40,20 @@ describe("CLI contract", () => {
       code: "missing_flag",
       hint: "Usage: attention cli work:claim --feed <id> --thread <id> [--cross-feed]",
     });
+  });
+
+  test("prints a self-contained Codex setup prompt for binary installs", () => {
+    const prompt = setupCodexPrompt({
+      binaryPath: "/tmp/attention install/attention",
+      skillPath: "/tmp/attention install/docs/SKILL.md",
+      attentionHome: "/tmp/attention home",
+    });
+
+    expect(prompt).toContain("Local Attention binary: /tmp/attention install/attention");
+    expect(prompt).toContain("Skill/reference: /tmp/attention install/docs/SKILL.md");
+    expect(prompt).toContain("CLI prefix: ATTENTION_HOME='/tmp/attention home' '/tmp/attention install/attention'");
+    expect(prompt).toContain("Use the local Attention CLI contract, not a hosted Attention or MCP setup.");
+    expect(prompt).toContain("Do setup sequentially: bind first and wait for it to finish, then propose/install the heartbeat.");
+    expect(prompt).toContain("ATTENTION_HOME='/tmp/attention home' '/tmp/attention install/attention' cli feed:bind --feed inbox --thread <current-codex-thread-id>");
   });
 });
