@@ -1,14 +1,14 @@
 # Architecture
 
-Attention is a local-first Codex-native app. The local executable owns the UI, HTTP API, MCP server, realtime event stream, and local state. Codex Desktop remains the agent runtime and uses local MCP tools to inspect feeds, claim work, use local connectors, and write results back.
+Attention is a local-first Codex-native app. The local executable owns the UI, HTTP API, realtime event stream, JSON CLI, and local state. Codex Desktop remains the agent runtime and uses the local CLI to inspect feeds, claim work, use local connectors, and write results back.
 
 ## Runtime
 
 ```text
 attention executable
   ├─ Hono HTTP API
-  ├─ Streamable HTTP MCP endpoint at /mcp
   ├─ SSE realtime endpoint at /api/events
+  ├─ JSON CLI command contract
   ├─ React UI
   ├─ local SQLite metadata
   └─ local feed state
@@ -27,7 +27,6 @@ There is no separate runner or second CLI.
 - `server/store.ts` owns current local feed persistence.
 - `server/repositories/` owns typed persistence interfaces and adapters.
 - `server/runtime.ts` composes SQLite-backed repositories with filesystem mirrors for local execution.
-- `server/mcp.ts` adapts domain behavior to MCP tools, prompts, and resources.
 - `server.ts` composes local route modules and starts Bun.
 - `server/routes/api.ts` owns browser-facing Hono API routes.
 - `server/routes/realtime.ts` owns the SSE event stream.
@@ -45,7 +44,7 @@ There is no separate runner or second CLI.
 
 ## Agent Model
 
-Each feed has one home Codex thread. The home thread claims work before using Gmail, GitHub, Slack, browser, files, or other local connectors. The local app stores recipes and workflow state; connector credentials stay in Codex Desktop.
+Each feed has one home Codex thread. The home thread claims work through `attention cli` before using Gmail, GitHub, Slack, browser, files, or other local connectors. The local app stores recipes and workflow state; connector credentials stay in Codex Desktop.
 
 ## Realtime
 

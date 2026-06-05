@@ -42,11 +42,10 @@ pnpm attention:package
 - Keep browser-facing HTTP routes in `server/routes/`.
 - Keep human-facing CLI commands in `server/cli/`.
 - Keep persistence behind `server/repositories/` interfaces.
-- Keep MCP tools as thin adapters over domain behavior in `server/mcp.ts`.
 - Keep React route orchestration in `src/App.tsx` and route definitions in `src/router.tsx`.
 - Prefer domain-oriented folders over broad type buckets when adding larger areas.
 
-Do not duplicate business logic across UI, CLI, API, and MCP. Add one domain capability, then expose
+Do not duplicate business logic across UI, CLI, and API. Add one domain capability, then expose
 it through the adapters that need it.
 
 ## Agent-Native Contract
@@ -54,7 +53,7 @@ it through the adapters that need it.
 When adding or changing a user action:
 
 - Decide whether Codex should also be able to perform it.
-- If yes, expose it through MCP or queued work, not UI-only behavior.
+- If yes, expose it through the JSON CLI or queued work, not UI-only behavior.
 - Preserve the feed home-thread ownership model.
 - List and claim work before connector-backed execution.
 - Keep `verify_action` immediately before any approved external mutation.
@@ -75,7 +74,7 @@ Domain tests live under `test/`. Add focused coverage when changing:
 
 - queue, claim, complete, fail, block, retry, or cancel behavior
 - approval or verification semantics
-- MCP tools or prompts
+- CLI commands or skill instructions
 - persistence repositories or migration/mirroring behavior
 - source-run, sweep, learning, or card lifecycle behavior
 - backup, restore, doctor, start, or binary smoke behavior
@@ -89,11 +88,11 @@ Update docs when changing behavior:
 
 - `README.md` for the first-run story and high-level product contract
 - `docs/ARCHITECTURE.md` for ownership boundaries
-- `docs/AGENT_CONTRACT.md` for Codex/MCP workflow changes
+- `docs/AGENT_CONTRACT.md` for Codex/CLI workflow changes
 - `docs/DATA.md` for persistence and backup changes
 - `docs/INSTALL.md` for setup changes
 - `docs/DEVELOPMENT.md` for local workflow and CI changes
-- `docs/RELEASING.md` and `CHANGELOG.md` for release, version, schema, or MCP contract changes
+- `docs/RELEASING.md` and `CHANGELOG.md` for release, version, schema, or CLI contract changes
 - `RUNBOOK.md` for feed-thread operator behavior
 - `CAPABILITY_MAP.md` for user-visible action primitives
 

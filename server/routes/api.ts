@@ -6,10 +6,10 @@ import { versionInfo } from "../version";
 import { body, mutation, type LocalRouteContext } from "./shared";
 
 export function apiRoutes(context: LocalRouteContext): Hono {
-  const { artifactsDir, dataDir, domain, notify, port, sqlite, store } = context;
+  const { artifactsDir, dataDir, domain, notify, sqlite, store } = context;
   const app = new Hono();
 
-  app.get("/api/status", (c) => c.json({ ok: true, version: versionInfo(), dataDir, sqlite: sqlite.status(), mcpUrl: `http://127.0.0.1:${port}/mcp` }));
+  app.get("/api/status", (c) => c.json({ ok: true, version: versionInfo(), dataDir, sqlite: sqlite.status() }));
   app.get("/api/state", async (c) => c.json(await store.readWorkspace(c.req.query("feed") ?? "inbox")));
   app.get("/api/health", (c) => c.json({ ok: true }));
   app.get("/api/artifacts/:name", async (c) => {

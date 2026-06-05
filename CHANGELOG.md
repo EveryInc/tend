@@ -5,9 +5,9 @@ a promise of ongoing maintenance.
 
 ## 0.1.0 - Initial Local-First OSS Snapshot
 
-- Local Bun executable serving UI, API, and MCP from one process.
+- Local Bun executable serving UI and API from one process.
 - SQLite runtime storage with readable file mirrors and backup compatibility.
-- MCP-first Codex agent contract with feed binding, work queue, card, source-run, sweep, and learning tools.
+- CLI-first Codex agent contract with feed binding, work queue, card, source-run, sweep, and learning commands.
 - TanStack Router and TanStack Query UI structure.
 - Binary build, smoke, and package scripts with bundled UI assets.
 - CI verification for build, tests, binary smoke, and package creation.

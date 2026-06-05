@@ -11,7 +11,7 @@ Attention is local-first and binds its development server to `127.0.0.1` by defa
 
 ## Localhost
 
-The API and MCP endpoint are local HTTP endpoints. Treat them as trusted-local interfaces and avoid exposing them on a public network.
+The API is a local HTTP endpoint. Treat it as a trusted-local interface and avoid exposing it on a public network.
 
 ## Reporting
 

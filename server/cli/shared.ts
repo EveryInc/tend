@@ -10,10 +10,6 @@ export function apiUrl(): string {
   return `http://127.0.0.1:${apiPort()}`;
 }
 
-export function mcpUrl(): string {
-  return `${apiUrl()}/mcp`;
-}
-
 export function print(value: unknown): void {
   process.stdout.write(`${typeof value === "string" ? value : JSON.stringify(value, null, 2)}\n`);
 }
@@ -33,6 +29,5 @@ export function localPaths() {
     dbPath: attentionDbPath(),
     apiUrl: apiUrl(),
     uiUrl: apiUrl(),
-    mcpUrl: mcpUrl(),
   };
 }

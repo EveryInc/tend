@@ -1,8 +1,8 @@
 # Attention
 
 Attention is an open-source, local-first Codex-native feed builder. It runs on your machine, stores
-workflow state locally, exposes a local MCP server for Codex Desktop, and renders a calm review UI
-for feed sweeps, approvals, and queued work.
+workflow state locally, exposes a JSON CLI for Codex Desktop, and renders a calm review UI for feed
+sweeps, approvals, and queued work.
 
 This is an experimental local app, not a hosted service. Codex Desktop remains the agent runtime;
 Attention is the local workspace and coordination layer.
@@ -22,13 +22,11 @@ cd attention-<version>-<platform>-<arch>
 ./attention start
 ```
 
-The binary starts the local app in the background and serves the UI, API, and MCP endpoint from one
-local port:
+The binary starts the local app in the background and serves the UI and API from one local port:
 
 ```text
 UI:  http://127.0.0.1:4332
 API: http://127.0.0.1:4332
-MCP: http://127.0.0.1:4332/mcp
 ```
 
 ```sh
@@ -47,9 +45,9 @@ Print the Codex setup prompt:
 ./attention setup codex
 ```
 
-Add the printed MCP server URL to Codex Desktop, then paste the printed setup prompt into a fresh
-Codex thread. Use one Codex thread per feed. That thread binds itself to the feed, creates or updates
-its heartbeat automation, drains queued work, and refreshes sources through local connectors.
+Paste the printed setup prompt into a fresh Codex thread. Use one Codex thread per feed. That thread
+binds itself to the feed through the JSON CLI, creates or updates its heartbeat automation, drains
+queued work, and refreshes sources through local connectors.
 
 Useful binary checks:
 
@@ -71,7 +69,7 @@ pnpm start
 ```
 
 Open `http://127.0.0.1:4321/` in the Codex in-app browser. During development, Vite serves the UI
-on `4321`, the API listens on `4332`, and the MCP endpoint is `http://127.0.0.1:4332/mcp`.
+on `4321`, and the API listens on `4332`.
 
 Development checks:
 
@@ -98,7 +96,7 @@ pnpm seed:demo
 ```
 
 Read [docs/INSTALL.md](./docs/INSTALL.md) for setup details, [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
-for the local runtime, [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md) for the Codex/MCP contract,
+for the local runtime, [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md) for the Codex/CLI contract,
 and [CONTRIBUTING.md](./CONTRIBUTING.md) if you want to extend the repo.
 
 ## Product Boundary
@@ -114,11 +112,11 @@ Normal manual fallback: wake the feed's home Codex thread and say:
 go deal with the feed
 ```
 
-The thread runs `pnpm cli -- work:list` and repeatedly claims and completes pending work. No relay
+The thread runs `attention cli work:list` and repeatedly claims and completes pending work. No relay
 packet should ever be pasted in the normal workflow. A thread-owned heartbeat can make refresh and
 drain automatic after the user approves the proposed cadence.
 
-During local setup, Codex runs `pnpm cli -- setup:detect-monologue`. If Monologue is installed, Codex
+During local setup, Codex runs `attention cli setup:detect-monologue`. If Monologue is installed, Codex
 reads its local recording shortcut and records a safe browser-facing capability under ignored
 `data/integrations/`. Hold the detected shortcut while speaking. The dock receives focus on keydown
 and switches into a visible listening state, then automatically submits injected text shortly after
@@ -208,7 +206,7 @@ current editable artifact. Inbox reply cards also show the mailbox that received
 Immediately before sending, Codex fetches the authenticated Gmail profile and passes that mailbox
 to `action:verify`; a mismatch is a hard refusal.
 
-## CLI And MCP
+## CLI Contract
 
 The human-facing CLI is:
 
@@ -220,18 +218,17 @@ pnpm attention -- setup codex
 pnpm attention -- backup export
 ```
 
-The low-level operator commands remain available through:
+Codex operates feeds through the JSON CLI:
 
 ```bash
-pnpm attention -- cli state --feed inbox
-pnpm attention -- cli work:list --feed inbox --thread <current-codex-thread-id>
+attention cli state --feed inbox
+attention cli work:list --feed inbox --thread <current-codex-thread-id>
 ```
 
-Codex should prefer MCP over shelling out to the CLI. The MCP endpoint exposes a feature-complete
-agent surface for feed setup, work claiming, card/source/sweep recording, policy/revision updates,
-feedback, and runtime inspection. The CLI remains the equivalent fallback for humans, scripts, and
-debugging. See [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md) for the MCP/CLI parity matrix and
-[docs/SKILL.md](./docs/SKILL.md) for skill-style runner instructions.
+The low-level CLI returns JSON for agent-readable operations. It is the single v0 agent contract for
+feed setup, work claiming, card/source/sweep recording, policy/revision updates, feedback, and
+runtime inspection. See [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md) for the command contract
+and [docs/SKILL.md](./docs/SKILL.md) for skill-style runner instructions.
 
 Read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md), [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md),
 [docs/DATA.md](./docs/DATA.md), [docs/INSTALL.md](./docs/INSTALL.md), and
@@ -245,7 +242,7 @@ For contribution workflow, architecture expectations, and local verification gat
 ## Releases
 
 Attention uses SemVer-tagged release snapshots. `package.json` is the source of truth for the app
-version, while the SQLite schema version and MCP contract version are tracked separately. GitHub
+version, while the SQLite schema version and CLI contract version are tracked separately. GitHub
 Releases are reproducible local artifacts, not an auto-update channel or support promise. See
 [CHANGELOG.md](./CHANGELOG.md) and [docs/RELEASING.md](./docs/RELEASING.md).
 

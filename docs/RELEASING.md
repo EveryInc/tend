@@ -13,20 +13,20 @@ specific; they do not imply a hosted service, auto-update channel, or support SL
 
 ## Compatibility Versions
 
-The app version, SQLite schema version, and MCP contract version are separate.
+The app version, SQLite schema version, and CLI contract version are separate.
 
 - App version: user-visible release snapshot.
 - SQLite schema version: local database shape. Forward-only migrations are expected.
-- MCP contract version: agent-facing tool/resource/prompt compatibility.
+- CLI contract version: agent-facing command compatibility.
 
 `attention version`, `attention status`, `attention doctor`, and `/api/status` report the app version
-and MCP contract version. `attention doctor` also reports the SQLite schema version.
+and CLI contract version. `attention doctor` also reports the SQLite schema version.
 
 Compatibility rules:
 
-- Do not remove MCP tools casually.
-- Prefer additive MCP changes.
-- Document breaking MCP or schema changes in `CHANGELOG.md`.
+- Do not remove CLI commands casually.
+- Prefer additive CLI changes.
+- Document breaking CLI or schema changes in `CHANGELOG.md`.
 - Refuse to open data from a newer schema version once that guard exists.
 - Take or instruct a backup before destructive migrations.
 

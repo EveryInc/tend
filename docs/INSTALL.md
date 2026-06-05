@@ -19,12 +19,6 @@ The local API listens on:
 http://127.0.0.1:4332
 ```
 
-The local MCP endpoint is:
-
-```text
-http://127.0.0.1:4332/mcp
-```
-
 ## Build A Bun Binary
 
 ```sh
@@ -35,7 +29,7 @@ pnpm attention:smoke
 ./dist-bin/attention start
 ```
 
-The binary starts the local app in the background and serves built UI assets, API, and MCP from
+The binary starts the local app in the background and serves built UI assets and API from
 `http://127.0.0.1:4332`.
 
 ```sh
@@ -67,7 +61,7 @@ from inside the extracted folder or by absolute path from another working direct
 pnpm attention -- setup codex
 ```
 
-Copy the printed MCP URL and setup prompt into Codex Desktop.
+Paste the printed skill setup prompt into a fresh Codex Desktop thread.
 
 ## Health Check
 
@@ -79,9 +73,9 @@ pnpm attention -- doctor
 pnpm attention -- status
 ```
 
-`version` prints the app version and MCP contract version. `doctor` checks local storage immediately.
+`version` prints the app version and CLI contract version. `doctor` checks local storage immediately.
 It also calls the running local API at `/api/status`, so run `attention start` first when you want
-the full server, version contract, and MCP readiness check to be green.
+the full server, version contract, and API readiness check to be green.
 
 ## Backup And Restore
 

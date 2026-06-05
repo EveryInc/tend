@@ -49,11 +49,10 @@ Prefer one domain method with thin adapters:
 ```text
 domain/service behavior
   ├─ API route
-  ├─ MCP tool
   └─ CLI command when useful
 ```
 
-Do not duplicate business logic across UI, CLI, API, and MCP.
+Do not duplicate business logic across UI, CLI, and API.
 
 ## Tests
 
@@ -73,9 +72,9 @@ pnpm attention:package
 ```
 
 `pnpm attention:smoke` starts the compiled `dist-bin/attention` binary in foreground mode against a temporary
-`ATTENTION_HOME`, checks `attention version`, checks `/api/status`, validates the app version, MCP
-contract version, MCP URL, and schema version, verifies the built UI is served, confirms MCP
-reconnect/tool discovery works, stops the server, and removes the temporary data directory.
+`ATTENTION_HOME`, checks `attention version`, checks `/api/status`, validates the app version, CLI
+contract version and schema version, verifies the built UI is served, confirms core JSON CLI
+commands work, stops the server, and removes the temporary data directory.
 
 Use `pnpm attention:package` after the smoke check when preparing a local release archive. It writes
 a platform-specific tarball and checksum under `dist-bin/releases/`. The tarball includes the

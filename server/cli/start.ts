@@ -3,7 +3,7 @@ import path from "node:path";
 import { attentionDataDir } from "../paths";
 import { versionInfo } from "../version";
 import { startBackgroundCommand } from "./service";
-import { apiUrl, initRuntime, mcpUrl, print } from "./shared";
+import { apiUrl, initRuntime, print } from "./shared";
 
 export async function startCommand(args: string[] = []): Promise<void> {
   if (!args.includes("--foreground")) {
@@ -17,7 +17,6 @@ export async function startCommand(args: string[] = []): Promise<void> {
 Version: ${version.version}
 UI:  ${apiUrl()}
 API: ${apiUrl()}
-MCP: ${mcpUrl()}
 Data: ${attentionDataDir()}
 `);
   await import("../../server");

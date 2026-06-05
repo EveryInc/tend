@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { MCP_CONTRACT_VERSION } from "../server/version";
+import { CLI_CONTRACT_VERSION } from "../server/version";
 
 const root = process.cwd();
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")) as { name: string; version: string };
@@ -45,7 +45,7 @@ await copyDocs([
 await writeFile(path.join(stageDir, "manifest.json"), JSON.stringify({
   name: packageJson.name,
   version: packageJson.version,
-  mcpContractVersion: MCP_CONTRACT_VERSION,
+  cliContractVersion: CLI_CONTRACT_VERSION,
   platform,
   arch,
   binary: "attention",
