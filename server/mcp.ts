@@ -3,6 +3,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type { AttentionDomain } from "./domain";
+import { attentionDataDir, attentionDbPath, attentionHome, attentionLogDir } from "./paths";
 import type { AttentionStore } from "./store";
 import { APP_VERSION } from "./version";
 
@@ -14,6 +15,8 @@ async function text(value: unknown) {
 }
 
 const jsonValue = z.unknown();
+const policyRevisionSource = z.enum(["compound", "micro_learning", "user_instruction", "import"]).optional();
+const proposalRevisionSource = z.enum(["voice", "compound"]).optional();
 
 export async function createMcpRequestHandler(domain: AttentionDomain, store: AttentionStore): Promise<(request: Request) => Promise<Response>> {
   const transports = new Map<string, WebStandardStreamableHTTPServerTransport>();
@@ -95,11 +98,65 @@ function createAttentionMcpServer(domain: AttentionDomain, store: AttentionStore
     inputSchema: { feedId: z.string() },
   }, ({ feedId }) => text(domain.inspectHowFeedWorks(feedId)));
 
+  server.registerTool("read_workspace", {
+    title: "Read workspace",
+    description: "Read the full workspace view for a feed, including cards, work, sources, routines, and proposals.",
+    inputSchema: { feedId: z.string().optional() },
+  }, ({ feedId }) => text(store.readWorkspace(feedId)));
+
+  server.registerTool("detect_local_monologue", {
+    title: "Detect local Monologue",
+    description: "Detect Monologue dictation capability and store the browser-facing local capability record.",
+    inputSchema: { appPath: z.string().optional(), settingsPath: z.string().optional() },
+  }, ({ appPath, settingsPath }) => text(domain.detectLocalMonologue({ appPath, settingsPath })));
+
+  server.registerTool("create_feed", {
+    title: "Create feed",
+    description: "Create a feed from a plain-English brief.",
+    inputSchema: { brief: z.string(), threadId: z.string().nullable().optional() },
+  }, ({ brief, threadId }) => text(domain.createFeedFromBrief(brief, threadId ?? null)));
+
   server.registerTool("bind_feed_thread", {
     title: "Bind feed thread",
     description: "Bind a feed to the local Codex thread that owns routine work.",
     inputSchema: { feedId: z.string(), threadId: z.string() },
   }, ({ feedId, threadId }) => text(domain.bindFeed(feedId, threadId)));
+
+  server.registerTool("archive_feed", {
+    title: "Archive feed",
+    description: "Archive a feed without deleting its durable state.",
+    inputSchema: { feedId: z.string() },
+  }, async ({ feedId }) => {
+    await domain.archiveFeed(feedId);
+    return text({ ok: true });
+  });
+
+  server.registerTool("propose_feed_heartbeat", {
+    title: "Propose feed heartbeat",
+    description: "Propose a same-thread heartbeat cadence for a feed.",
+    inputSchema: { feedId: z.string(), cadence: z.string() },
+  }, ({ feedId, cadence }) => text(domain.proposeHeartbeat(feedId, cadence)));
+
+  server.registerTool("record_feed_heartbeat_installed", {
+    title: "Record feed heartbeat installed",
+    description: "Record that the feed heartbeat automation was installed in the owning thread.",
+    inputSchema: { feedId: z.string(), automationId: z.string() },
+  }, ({ feedId, automationId }) => text(domain.recordHeartbeatInstalled(feedId, automationId)));
+
+  server.registerTool("add_source", {
+    title: "Add source",
+    description: "Add a source recipe to a feed from a plain-English brief.",
+    inputSchema: { feedId: z.string(), brief: z.string() },
+  }, ({ feedId, brief }) => text(domain.addSourceFromBrief(feedId, brief)));
+
+  server.registerTool("remove_source", {
+    title: "Remove source",
+    description: "Remove a configured source recipe from a feed without deleting historical evidence.",
+    inputSchema: { feedId: z.string(), sourceId: z.string() },
+  }, async ({ feedId, sourceId }) => {
+    await domain.removeSource(feedId, sourceId);
+    return text({ ok: true });
+  });
 
   server.registerTool("list_work", {
     title: "List work",
@@ -149,11 +206,47 @@ function createAttentionMcpServer(domain: AttentionDomain, store: AttentionStore
     inputSchema: { feedId: z.string(), workId: z.string(), reason: z.string().optional() },
   }, ({ feedId, workId, reason }) => text(domain.cancelQueuedWork(feedId, workId, reason)));
 
+  server.registerTool("edit_work_instruction", {
+    title: "Edit queued work instruction",
+    description: "Edit a queued work instruction before Codex claims it.",
+    inputSchema: { feedId: z.string(), workId: z.string(), instruction: z.string() },
+  }, ({ feedId, workId, instruction }) => text(domain.updateQueuedWorkInstruction(feedId, workId, instruction)));
+
   server.registerTool("upsert_card", {
     title: "Upsert card",
     description: "Create or update a structured Attention card.",
     inputSchema: { feedId: z.string(), card: jsonValue },
   }, ({ feedId, card }) => text(domain.upsertCard(feedId, card as any)));
+
+  server.registerTool("dismiss_card", {
+    title: "Dismiss card",
+    description: "Queue default cleanup for a card and move it out of review.",
+    inputSchema: { feedId: z.string(), cardId: z.string() },
+  }, ({ feedId, cardId }) => text(domain.dismissCard(feedId, cardId)));
+
+  server.registerTool("undo_dismiss_card", {
+    title: "Undo dismissed card",
+    description: "Undo a just-dismissed card before cleanup is claimed.",
+    inputSchema: { feedId: z.string(), cardId: z.string() },
+  }, ({ feedId, cardId }) => text(domain.undoDismiss(feedId, cardId)));
+
+  server.registerTool("return_card_to_review", {
+    title: "Return card to review",
+    description: "Move a queued or done card back to review.",
+    inputSchema: { feedId: z.string(), cardId: z.string() },
+  }, ({ feedId, cardId }) => text(domain.returnCardToReview(feedId, cardId)));
+
+  server.registerTool("upsert_routine_action_group", {
+    title: "Upsert routine action group",
+    description: "Create or update a structured routine action group.",
+    inputSchema: { feedId: z.string(), group: jsonValue },
+  }, ({ feedId, group }) => text(domain.upsertRoutineActionGroup(feedId, group as any)));
+
+  server.registerTool("approve_routine_action_group", {
+    title: "Approve routine action group",
+    description: "Approve a visible routine action group and queue its execution.",
+    inputSchema: { feedId: z.string(), groupId: z.string() },
+  }, ({ feedId, groupId }) => text(domain.approveRoutineActionGroup(feedId, groupId)));
 
   server.registerTool("record_source_run", {
     title: "Record source run",
@@ -178,6 +271,108 @@ function createAttentionMcpServer(domain: AttentionDomain, store: AttentionStore
     description: "Queue one compound learning pass for a feed.",
     inputSchema: { feedId: z.string() },
   }, ({ feedId }) => text(domain.queueCompound(feedId)));
+
+  server.registerTool("apply_policy_revision", {
+    title: "Apply policy revision",
+    description: "Apply a direct feed policy revision.",
+    inputSchema: { feedId: z.string(), content: z.string(), reason: z.string(), source: policyRevisionSource },
+  }, ({ feedId, content, reason, source }) => text(domain.applyPolicyRevision(feedId, content, reason, source ?? "user_instruction")));
+
+  server.registerTool("revert_policy_revision", {
+    title: "Revert policy revision",
+    description: "Revert a feed policy revision by id.",
+    inputSchema: { feedId: z.string(), revisionId: z.string() },
+  }, ({ feedId, revisionId }) => text(domain.revertPolicyRevision(feedId, revisionId)));
+
+  server.registerTool("propose_revision", {
+    title: "Propose revision",
+    description: "Create an approval-gated revision proposal for a feed, source, prompt, or global target.",
+    inputSchema: { feedId: z.string(), target: jsonValue, instruction: z.string(), content: z.string(), source: proposalRevisionSource },
+  }, ({ feedId, target, instruction, content, source }) => text(domain.proposeRevision(feedId, target as any, instruction, content, source ?? "voice")));
+
+  server.registerTool("update_revision", {
+    title: "Update revision",
+    description: "Update an approval-gated revision proposal.",
+    inputSchema: { proposalId: z.string(), content: z.string() },
+  }, ({ proposalId, content }) => text(domain.updateRevisionProposal(proposalId, content)));
+
+  server.registerTool("reject_revision", {
+    title: "Reject revision",
+    description: "Reject an approval-gated revision proposal.",
+    inputSchema: { proposalId: z.string() },
+  }, ({ proposalId }) => text(domain.rejectRevisionProposal(proposalId)));
+
+  server.registerTool("update_global_policy", {
+    title: "Update global policy",
+    description: "Directly update the global policy document.",
+    inputSchema: { content: z.string() },
+  }, async ({ content }) => {
+    await domain.updateGlobalPolicy(content);
+    return text({ ok: true });
+  });
+
+  server.registerTool("update_global_prompt", {
+    title: "Update global prompt",
+    description: "Directly update an allowlisted global prompt layer.",
+    inputSchema: { promptName: z.string(), content: z.string() },
+  }, async ({ promptName, content }) => {
+    await domain.updateGlobalPrompt(promptName, content);
+    return text({ ok: true });
+  });
+
+  server.registerTool("create_improvement_card", {
+    title: "Create improvement card",
+    description: "Create an app-improvement card in a feed.",
+    inputSchema: { feedId: z.string(), title: z.string(), brief: z.string(), instruction: z.string() },
+  }, ({ feedId, title, brief, instruction }) => text(domain.createImprovementCard(feedId, title, brief, instruction)));
+
+  server.registerTool("record_app_feedback", {
+    title: "Record app feedback",
+    description: "Record durable app feedback from a feed thread.",
+    inputSchema: { feedId: z.string(), title: z.string(), detail: z.string(), sourceThreadId: z.string().optional() },
+  }, ({ feedId, title, detail, sourceThreadId }) => text(domain.recordAppFeedback(feedId, title, detail, sourceThreadId)));
+
+  server.registerTool("list_app_feedback", {
+    title: "List app feedback",
+    description: "List unresolved and resolved app feedback.",
+    inputSchema: {},
+  }, () => text(store.readAppFeedback()));
+
+  server.registerTool("resolve_app_feedback", {
+    title: "Resolve app feedback",
+    description: "Resolve an app feedback item.",
+    inputSchema: { feedbackId: z.string(), resolution: z.string() },
+  }, ({ feedbackId, resolution }) => text(domain.resolveAppFeedback(feedbackId, resolution)));
+
+  server.registerTool("runtime_where", {
+    title: "Runtime paths",
+    description: "Return local runtime paths for debugging.",
+    inputSchema: {},
+  }, () => text({
+    home: attentionHome(),
+    dataDir: attentionDataDir(),
+    dbPath: attentionDbPath(),
+    logDir: attentionLogDir(),
+    note: "ATTENTION_HOME is the only runtime root override.",
+  }));
+
+  server.registerTool("seed_demo", {
+    title: "Seed demo",
+    description: "Seed demo cards for local development.",
+    inputSchema: { feedId: z.string().optional() },
+  }, async ({ feedId }) => {
+    await domain.seedDemo(feedId);
+    return text({ ok: true });
+  });
+
+  server.registerTool("clear_demo", {
+    title: "Clear demo",
+    description: "Clear demo cards for local development.",
+    inputSchema: { feedId: z.string().optional() },
+  }, async ({ feedId }) => {
+    await domain.clearDemo(feedId);
+    return text({ ok: true });
+  });
 
   return server;
 }

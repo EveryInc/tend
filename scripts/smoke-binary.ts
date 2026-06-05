@@ -80,7 +80,34 @@ async function validateMcp(): Promise<{ tools: string[]; prompts: string[]; firs
     const inspectContent = inspect.content as Array<{ type: string; text?: string }>;
     const inspectText = inspectContent.find((item) => item.type === "text")?.text ?? "";
     const toolNames = tools.tools.map((tool) => tool.name);
-    const requiredTools = ["inspect_feed", "bind_feed_thread", "list_work", "claim_work", "complete_work", "upsert_card"];
+    const requiredTools = [
+      "read_workspace",
+      "inspect_feed",
+      "create_feed",
+      "bind_feed_thread",
+      "archive_feed",
+      "add_source",
+      "remove_source",
+      "list_work",
+      "claim_work",
+      "edit_work_instruction",
+      "verify_action",
+      "complete_work",
+      "fail_work",
+      "block_work",
+      "retry_work",
+      "cancel_work",
+      "upsert_card",
+      "dismiss_card",
+      "return_card_to_review",
+      "record_source_run",
+      "record_sweep_batch",
+      "record_sweep_rejudgment",
+      "request_learning",
+      "propose_revision",
+      "record_app_feedback",
+      "runtime_where",
+    ];
     const missingTools = requiredTools.filter((tool) => !toolNames.includes(tool));
     if (missingTools.length > 0) throw new Error(`MCP is missing required tools: ${missingTools.join(", ")}`);
     if (!inspectText.includes("Inbox")) throw new Error("MCP inspect_feed did not return the Inbox feed.");

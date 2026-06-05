@@ -227,9 +227,11 @@ pnpm attention -- cli state --feed inbox
 pnpm attention -- cli work:list --feed inbox --thread <current-codex-thread-id>
 ```
 
-Codex should prefer MCP over shelling out to the CLI. The MCP endpoint exposes feed resources,
-runner prompts, and typed tools such as `inspect_feed`, `bind_feed_thread`, `list_work`,
-`claim_work`, `complete_work`, `verify_action`, `upsert_card`, and source-run recording.
+Codex should prefer MCP over shelling out to the CLI. The MCP endpoint exposes a feature-complete
+agent surface for feed setup, work claiming, card/source/sweep recording, policy/revision updates,
+feedback, and runtime inspection. The CLI remains the equivalent fallback for humans, scripts, and
+debugging. See [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md) for the MCP/CLI parity matrix and
+[docs/SKILL.md](./docs/SKILL.md) for skill-style runner instructions.
 
 Read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md), [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md),
 [docs/DATA.md](./docs/DATA.md), [docs/INSTALL.md](./docs/INSTALL.md), and
