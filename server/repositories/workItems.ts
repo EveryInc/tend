@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir } from "node:fs/promises";
+import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { WorkItem } from "../../shared/types";
 import { readJson, writeJson } from "../util";

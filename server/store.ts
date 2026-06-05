@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
+import { mkdir, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type {
   AppFeedback,

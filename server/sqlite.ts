@@ -168,7 +168,7 @@ export class LocalSqliteStore {
   }
 
   status(): LocalRuntimeStatus {
-    const db = this.database();
+    this.database();
     const schemaVersion = Number(this.getMeta("schema_version") ?? "0");
     return {
       dbPath: this.dbPath,

@@ -19,7 +19,7 @@ import type {
 import { AttentionStore, FEED_PROMPT_NAMES } from "./store";
 import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
-import { isoNow, makeId, makeToken, slugify, writeText } from "./util";
+import { isoNow, makeId, makeToken, slugify } from "./util";
 import { actionDigest, cleanupDigest, configuredApprovalAction, requiredSourceMailbox, routineActionDigest, verifySourceMailbox } from "./workflow/approvals";
 import { queuedWork } from "./workflow/workItems";
 
