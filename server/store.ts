@@ -125,6 +125,10 @@ export class AttentionStore {
     };
   }
 
+  async listFeedIds(): Promise<string[]> {
+    return this.workspaceFeeds.listFeedIds();
+  }
+
   async readDictationCapability(): Promise<DictationCapability> {
     return readJson<DictationCapability>(this.path("integrations/dictation.json"));
   }
@@ -256,16 +260,18 @@ export class AttentionStore {
 
   async readFeed(feedId: string): Promise<FeedView> {
     const config = await this.readConfig(feedId);
-    const [thread, sourceRecords, policy, cards, routineActions, work, sweep] = await Promise.all([
+    const [thread, sourceRecords, policy, cards, runs, routineActions, work, sweep] = await Promise.all([
       readJson<ThreadBinding>(this.feedPath(feedId, "thread.json")),
       this.sources.list(feedId),
       this.textDocuments.read(`feeds/${feedId}/policy.md`),
       this.cards.list(feedId),
+      this.sourceRuns.list(feedId),
       this.routineActionGroups.list(feedId),
       this.workItems.list(feedId),
       this.readSweepState(feedId),
     ]);
     cards.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    runs.sort((a, b) => (a.completedAt ?? "").localeCompare(b.completedAt ?? "") || a.id.localeCompare(b.id));
     routineActions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     work.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     return {
@@ -274,6 +280,7 @@ export class AttentionStore {
       sources: sourceRecords.map((record) => record.recipe),
       policy,
       cards,
+      runs,
       routineActions,
       work,
       sweep,

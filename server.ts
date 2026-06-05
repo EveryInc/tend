@@ -5,6 +5,7 @@ import { AttentionDomain } from "./server/domain";
 import { apiRoutes } from "./server/routes/api";
 import { assetRoutes } from "./server/routes/assets";
 import { createRealtimeHub } from "./server/routes/realtime";
+import { createFeedEventBridge } from "./server/realtime/feedEventBridge";
 import { createLocalRuntime, resolveArtifactsDir } from "./server/runtime";
 
 declare const Bun: {
@@ -18,6 +19,8 @@ const artifactsDir = resolveArtifactsDir(root);
 const { dataDir, sqlite, store } = await createLocalRuntime();
 const domain = new AttentionDomain(store);
 const realtime = createRealtimeHub();
+const feedEventBridge = createFeedEventBridge(store, realtime.notify);
+await feedEventBridge.start();
 const app = new Hono();
 
 app.route("/", apiRoutes({ artifactsDir, dataDir, domain, notify: realtime.notify, port, root, sqlite, store }));
@@ -34,5 +37,6 @@ const server = Bun.serve({
 });
 
 export function closeServer() {
+  feedEventBridge.stop();
   server.stop(true);
 }

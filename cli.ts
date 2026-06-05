@@ -123,7 +123,8 @@ try {
       const feedId = required("feed");
       const work = await domain.claimWork(feedId, required("thread"), flag("cross-feed"));
       const card = work && !work.cardId.startsWith("__") ? await store.readCard(feedId, work.cardId) : undefined;
-      output = formatWorkClaimOutput(feedId, work, card);
+      const sweepFeedback = work?.intent === "sweep_rejudge" && work.feedbackId ? await store.readSweepFeedback(feedId, work.feedbackId) : undefined;
+      output = formatWorkClaimOutput(feedId, work, card, sweepFeedback);
     }
     break;
   case "work:cancel":

@@ -46,10 +46,13 @@ Use this skill when a Codex Desktop thread is connected to a local Attention fee
    attention cli work:claim --feed <feed-id> --thread <thread-id>
    ```
 
-4. Use local connectors only for the claimed item.
-5. Write results back through the relevant `attention cli` command.
-6. Repeat until `work:claim` returns idle.
-7. If a meaningful sweep or refresh happened, ask whether to compound learnings.
+4. Read any `operatorGuidance` returned by `work:claim` and follow it as the required write-back sequence.
+5. Use local connectors only for the claimed item.
+6. Write results back through the relevant `attention cli` command.
+7. For `sweep_rejudge`, run `sweep:rejudge` against the returned `operatorGuidance.visibleCardIds` before completing the work.
+8. For source recollection, record source runs and a sweep batch with the claimed `--work` id before completing the work.
+9. Repeat until `work:claim` returns idle.
+10. If a meaningful sweep or refresh happened, ask whether to compound learnings.
 
 ## Completing Work
 

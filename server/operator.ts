@@ -1,4 +1,4 @@
-import type { Card, WorkItem } from "../shared/types";
+import type { Card, SweepFeedbackTrace, WorkItem } from "../shared/types";
 
 export interface IdleWorkHandshake {
   status: "idle";
@@ -13,7 +13,11 @@ export interface IdleWorkHandshake {
 
 export interface ClaimedWorkOutput extends WorkItem {
   operatorGuidance?: {
-    replyDraftSender: string;
+    replyDraftSender?: string;
+    requiredWriteBack?: string;
+    completionPrerequisite?: string;
+    visibleCardIds?: string[];
+    sourceRunRule?: string;
   };
 }
 
@@ -34,13 +38,24 @@ export function formatWorkListOutput(feedId: string, work: WorkItem[]): WorkItem
   return work.length > 0 ? work : idleWorkHandshake(feedId);
 }
 
-export function formatWorkClaimOutput(feedId: string, work: WorkItem | null, card?: Card): ClaimedWorkOutput | IdleWorkHandshake {
+export function formatWorkClaimOutput(feedId: string, work: WorkItem | null, card?: Card, sweepFeedback?: Pick<SweepFeedbackTrace, "visibleCardIds">): ClaimedWorkOutput | IdleWorkHandshake {
   if (!work) return idleWorkHandshake(feedId);
-  if (feedId !== "inbox" || !card?.sourceMailbox) return work;
-  return {
-    ...work,
-    operatorGuidance: {
-      replyDraftSender: `Write any reply draft as the owner of sourceMailbox (${card.sourceMailbox}). Preserve that sender's voice and signature. Do not sign as an assistant or delegate unless the user's instruction explicitly changes sender.`,
-    },
-  };
+  const operatorGuidance: NonNullable<ClaimedWorkOutput["operatorGuidance"]> = {};
+
+  if (feedId === "inbox" && card?.sourceMailbox) {
+    operatorGuidance.replyDraftSender = `Write any reply draft as the owner of sourceMailbox (${card.sourceMailbox}). Preserve that sender's voice and signature. Do not sign as an assistant or delegate unless the user's instruction explicitly changes sender.`;
+  }
+
+  if (work.intent === "sweep_rejudge") {
+    operatorGuidance.requiredWriteBack = "Run `attention cli sweep:rejudge --feed <feed> --feedback <feedbackId> --ordered-cards <json-array-of-original-visible-card-ids> --removed-cards <json-array-of-original-visible-card-ids>` before `work:complete`.";
+    operatorGuidance.completionPrerequisite = "The rejudge must account for the feedback trace's original visibleCardIds exactly once. Do not include cards created while handling this work unless they were already in visibleCardIds.";
+    operatorGuidance.visibleCardIds = sweepFeedback?.visibleCardIds;
+  }
+
+  if (work.intent === "recollect_sources") {
+    operatorGuidance.requiredWriteBack = "Record one or more source runs with `source:record-run --work <workId>`, then create a sweep batch with `sweep:record-batch --work <workId>` before `work:complete`.";
+    operatorGuidance.sourceRunRule = "Source recollection work must complete with a new sweep batch recorded for this exact work item.";
+  }
+
+  return Object.keys(operatorGuidance).length ? { ...work, operatorGuidance } : work;
 }

@@ -299,6 +299,7 @@ export interface FeedView {
   sources: SourceRecipe[];
   policy: string;
   cards: Card[];
+  runs: SourceRun[];
   routineActions: RoutineActionGroup[];
   work: WorkItem[];
   sweep: SweepState;

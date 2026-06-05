@@ -63,6 +63,22 @@ describe("feed thread operator handshake", () => {
     });
     expect(formatWorkClaimOutput("company-attention", work, card)).toBe(work);
   });
+
+  test("explains sweep rejudge claim prerequisites", () => {
+    const work = {
+      id: "work-1",
+      intent: "sweep_rejudge",
+      feedbackId: "feedback-1",
+    } as WorkItem;
+
+    expect(formatWorkClaimOutput("inbox", work, undefined, { visibleCardIds: ["card-a", "card-b"] })).toMatchObject({
+      operatorGuidance: {
+        requiredWriteBack: expect.stringContaining("sweep:rejudge"),
+        completionPrerequisite: expect.stringContaining("visibleCardIds"),
+        visibleCardIds: ["card-a", "card-b"],
+      },
+    });
+  });
 });
 
 describe("filesystem workspace", () => {
@@ -310,6 +326,8 @@ describe("filesystem workspace", () => {
     const run = await store.readRun("inbox", runId);
     await store.writeRun({ ...run, judgments: [{ decision: "keep" }, { decision: "promote" }] });
 
+    const workspace = await store.readWorkspace("inbox");
+    expect(workspace.active.runs.map((item) => item.id)).toContain(runId);
     expect((await sqlite.sourceRuns().get("inbox", runId)).judgments).toHaveLength(2);
     expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "runs", `${runId}.json`), "utf8")).judgments).toHaveLength(2);
     sqlite.close();

@@ -24,6 +24,25 @@ additive by default, and document breaking command or response changes in `CHANG
 - Call `action:verify` immediately before approved external mutations.
 - Complete, fail, block, retry, or cancel work through `attention cli`.
 - Refresh sources only after the queue is drained, unless the claimed work explicitly asks for source collection.
+- Follow the `operatorGuidance` returned by `work:claim`; it is part of the command contract.
+
+## Claim Guidance
+
+`work:claim` may return `operatorGuidance` for work that requires a specific write-back sequence.
+Treat that guidance as authoritative for the claimed item.
+
+For `sweep_rejudge` work:
+
+- Run `attention cli sweep:rejudge` before `work:complete`.
+- Use `operatorGuidance.visibleCardIds` as the card universe for the rejudge.
+- Account for each original visible card exactly once across `--ordered-cards` and `--removed-cards`.
+- Do not add newly created cards to the rejudge unless they were already in `visibleCardIds`.
+
+For `recollect_sources` work:
+
+- Record source runs with `attention cli source:record-run --work <work>`.
+- Record the resulting sweep with `attention cli sweep:record-batch --work <work>`.
+- Complete the work only after the source run and sweep batch are written back.
 
 ## Core Commands
 
