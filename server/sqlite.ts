@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDbPath } from "./paths";
-import type { Card, FeedEvent, PolicyRevision, RevisionProposal, RoutineActionGroup, SourceRecipe, SourceRun, SweepBatch, SweepFeedbackTrace, SweepState, WorkItem, WorkspaceRevision } from "../src/types";
+import type { Card, FeedEvent, PolicyRevision, RevisionProposal, RoutineActionGroup, SourceRecipe, SourceRun, SweepBatch, SweepFeedbackTrace, SweepState, WorkItem, WorkspaceRevision } from "../shared/types";
 import type { CardRepository } from "./repositories/cards";
 import type { FeedEventRepository } from "./repositories/feedEvents";
 import type { RevisionRepository } from "./repositories/revisions";

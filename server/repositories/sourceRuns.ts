@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import path from "node:path";
-import type { SourceRun } from "../../src/types";
+import type { SourceRun } from "../../shared/types";
 import { readJson, writeJson } from "../util";
 
 export interface SourceRunRepository {

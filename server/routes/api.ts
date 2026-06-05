@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { VoiceTarget } from "../../src/types";
+import type { VoiceTarget } from "../../shared/types";
 import { versionInfo } from "../version";
 import { body, mutation, type LocalRouteContext } from "./shared";
 

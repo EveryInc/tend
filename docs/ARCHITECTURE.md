@@ -27,9 +27,11 @@ There is no separate runner or second CLI.
 ## Boundaries
 
 - `server/domain.ts` owns product behavior and invariants.
+- `server/workflow/` owns pure workflow rules shared by domain operations, such as approval digests and queued-work construction.
 - `server/store.ts` owns current local feed persistence.
 - `server/repositories/` owns typed persistence interfaces and adapters.
 - `server/runtime.ts` composes SQLite-backed repositories with filesystem mirrors for local execution.
+- `shared/types.ts` owns product data contracts used by both server and browser code.
 - `server.ts` composes local route modules and starts Bun.
 - `server/routes/api.ts` owns browser-facing Hono API routes.
 - `server/routes/realtime.ts` owns the SSE event stream.

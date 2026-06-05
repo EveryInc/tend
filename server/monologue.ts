@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { DictationCapability } from "../src/types";
+import type { DictationCapability } from "../shared/types";
 import { isoNow } from "./util";
 
 const DEFAULT_APP_PATH = "/Applications/Monologue.app";

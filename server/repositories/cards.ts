@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
-import type { Card } from "../../src/types";
+import type { Card } from "../../shared/types";
 import { readJson, writeJson } from "../util";
 
 export interface CardRepository {

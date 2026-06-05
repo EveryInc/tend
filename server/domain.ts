@@ -15,11 +15,13 @@ import type {
   VoiceTarget,
   WorkItem,
   WorkspaceRevision,
-} from "../src/types";
+} from "../shared/types";
 import { AttentionStore, FEED_PROMPT_NAMES } from "./store";
 import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
-import { digest, isoNow, makeId, makeToken, slugify, writeText } from "./util";
+import { isoNow, makeId, makeToken, slugify, writeText } from "./util";
+import { actionDigest, cleanupDigest, configuredApprovalAction, requiredSourceMailbox, routineActionDigest, verifySourceMailbox } from "./workflow/approvals";
+import { queuedWork } from "./workflow/workItems";
 
 function appendHistory(card: Card, type: string, detail?: string): void {
   card.history.push({ at: isoNow(), type, detail });
@@ -34,88 +36,6 @@ const INBOX_DEMO_REPLAY_SOURCE_IDS: Record<string, string> = {
   "demo-inbox-routine-cleanup": "gmail-thread-19e7434a384dfe39",
   "demo-inbox-intro": "gmail-thread-19e85140ab834ad2",
 };
-
-function configuredApprovalAction(card: Card, cardActionId?: string): ProposedAction {
-  if (!cardActionId) {
-    if (!card.proposedAction) throw new Error("Card has no proposed action.");
-    return card.proposedAction;
-  }
-  const action = card.actions?.find((item) => item.id === cardActionId);
-  if (!action || action.behavior !== "approve_action" || !action.instruction?.trim()) {
-    throw new Error("Card approval action not found.");
-  }
-  return {
-    label: action.label,
-    instruction: action.instruction,
-    ...(action.artifactBlockId ? { artifactBlockId: action.artifactBlockId } : {}),
-    ...(action.externalMutation !== undefined ? { externalMutation: action.externalMutation } : {}),
-    ...(action.mailboxPolicy ? { mailboxPolicy: action.mailboxPolicy } : {}),
-  };
-}
-
-function normalizeMailbox(mailbox?: string): string | undefined {
-  const normalized = mailbox?.trim().toLowerCase();
-  return normalized || undefined;
-}
-
-function requiresSourceMailboxMatch(feedId: string, action: ProposedAction): boolean {
-  return action.mailboxPolicy === "reply_from_source" ||
-    (feedId === "inbox" && action.externalMutation === true && Boolean(action.artifactBlockId));
-}
-
-function requiredSourceMailbox(feedId: string, card: Card, action: ProposedAction): string | undefined {
-  if (!requiresSourceMailboxMatch(feedId, action)) return undefined;
-  const sourceMailbox = normalizeMailbox(card.sourceMailbox);
-  if (!sourceMailbox) {
-    throw new Error("Email reply is missing the mailbox that received the source email.");
-  }
-  return sourceMailbox;
-}
-
-function verifySourceMailbox(feedId: string, card: Card, action: ProposedAction, authenticatedMailbox?: string): string | undefined {
-  const sourceMailbox = requiredSourceMailbox(feedId, card, action);
-  if (!sourceMailbox) return undefined;
-  const authenticated = normalizeMailbox(authenticatedMailbox);
-  if (!authenticated) {
-    throw new Error(`Email reply verification requires the authenticated Gmail mailbox. Expected ${sourceMailbox}.`);
-  }
-  if (authenticated !== sourceMailbox) {
-    throw new Error(`Authenticated Gmail mailbox mismatch: expected ${sourceMailbox}, got ${authenticated}.`);
-  }
-  return authenticated;
-}
-
-function actionDigest(card: Card, cardActionId?: string): string {
-  const action = configuredApprovalAction(card, cardActionId);
-  const artifact = action?.artifactBlockId ? card.blocks.find((block) => block.id === action.artifactBlockId) : undefined;
-  return digest({ cardActionId: cardActionId ?? null, action, artifact });
-}
-
-function cleanupDigest(card: Card, instruction: string): string {
-  return digest({
-    instruction,
-    card: {
-      id: card.id,
-      feedId: card.feedId,
-      title: card.title,
-      why: card.why,
-      blocks: card.blocks,
-      proposedAction: card.proposedAction,
-      actions: card.actions,
-    },
-  });
-}
-
-function routineActionDigest(group: RoutineActionGroup): string {
-  return digest({
-    feedId: group.feedId,
-    id: group.id,
-    label: group.label,
-    summary: group.summary,
-    proposedAction: group.proposedAction,
-    items: group.items,
-  });
-}
 
 function sourceRecipeFromBrief(brief: string): { recipe: SourceRecipe; markdown: string } {
   const normalizedBrief = brief.replace(/\\n/g, "\n").trim();
@@ -151,21 +71,6 @@ function revisionLabel(target: VoiceTarget): string {
   if (target.kind === "prompt_layer") return `Feed prompt · ${target.promptId}`;
   if (target.kind === "global_prompt") return `Global prompt · ${target.promptId}`;
   return "Attention policy";
-}
-
-function queuedWork(feedId: string, cardId: string, instruction: string, extra: Pick<WorkItem, "kind"> & Partial<Pick<WorkItem, "target" | "intent" | "feedbackId" | "startingBatchId" | "previousSweepState" | "approvalDigest" | "cardActionId" | "routineActionGroupId">>): WorkItem {
-  const now = isoNow();
-  return {
-    id: makeId("work"),
-    feedId,
-    cardId,
-    instruction: instruction.trim(),
-    status: "queued",
-    capabilityToken: makeToken(),
-    createdAt: now,
-    updatedAt: now,
-    ...extra,
-  };
 }
 
 const CARD_BLOCK_TYPES = new Set<CardBlock["type"]>([

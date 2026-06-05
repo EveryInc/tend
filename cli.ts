@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { AttentionDomain } from "./server/domain";
 import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS } from "./server/cli/contract";
 import { MissingFlagError, formatCliError } from "./server/cli/errors";
+import { importLegacyAttentionCard, importLegacyInboxCard } from "./server/cli/legacyImports";
 import { formatWorkClaimOutput, formatWorkListOutput } from "./server/operator";
 import { createLocalRuntime, resolveArtifactsDir, resolveDbPath, resolveRuntimeRoot } from "./server/runtime";
 
@@ -95,96 +96,11 @@ try {
     output = await domain.approveRoutineActionGroup(required("feed"), required("group"));
     break;
   case "legacy:import-attention-card": {
-    const batch = JSON.parse(await readFile(required("path"), "utf8")) as {
-      cards?: Array<{
-        id: string;
-        title: string;
-        originalFrame: string;
-        source?: { label?: string; kind?: string; timestamp?: string };
-        judge?: { shouldSurface?: boolean; whyCare?: string; rationale?: string; evidence?: string[]; nextStep?: string; actionTarget?: string };
-      }>;
-    };
-    const legacy = batch.cards?.find((card) => card.id === required("card-id"));
-    if (!legacy) throw new Error("Legacy attention card not found.");
-    if (!legacy.judge?.shouldSurface) throw new Error("Refusing to import a legacy card that did not clear its source judge.");
-    output = await domain.upsertCard(required("feed"), {
-      id: `imported-${legacy.id}`,
-      title: legacy.title,
-      eyebrow: "Company Attention · Imported evidence",
-      why: legacy.judge.whyCare ?? legacy.judge.rationale ?? "This imported evidence deserves review.",
-      blocks: [
-        { id: "brief", type: "memo", label: "Brief", text: legacy.originalFrame },
-        { id: "evidence", type: "evidence", label: "Evidence", items: legacy.judge.evidence ?? [] },
-        { id: "provenance", type: "receipt", label: "Provenance", text: `${legacy.source?.label ?? "Imported Attention Workbench"} · ${legacy.source?.kind ?? "unknown"} · ${legacy.source?.timestamp ?? "timestamp unavailable"}` },
-      ],
-      proposedAction: legacy.judge.nextStep ? {
-        label: legacy.judge.nextStep,
-        instruction: `${legacy.judge.nextStep}${legacy.judge.actionTarget ? ` Target: ${legacy.judge.actionTarget}.` : ""}`,
-      } : undefined,
-      actions: legacy.judge.nextStep ? [{
-        id: "take-next-step",
-        label: legacy.judge.nextStep,
-        behavior: "queue_instruction",
-        instruction: `${legacy.judge.nextStep}${legacy.judge.actionTarget ? ` Target: ${legacy.judge.actionTarget}.` : ""}`,
-        variant: "primary",
-      }] : undefined,
-    });
+    output = await importLegacyAttentionCard(domain, { required, value });
     break;
   }
   case "legacy:import-inbox-card": {
-    const brief = JSON.parse(await readFile(required("path"), "utf8")) as {
-      drafts?: Array<{
-        id: string;
-        from: { name: string };
-        subject: string;
-        pill: string;
-        why: string;
-        originalEmailSummary: string;
-        draft: { body: string };
-      }>;
-      decisions?: Array<{
-        id: string;
-        from: { name: string };
-        subject: string;
-        pill: string;
-        why: string;
-        originalEmailSummary?: string;
-      }>;
-    };
-    const cardId = required("card-id");
-    const draft = brief.drafts?.find((card) => card.id === cardId);
-    const decision = brief.decisions?.find((card) => card.id === cardId);
-    const legacy = draft ?? decision;
-    if (!legacy) throw new Error("Legacy Inbox Sweep card not found.");
-    output = await domain.upsertCard(required("feed"), {
-      id: `imported-${legacy.id}`,
-      title: legacy.subject,
-      eyebrow: `Inbox · ${legacy.pill}`,
-      why: legacy.why,
-      ...(value("mailbox") ? { sourceMailbox: value("mailbox") } : {}),
-      blocks: [
-        { id: "brief", type: "rich_text", label: "Brief", text: legacy.originalEmailSummary ?? legacy.why },
-        { id: "provenance", type: "receipt", label: "Parallel comparison", text: `Imported from the current Inbox Sweep card for ${legacy.from.name}. Inbox Sweep remains authoritative during migration.` },
-        ...(draft ? [{ id: "draft", type: "editable_text" as const, label: "Suggested reply", value: draft.draft.body, editable: true }] : []),
-      ],
-      proposedAction: draft ? {
-        label: "Send this reply",
-        instruction: "Reread authoritative Inbox Sweep and Gmail state, verify the exact current approved draft snapshot is unchanged, then send the reply and record the outcome.",
-        artifactBlockId: "draft",
-        externalMutation: true,
-        mailboxPolicy: "reply_from_source",
-      } : {
-        label: "Review disposition",
-        instruction: "Reread authoritative Inbox Sweep and Gmail state, decide the disposition, and return any proposed action for review.",
-      },
-      actions: draft ? [
-        { id: "archive", label: "Archive", behavior: "default_cleanup", shortcut: "x" },
-        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Reread authoritative Inbox Sweep and Gmail state, verify the exact current approved draft snapshot is unchanged, then send the reply and record the outcome.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source", variant: "primary", shortcut: "s" },
-      ] : [
-        { id: "archive", label: "Archive", behavior: "default_cleanup", shortcut: "x" },
-        { id: "review-with-codex", label: "Review with Codex", behavior: "queue_instruction", instruction: "Reread authoritative Inbox Sweep and Gmail state, decide the disposition, and return any proposed action for review.", variant: "primary", shortcut: "r" },
-      ],
-    });
+    output = await importLegacyInboxCard(domain, { required, value });
     break;
   }
   case "card:dismiss":

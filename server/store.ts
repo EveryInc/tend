@@ -21,7 +21,7 @@ import type {
   WorkItem,
   WorkspaceRevision,
   WorkspaceView,
-} from "../src/types";
+} from "../shared/types";
 import {
   BASE_JUDGE_PROMPT,
   COMPOUND_PROMPT,

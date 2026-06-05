@@ -16,7 +16,7 @@ import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/re
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
-import type { Card, WorkItem } from "../src/types";
+import type { Card, WorkItem } from "../shared/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
 
 const roots: string[] = [];

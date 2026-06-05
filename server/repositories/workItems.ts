@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { mkdir, readdir } from "node:fs/promises";
 import path from "node:path";
-import type { WorkItem } from "../../src/types";
+import type { WorkItem } from "../../shared/types";
 import { readJson, writeJson } from "../util";
 
 export interface WorkItemRepository {

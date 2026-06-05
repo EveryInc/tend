@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { SourceRecipe } from "../../src/types";
+import type { SourceRecipe } from "../../shared/types";
 import { readJson, writeJson, writeText } from "../util";
 
 export interface SourceRecord {

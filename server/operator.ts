@@ -1,4 +1,4 @@
-import type { Card, WorkItem } from "../src/types";
+import type { Card, WorkItem } from "../shared/types";
 
 export interface IdleWorkHandshake {
   status: "idle";

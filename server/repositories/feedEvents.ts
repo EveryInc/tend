@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import type { FeedEvent } from "../../src/types";
+import type { FeedEvent } from "../../shared/types";
 
 export interface FeedEventRepository {
   init(feedIds: string[]): Promise<void>;

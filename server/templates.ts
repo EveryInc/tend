@@ -1,4 +1,4 @@
-import type { Card, FeedConfig, SourceRecipe, ThreadBinding } from "../src/types";
+import type { Card, FeedConfig, SourceRecipe, ThreadBinding } from "../shared/types";
 import { isoNow } from "./util";
 
 export const GLOBAL_POLICY = `# Global attention policy
