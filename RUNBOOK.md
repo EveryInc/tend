@@ -1,29 +1,31 @@
 # Feed Thread Runbook
 
-Operate Tend from the canonical checkout at `/Users/danshipper/CascadeProjects/attention`. The CLI
-and server share runtime state under `../.attention-workbench/data/` by default, including when a
-temporary worktree is used for validation.
+Operate Attention through the canonical `attention` executable on `PATH`. The CLI and server share
+runtime state under `~/.attention/` by default, including the SQLite authority database, readable
+data mirrors, logs, and exports. A checkout may run the source scripts for development, but feed
+threads should prefer the installed executable once it exists.
 
-The live local app is owned by one launcher:
+The live local app is owned by one CLI:
 
 ```bash
-./bin/tend-live start
-./bin/tend-live health
-./bin/tend-live restart
-./bin/tend-live stop
+attention start
+attention health
+attention restart
+attention stop
+attention logs
 ```
 
-It owns web port `4321`, API port `4333`, the live PID lock, and the live health check. Feed threads
-run `./bin/tend-live health` before operating through the API or CLI. They never start servers, kill
-ports, or choose worktrees themselves. For branch validation, use `./bin/tend-live validate`; it
-uses temporary runtime state plus ports `14321` and `14333`.
+It owns API/UI port `4332`, the live PID lock, and the live health check. Feed threads run
+`attention health` before operating through the API or CLI. They never start servers, kill ports, or
+choose worktrees themselves. Use `attention doctor` for diagnostics. Use `ATTENTION_HOME=<tmp>`
+with `attention start --foreground` when validating a branch against isolated runtime state.
 
 Feed threads own their feed work end to end through the canonical API or CLI. When a feed pass
 reveals a cross-app UX or code problem, record it without editing Tend product code from the feed
 lane:
 
 ```bash
-pnpm cli -- feedback:record \
+attention cli feedback:record \
   --feed <feed-id> \
   --title "<short pain point>" \
   --detail "<what happened, expected behavior, and useful card or sweep context>" \
@@ -31,31 +33,8 @@ pnpm cli -- feedback:record \
 ```
 
 Then hand the same concise packet to the `Improve Tend workflow` thread. The improvement lane can
-review the durable inbox with `pnpm cli -- feedback:list` and close landed fixes with
-`pnpm cli -- feedback:resolve --feedback <id> --resolution "<what changed>"`.
-
-## Runtime Handoff
-
-When retiring an older checkout-local runtime, record the handoff immediately after the one-time
-copy:
-
-```bash
-pnpm cli -- runtime:mark-handoff --legacy-data <retired-checkout-data-dir>
-```
-
-If a feed lane was already mid-turn, inspect for late writes:
-
-```bash
-pnpm cli -- runtime:reconcile --legacy-data <retired-checkout-data-dir>
-pnpm cli -- runtime:reconcile --legacy-data <retired-checkout-data-dir> --apply-missing
-```
-
-The apply pass copies only missing immutable evidence artifacts such as raw snapshots, runs, and
-sweep batches. It reports cards, work items, policies, event ledgers, and conflicting mutable files
-without overwriting live state. Carry reviewed mutable changes such as a late policy revision
-forward through the canonical CLI. The handoff command marks the retired store with its live
-replacement and freezes the old tree read-only. If a retired checkout is accidentally restarted, it
-must not accept another approval, note, or card write.
+review the durable inbox with `attention cli feedback:list` and close landed fixes with
+`attention cli feedback:resolve --feedback <id> --resolution "<what changed>"`.
 
 ## First Local Setup
 
@@ -63,11 +42,11 @@ When Codex starts this app on a Mac, check for Monologue before asking the user 
 dictation:
 
 ```bash
-pnpm cli -- setup:detect-monologue
+attention cli setup:detect-monologue
 ```
 
 If Monologue is installed, the command reads its local recording shortcut and persists the
-browser-facing capability under ignored `../.attention-workbench/data/integrations/dictation.json`. The dock then follows
+browser-facing capability under ignored `~/.attention/data/integrations/dictation.json`. The dock then follows
 that shortcut automatically when it is a supported single modifier. If Monologue is absent or its
 custom shortcut is not yet supported, the command records that honestly and keeps the Inbox Sweep
 Right Option fallback.
@@ -77,14 +56,14 @@ Right Option fallback.
 When the user says `go deal with the feed`, use the exact feed and current thread ID:
 
 ```bash
-pnpm cli -- work:list --feed <feed-id> --thread <thread-id>
-pnpm cli -- work:claim --feed <feed-id> --thread <thread-id>
+attention cli work:list --feed <feed-id> --thread <thread-id>
+attention cli work:claim --feed <feed-id> --thread <thread-id>
 ```
 
 Process the claimed item from current state. When it is complete:
 
 ```bash
-pnpm cli -- work:complete \
+attention cli work:complete \
   --feed <feed-id> \
   --work <work-id> \
   --token <capability-token> \
@@ -100,7 +79,7 @@ Before an external mutation, verify the exact current approved action or default
 before acting:
 
 ```bash
-pnpm cli -- action:verify --feed <feed-id> --work <work-id> --token <capability-token>
+attention cli action:verify --feed <feed-id> --work <work-id> --token <capability-token>
 ```
 
 Repeat claim until it returns the idle handshake. An active claimed item is replayed so restart
@@ -120,7 +99,7 @@ After a meaningful sweep or refresh reaches the idle handshake, always ask:
 `Compound` means:
 
 1. Review this sweep's cards, feedback, outcomes, and prior policy.
-2. After the user agrees, queue `pnpm cli -- learning:request --feed <feed-id>`.
+2. After the user agrees, queue `attention cli learning:request --feed <feed-id>`.
 3. Drain the resulting `compound_learnings` job and return an editable policy proposal.
 4. Never apply the proposal without user approval.
 
@@ -139,14 +118,14 @@ treat broad natural-language dock input as a literal prompt edit.
 Read the effective recipe with:
 
 ```bash
-pnpm cli -- inspect --feed <feed-id>
+attention cli inspect --feed <feed-id>
 ```
 
 Use the connector, browser, computer-use workflow, local file, or source thread described by the
 recipe. Preserve immutable retrieved evidence and record the completed run:
 
 ```bash
-pnpm cli -- source:record-run \
+attention cli source:record-run \
   --feed <feed-id> \
   --source <source-id> \
   --snapshots '<json-array>' \
@@ -162,7 +141,7 @@ After the relevant sources have completed, record one judged sweep batch separat
 refer to multiple source runs:
 
 ```bash
-pnpm cli -- sweep:record-batch --feed <feed-id> --runs '["<run-id>"]'
+attention cli sweep:record-batch --feed <feed-id> --runs '["<run-id>"]'
 ```
 
 For a claimed `recollect_sources` item, add `--work <claimed-recollection-work-id>`. This binds the
@@ -172,7 +151,7 @@ For claimed scoped sweep-feedback work, rejudge the visible card IDs from its tr
 the explicit kept order and removed IDs. Only this claimed-work write-back may reorder or hide cards:
 
 ```bash
-pnpm cli -- sweep:rejudge \
+attention cli sweep:rejudge \
   --feed <feed-id> \
   --feedback <feedback-id> \
   --ordered-cards '["<kept-card-id>"]' \
@@ -190,7 +169,7 @@ For an existing local JSON artifact, import it without passing private payload t
 shell:
 
 ```bash
-pnpm cli -- source:import-json-file --feed <feed-id> --source <source-id> --path <local-file>
+attention cli source:import-json-file --feed <feed-id> --source <source-id> --path <local-file>
 ```
 
 Use `source:import-file` for local text or JSONL artifacts.
@@ -200,7 +179,7 @@ structured card JSON into the shell: card prose can contain backticks, dollar si
 shell-significant text.
 
 ```bash
-pnpm cli -- card:upsert --feed <feed-id> --card-file <local-json-file>
+attention cli card:upsert --feed <feed-id> --card-file <local-json-file>
 ```
 
 Card block payloads are validated before Tend writes them. Use `text` for `memo` and `receipt`
@@ -226,14 +205,14 @@ During migration only, an explicitly selected provenance-bearing card from the o
 Workbench can be converted into the new block format:
 
 ```bash
-pnpm cli -- legacy:import-attention-card --feed company-attention --path <batch-json> --card-id <id>
+attention cli legacy:import-attention-card --feed company-attention --path <batch-json> --card-id <id>
 ```
 
 For parallel Inbox migration, explicitly selected current Inbox Sweep cards can be converted while
 Inbox Sweep remains authoritative:
 
 ```bash
-pnpm cli -- legacy:import-inbox-card --feed inbox --path <current-brief-json> --card-id <id>
+attention cli legacy:import-inbox-card --feed inbox --path <current-brief-json> --card-id <id>
 ```
 
 ## Learn
@@ -243,14 +222,14 @@ compact. Structural changes, new permissions, prompt edits, source changes, and 
 become explicit proposal cards:
 
 ```bash
-pnpm cli -- proposal:create --feed <feed-id> --title "..." --brief "..." --instruction "..."
+attention cli proposal:create --feed <feed-id> --title "..." --brief "..." --instruction "..."
 ```
 
 For a prompt, recipe, feed-policy, or global-policy diff that should appear in the browser approval
 stack, write the actual proposed content rather than appending the user's raw instruction:
 
 ```bash
-pnpm cli -- revision:propose \
+attention cli revision:propose \
   --feed <anchor-feed-id> \
   --target '{"kind":"prompt_layer","feedId":"<feed-id>","promptId":"judge.md"}' \
   --instruction "Why this change is proposed" \

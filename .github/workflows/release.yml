@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    name: Package ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: linux-x64
+            os: ubuntu-latest
+          - label: darwin-x64
+            os: macos-13
+          - label: darwin-arm64
+            os: macos-14
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.4 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run project checks
+        run: pnpm check
+
+      - name: Build web app
+        run: pnpm build
+
+      - name: Compile local binary
+        run: pnpm attention:build
+
+      - name: Smoke test local binary
+        run: pnpm attention:smoke
+
+      - name: Package local binary
+        run: pnpm attention:package
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: attention-${{ matrix.label }}
+          path: |
+            dist-bin/releases/*.tar.gz
+            dist-bin/releases/*.sha256
+          if-no-files-found: error
+
+  release:
+    name: Create draft release
+    needs: package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: release-artifacts/*

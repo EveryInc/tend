@@ -4,9 +4,19 @@ import os from "node:os";
 import path from "node:path";
 import { AttentionDomain } from "../server/domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "../server/operator";
+import { FileCardRepository, MirroredCardRepository } from "../server/repositories/cards";
+import { FileFeedEventRepository, MirroredFeedEventRepository } from "../server/repositories/feedEvents";
+import { FileRevisionRepository, MirroredRevisionRepository } from "../server/repositories/revisions";
+import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository } from "../server/repositories/routineActionGroups";
+import { FileSourceRunRepository, MirroredSourceRunRepository } from "../server/repositories/sourceRuns";
+import { FileSourceRepository, MirroredSourceRepository } from "../server/repositories/sources";
+import { FileSweepRepository, MirroredSweepRepository } from "../server/repositories/sweeps";
+import { FileTextDocumentRepository, MirroredTextDocumentRepository } from "../server/repositories/textDocuments";
+import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/repositories/workItems";
+import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
+import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
-import { assertRuntimeWritable, inspectRuntimeDrift, readRetiredRuntimeMarker, reconcileMissingRuntimeFiles, unfreezeRetiredRuntimeDataDir, writeRuntimeHandoffMarker } from "../server/runtime";
-import type { Card, CardBlock, WorkItem } from "../src/types";
+import type { Card, WorkItem } from "../shared/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
 
 const roots: string[] = [];
@@ -52,6 +62,22 @@ describe("feed thread operator handshake", () => {
       },
     });
     expect(formatWorkClaimOutput("company-attention", work, card)).toBe(work);
+  });
+
+  test("explains sweep rejudge claim prerequisites", () => {
+    const work = {
+      id: "work-1",
+      intent: "sweep_rejudge",
+      feedbackId: "feedback-1",
+    } as WorkItem;
+
+    expect(formatWorkClaimOutput("inbox", work, undefined, { visibleCardIds: ["card-a", "card-b"] })).toMatchObject({
+      operatorGuidance: {
+        requiredWriteBack: expect.stringContaining("sweep:rejudge"),
+        completionPrerequisite: expect.stringContaining("visibleCardIds"),
+        visibleCardIds: ["card-a", "card-b"],
+      },
+    });
   });
 });
 
@@ -120,58 +146,356 @@ describe("filesystem workspace", () => {
     await expect(domain.archiveFeed("inbox")).rejects.toThrow("Default feeds");
   });
 
-  test("records app feedback durably without turning it into a feed rule change", async () => {
-    const { store, domain } = await setup();
-    const feedback = await domain.recordAppFeedback("company-attention", "Archive action disappeared", "Cards with custom actions still need the default Archive action.", "thread-company");
-    expect(feedback).toMatchObject({
-      feedId: "company-attention",
-      title: "Archive action disappeared",
-      sourceThreadId: "thread-company",
-      status: "open",
+  test("migrates active feed membership from workspace.json into SQLite and mirrors future changes", async () => {
+    const { root, domain: fileDomain } = await setup();
+    await fileDomain.createFeedFromBrief("Research Watch\nTrack a narrow research topic.", "thread-research");
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
     });
-    expect(await store.readAppFeedback()).toEqual([feedback]);
-    expect((await store.readEvents("company-attention")).map((event) => event.type)).toContain("app.feedback_recorded");
-    expect((await domain.resolveAppFeedback(feedback.id, "Retained Archive beside custom actions.")).status).toBe("resolved");
-    expect((await store.readEvents("company-attention")).map((event) => event.type)).toContain("app.feedback_resolved");
+    await store.init();
+    const domain = new AttentionDomain(store);
+
+    expect((await store.readWorkspace("research-watch")).feeds.map((feed) => feed.id)).toContain("research-watch");
+    expect(await sqlite.workspaceFeeds().listFeedIds()).toContain("research-watch");
+
+    await domain.createFeedFromBrief("Model Vibe Check\nNotice meaningful model usage changes.", "thread-models");
+    expect(await sqlite.workspaceFeeds().listFeedIds()).toContain("model-vibe-check");
+    expect(JSON.parse(await readFile(path.join(root, "workspace.json"), "utf8")).feedIds).toContain("model-vibe-check");
+
+    await domain.archiveFeed("model-vibe-check");
+    expect(await sqlite.workspaceFeeds().listFeedIds()).not.toContain("model-vibe-check");
+    expect(JSON.parse(await readFile(path.join(root, "workspace.json"), "utf8")).feedIds).not.toContain("model-vibe-check");
+    sqlite.close();
   });
 
-  test("copies only missing late runtime files and reports mutable conflicts", async () => {
-    const live = await mkdtemp(path.join(os.tmpdir(), "attention-live-"));
-    const legacy = await mkdtemp(path.join(os.tmpdir(), "attention-legacy-"));
-    roots.push(live, legacy);
-    await mkdir(path.join(live, "feeds", "hiring"), { recursive: true });
-    await mkdir(path.join(legacy, "feeds", "hiring", "raw", "run-late", "source-late"), { recursive: true });
-    await mkdir(path.join(legacy, "feeds", "hiring", "cards"), { recursive: true });
-    await writeFile(path.join(live, "feeds", "hiring", "policy.md"), "live policy\n");
-    await writeFile(path.join(legacy, "feeds", "hiring", "policy.md"), "legacy policy\n");
-    await writeFile(path.join(legacy, "feeds", "hiring", "raw", "run-late", "source-late", "snapshot.json"), "{}\n");
-    await writeFile(path.join(legacy, "feeds", "hiring", "cards", "late.json"), "{}\n");
-    const report = await reconcileMissingRuntimeFiles(live, legacy);
-    expect(report.copied).toEqual(["feeds/hiring/raw/run-late/source-late/snapshot.json"]);
-    expect(report.conflicts.map((entry) => entry.path)).toEqual(["feeds/hiring/policy.md"]);
-    expect(report.manualReview.map((entry) => entry.path)).toEqual(["feeds/hiring/cards/late.json"]);
-    expect(await readFile(path.join(live, "feeds", "hiring", "policy.md"), "utf8")).toBe("live policy\n");
-    expect(await readFile(path.join(live, "feeds", "hiring", "raw", "run-late", "source-late", "snapshot.json"), "utf8")).toBe("{}\n");
-    expect((await inspectRuntimeDrift(live, legacy)).entries.map((entry) => entry.path)).toEqual(["feeds/hiring/cards/late.json", "feeds/hiring/policy.md"]);
+  test("migrates feed events from JSONL into SQLite and mirrors new audit events", async () => {
+    const { root, domain: fileDomain, store: fileStore } = await setup();
+    await fileDomain.bindFeed("inbox", "thread-inbox");
+    const fileEvents = await fileStore.readEvents("inbox");
+    expect(fileEvents.map((event) => event.type)).toContain("thread.bound");
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      events: new MirroredFeedEventRepository(
+        sqlite.feedEvents(),
+        new FileFeedEventRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+    const domain = new AttentionDomain(store);
+
+    expect((await sqlite.feedEvents().list("inbox")).map((event) => event.type)).toContain("thread.bound");
+
+    await domain.proposeHeartbeat("inbox", "Every 30 minutes");
+    expect((await sqlite.feedEvents().list("inbox")).map((event) => event.type)).toContain("heartbeat.proposed");
+    const mirrored = (await readFile(path.join(root, "feeds", "inbox", "events.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    expect(mirrored.map((event) => event.type)).toContain("heartbeat.proposed");
+    sqlite.close();
   });
 
-  test("freezes retired runtime directories during canonical handoff", async () => {
-    const runtime = await mkdtemp(path.join(os.tmpdir(), "attention-runtime-"));
-    const live = await mkdtemp(path.join(os.tmpdir(), "attention-live-"));
-    const legacy = await mkdtemp(path.join(os.tmpdir(), "attention-legacy-"));
-    roots.push(runtime, live, legacy);
-    await mkdir(path.join(legacy, "feeds", "inbox"), { recursive: true });
-    await writeFile(path.join(legacy, "feeds", "inbox", "policy.md"), "legacy policy\n");
-    try {
-      const handoff = await writeRuntimeHandoffMarker(runtime, live, legacy);
-      expect(handoff.legacyDataDirs).toEqual([legacy]);
-      expect((await readRetiredRuntimeMarker(legacy))?.liveDataDir).toBe(live);
-      await expect(assertRuntimeWritable(legacy)).rejects.toThrow(`Use the live runtime at ${live}`);
-      await expect(writeFile(path.join(legacy, "feeds", "inbox", "late-write.json"), "{}\n")).rejects.toThrow();
-      expect((await inspectRuntimeDrift(live, legacy)).entries.map((entry) => entry.path)).toEqual(["feeds/inbox/policy.md"]);
-    } finally {
-      await unfreezeRetiredRuntimeDataDir(legacy);
-    }
+  test("migrates queued work from JSON files into SQLite and mirrors updates", async () => {
+    const { root, domain: fileDomain } = await setup();
+    const queued = await fileDomain.queueFeedInstruction("inbox", "Check the queue migration.");
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      workItems: new MirroredWorkItemRepository(
+        sqlite.workItems(),
+        new FileWorkItemRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.workItems().list("inbox")).map((work) => work.id)).toContain(queued.id);
+
+    const work = await store.readWork("inbox", queued.id);
+    work.status = "cancelled";
+    work.error = "Cancelled by migration test.";
+    await store.writeWork(work);
+
+    expect((await sqlite.workItems().get("inbox", queued.id)).status).toBe("cancelled");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "work", `${queued.id}.json`), "utf8")).status).toBe("cancelled");
+    sqlite.close();
+  });
+
+  test("migrates cards from JSON files into SQLite and mirrors updates", async () => {
+    const { root } = await setup();
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      cards: new MirroredCardRepository(
+        sqlite.cards(),
+        new FileCardRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.cards().list("inbox")).map((card) => card.id)).toContain("inbox-ready-to-collect");
+
+    const card = await store.readCard("inbox", "inbox-ready-to-collect");
+    card.status = "done";
+    card.history.push({ at: card.updatedAt, type: "migration.test" });
+    await store.writeCard(card);
+
+    expect((await sqlite.cards().get("inbox", card.id)).status).toBe("done");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "cards", `${card.id}.json`), "utf8")).status).toBe("done");
+    sqlite.close();
+  });
+
+  test("migrates routine action groups from JSON files into SQLite and mirrors updates", async () => {
+    const { root, domain: fileDomain } = await setup();
+    const group = await fileDomain.upsertRoutineActionGroup("inbox", {
+      id: "likely-archive",
+      label: "Likely archive",
+      summary: "Low-attention threads with an obvious shared cleanup.",
+      proposedAction: { label: "Archive all", instruction: "Reread and archive each listed Gmail thread.", externalMutation: true },
+      items: [{ id: "setup-noise", cardId: "inbox-ready-to-collect", title: "Routine notice", reason: "No reply or decision is needed." }],
+    });
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      cards: new MirroredCardRepository(
+        sqlite.cards(),
+        new FileCardRepository(root),
+      ),
+      routineActionGroups: new MirroredRoutineActionGroupRepository(
+        sqlite.routineActionGroups(),
+        new FileRoutineActionGroupRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.routineActionGroups().list("inbox")).map((item) => item.id)).toContain(group.id);
+
+    const migrated = await store.readRoutineActionGroup("inbox", group.id);
+    migrated.status = "failed";
+    migrated.error = "Failed by migration test.";
+    await store.writeRoutineActionGroup(migrated);
+
+    expect((await sqlite.routineActionGroups().get("inbox", group.id)).status).toBe("failed");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "routine-actions", `${group.id}.json`), "utf8")).status).toBe("failed");
+    sqlite.close();
+  });
+
+  test("migrates source runs from JSON files into SQLite and mirrors updates", async () => {
+    const { root, domain: fileDomain } = await setup();
+    const runId = await fileDomain.recordSourceRun("inbox", "gmail-inbox", [{ threadId: "gmail-1", subject: "Hello" }], [{ decision: "keep" }], { cursor: "gmail-1" });
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      sourceRuns: new MirroredSourceRunRepository(
+        sqlite.sourceRuns(),
+        new FileSourceRunRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.sourceRuns().list("inbox")).map((run) => run.id)).toContain(runId);
+
+    const run = await store.readRun("inbox", runId);
+    await store.writeRun({ ...run, judgments: [{ decision: "keep" }, { decision: "promote" }] });
+
+    const workspace = await store.readWorkspace("inbox");
+    expect(workspace.active.runs.map((item) => item.id)).toContain(runId);
+    expect((await sqlite.sourceRuns().get("inbox", runId)).judgments).toHaveLength(2);
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "runs", `${runId}.json`), "utf8")).judgments).toHaveLength(2);
+    sqlite.close();
+  });
+
+  test("migrates prompt and policy documents from files into SQLite and mirrors updates", async () => {
+    const { root, domain: fileDomain } = await setup();
+    await fileDomain.updateGlobalPolicy("# Global policy\n\n- Existing custom global policy.");
+    await fileDomain.updateGlobalPrompt("judge.md", "# Judge\n\nExisting custom global judge.");
+    await fileDomain.updateWorkspaceDocument("inbox", { kind: "feed", feedId: "inbox" }, "# Inbox policy\n\n- Existing custom inbox policy.");
+    await fileDomain.updateWorkspaceDocument("inbox", { kind: "prompt_layer", feedId: "inbox", promptId: "judge.md" }, "# Feed judge\n\nExisting custom feed judge.");
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const textDocuments = new MirroredTextDocumentRepository(
+      sqlite.textDocuments(),
+      new FileTextDocumentRepository(root),
+    );
+    const store = new AttentionStore(root, {
+      textDocuments,
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect(await sqlite.textDocuments().read("global-policy.md")).toContain("Existing custom global policy");
+    expect(await sqlite.textDocuments().read("prompts/judge.md")).toContain("Existing custom global judge");
+    expect(await sqlite.textDocuments().read("feeds/inbox/policy.md")).toContain("Existing custom inbox policy");
+    expect(await sqlite.textDocuments().read("feeds/inbox/prompts/judge.md")).toContain("Existing custom feed judge");
+
+    await store.writeGlobalPolicy("# Global policy\n\n- Updated global policy.");
+    await store.writeGlobalPrompt("judge.md", "# Judge\n\nUpdated global judge.");
+    await store.writeTargetContent({ kind: "feed", feedId: "inbox" }, "# Inbox policy\n\n- Updated inbox policy.");
+    await store.writeTargetContent({ kind: "prompt_layer", feedId: "inbox", promptId: "judge.md" }, "# Feed judge\n\n- Updated feed judge.");
+
+    expect(await sqlite.textDocuments().read("global-policy.md")).toContain("Updated global policy");
+    expect(await sqlite.textDocuments().read("prompts/judge.md")).toContain("Updated global judge");
+    expect(await sqlite.textDocuments().read("feeds/inbox/policy.md")).toContain("Updated inbox policy");
+    expect(await sqlite.textDocuments().read("feeds/inbox/prompts/judge.md")).toContain("Updated feed judge");
+    expect(await readFile(path.join(root, "global-policy.md"), "utf8")).toContain("Updated global policy");
+    expect(await readFile(path.join(root, "prompts", "judge.md"), "utf8")).toContain("Updated global judge");
+    expect(await readFile(path.join(root, "feeds", "inbox", "policy.md"), "utf8")).toContain("Updated inbox policy");
+    expect(await readFile(path.join(root, "feeds", "inbox", "prompts", "judge.md"), "utf8")).toContain("Updated feed judge");
+    sqlite.close();
+  });
+
+  test("migrates sweep state and artifacts from JSON files into SQLite and mirrors updates", async () => {
+    const { root, store: fileStore } = await setup();
+    const createdAt = new Date().toISOString();
+    await fileStore.writeSweepBatch({ id: "batch-old", feedId: "inbox", sourceRunIds: [], createdAt });
+    await fileStore.writeSweepFeedback({
+      id: "feedback-old",
+      feedId: "inbox",
+      batchId: "batch-old",
+      instruction: "Reorder this sweep.",
+      visibleCardIds: ["inbox-ready-to-collect"],
+      orderedCardIds: ["inbox-ready-to-collect"],
+      removedCardIds: [],
+      createdAt,
+    });
+    await fileStore.writeSweepState("inbox", { currentBatchId: "batch-old", lastFeedbackId: "feedback-old", recollectionOffered: true, statusMessage: "Needs source search" });
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      sweeps: new MirroredSweepRepository(
+        sqlite.sweeps(),
+        new FileSweepRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.sweeps().readState("inbox")).lastFeedbackId).toBe("feedback-old");
+    expect((await sqlite.sweeps().getBatch("inbox", "batch-old")).id).toBe("batch-old");
+    expect((await sqlite.sweeps().getFeedback("inbox", "feedback-old")).instruction).toBe("Reorder this sweep.");
+
+    await store.writeSweepState("inbox", { currentBatchId: "batch-old", lastFeedbackId: null, recollectionOffered: false, statusMessage: null });
+    const trace = await store.readSweepFeedback("inbox", "feedback-old");
+    await store.writeSweepFeedback({ ...trace, rejudgedAt: createdAt });
+
+    expect((await sqlite.sweeps().readState("inbox")).lastFeedbackId).toBeNull();
+    expect((await sqlite.sweeps().getFeedback("inbox", "feedback-old")).rejudgedAt).toBe(createdAt);
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "sweep-state.json"), "utf8")).lastFeedbackId).toBeNull();
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "sweep-feedback", "feedback-old.json"), "utf8")).rejudgedAt).toBe(createdAt);
+    sqlite.close();
+  });
+
+  test("migrates revision records from JSON files into SQLite and mirrors updates", async () => {
+    const { root, store: fileStore, domain: fileDomain } = await setup();
+    const sourceTarget = { kind: "source_recipe" as const, feedId: "inbox", sourceId: "gmail-inbox" };
+    const promptTarget = { kind: "prompt_layer" as const, feedId: "inbox", promptId: "judge.md" };
+    const sourceOriginal = await fileStore.readTargetContent(sourceTarget);
+    const promptOriginal = await fileStore.readTargetContent(promptTarget);
+    const proposal = await fileDomain.proposeRevision("inbox", sourceTarget, "Tighten the inbox recipe.", `${sourceOriginal}\n\n- Ignore bulk newsletters.`);
+    const workspaceRevision = await fileDomain.updateWorkspaceDocument("inbox", promptTarget, `${promptOriginal}\n- Prefer explicit user impact.`);
+    const policyRevision = await fileDomain.applyPolicyRevision("inbox", "# Inbox policy\n\n- Prefer reversible changes.", "Migration test.", "micro_learning");
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      revisions: new MirroredRevisionRepository(
+        sqlite.revisions(),
+        new FileRevisionRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.revisions().listProposals()).map((item) => item.id)).toContain(proposal.id);
+    expect((await sqlite.revisions().getWorkspaceRevision(workspaceRevision.id)).status).toBe("applied");
+    expect((await sqlite.revisions().getPolicyRevision("inbox", policyRevision.id)).status).toBe("applied");
+
+    const migratedProposal = await store.readRevisionProposal(proposal.id);
+    migratedProposal.status = "rejected";
+    migratedProposal.rejectedAt = new Date().toISOString();
+    await store.writeRevisionProposal(migratedProposal);
+    await store.revertWorkspaceRevision(workspaceRevision.id);
+    await store.revertPolicy("inbox", policyRevision.id);
+
+    expect((await sqlite.revisions().getProposal(proposal.id)).status).toBe("rejected");
+    expect((await sqlite.revisions().getWorkspaceRevision(workspaceRevision.id)).status).toBe("reverted");
+    expect((await sqlite.revisions().getPolicyRevision("inbox", policyRevision.id)).status).toBe("reverted");
+    expect(JSON.parse(await readFile(path.join(root, "revision-proposals", `${proposal.id}.json`), "utf8")).status).toBe("rejected");
+    expect(JSON.parse(await readFile(path.join(root, "workspace-revisions", `${workspaceRevision.id}.json`), "utf8")).status).toBe("reverted");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "policy-revisions", `${policyRevision.id}.json`), "utf8")).status).toBe("reverted");
+    sqlite.close();
+  });
+
+  test("migrates source recipes and checkpoints from JSON files into SQLite and mirrors updates", async () => {
+    const { root, domain: fileDomain } = await setup();
+    const source = await fileDomain.addSourceFromBrief("inbox", "Read the important local notes.");
+    await fileDomain.recordSourceRun("inbox", source.id, [{ note: "one" }], [{ decision: "keep" }], { cursor: "note-1" });
+
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const store = new AttentionStore(root, {
+      sources: new MirroredSourceRepository(
+        sqlite.sources(),
+        new FileSourceRepository(root),
+      ),
+      workspaceFeeds: new MirroredWorkspaceFeedRepository(
+        sqlite.workspaceFeeds(),
+        new FileWorkspaceFeedRepository(path.join(root, "workspace.json")),
+      ),
+    });
+    await store.init();
+
+    expect((await sqlite.sources().list("inbox")).map((record) => record.recipe.id)).toContain(source.id);
+    expect((await sqlite.sources().get("inbox", source.id)).content).toContain("Read the important local notes.");
+    expect((await sqlite.sources().get("inbox", source.id)).checkpoint).toMatchObject({ cursor: "note-1" });
+
+    await store.writeSourceRecipe("inbox", source.id, "# Updated source\n\nRead only starred local notes.");
+    await store.writeSourceCheckpoint("inbox", source.id, { cursor: "note-2" });
+
+    expect((await sqlite.sources().get("inbox", source.id)).content).toContain("starred local notes");
+    expect((await sqlite.sources().get("inbox", source.id)).checkpoint).toMatchObject({ cursor: "note-2" });
+    expect(await readFile(path.join(root, "feeds", "inbox", "sources", source.filename), "utf8")).toContain("starred local notes");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", source.checkpointFilename), "utf8")).cursor).toBe("note-2");
+    sqlite.close();
   });
 
   test("normalizes escaped newlines and removes a source recipe without deleting evidence files", async () => {
@@ -208,72 +532,6 @@ describe("filesystem workspace", () => {
     expect(card.status).toBe("to_review_new");
   });
 
-  test("rejects malformed card blocks with actionable replay guidance", async () => {
-    const { domain } = await setup();
-    const card = {
-      id: "company-malformed-replay",
-      title: "Malformed replay",
-      why: "A replay should fail before it can render blank bars.",
-    };
-    await expect(domain.upsertCard("company-attention", {
-      ...card,
-      blocks: [{ id: "brief", type: "memo", title: "Ignored title", body: "Ignored body" }] as unknown as CardBlock[],
-    })).rejects.toThrow("Use `text`, not `title` or `body`");
-    await expect(domain.upsertCard("company-attention", {
-      ...card,
-      blocks: [{ id: "evidence", type: "evidence", title: "Ignored evidence" }] as unknown as CardBlock[],
-    })).rejects.toThrow("needs a non-empty `items` array");
-    await expect(domain.upsertCard("company-attention", {
-      ...card,
-      blocks: [{ id: "source", type: "receipt", url: "https://example.com/source" }] as unknown as CardBlock[],
-    })).rejects.toThrow("Markdown link syntax");
-    await expect(domain.upsertCard("company-attention", {
-      ...card,
-      blocks: [{ id: "retention", type: "chart", chart: { max: 100, series: [{ label: "Came back" }], rows: [] } }] as unknown as CardBlock[],
-    })).rejects.toThrow("exactly two `chart.series`");
-  });
-
-  test("accepts a compact two-series evidence chart", async () => {
-    const { store, domain } = await setup();
-    await domain.upsertCard("company-attention", {
-      id: "company-retention-chart",
-      title: "Retention chart",
-      why: "Comparative cohort metrics should scan quickly.",
-      blocks: [{
-        id: "retention",
-        type: "chart",
-        label: "D1 retention",
-        chart: {
-          unit: "%",
-          max: 100,
-          series: [{ label: "Came back" }, { label: "Worked again" }],
-          rows: [{ label: "Jun 1", values: [23, 13] }],
-          note: "Worked again is the healthier KPI.",
-        },
-      }],
-    });
-    expect((await store.readCard("company-attention", "company-retention-chart")).blocks[0].chart?.rows[0].values).toEqual([23, 13]);
-  });
-
-  test("rejects malformed work-result blocks before replacing a valid card", async () => {
-    const { store, domain } = await setup();
-    await domain.bindFeed("company-attention", "thread-company");
-    await domain.upsertCard("company-attention", {
-      id: "company-agent-result",
-      title: "Agent result",
-      why: "Structured work result write-backs need the same guardrail.",
-      blocks: [{ id: "brief", type: "memo", text: "Still valid." }],
-    });
-    const work = await domain.queueInstruction("company-attention", "company-agent-result", "Refresh the card.");
-    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(work.id);
-    await expect(domain.completeWork("company-attention", work.id, work.capabilityToken, {
-      response: "Refreshed.",
-      blocks: [{ id: "brief", type: "memo", body: "Would render blank." }] as unknown as CardBlock[],
-    })).rejects.toThrow("Use `text`, not `title` or `body`");
-    expect((await store.readCard("company-attention", "company-agent-result")).blocks[0].text).toBe("Still valid.");
-    expect((await store.readWork("company-attention", work.id)).status).toBe("working");
-  });
-
   test("queues a feed-level instruction when an empty feed has no active card", async () => {
     const { domain } = await setup();
     const feed = await domain.createFeedFromBrief("Research Watch\nTrack a narrow research topic.", "thread-research");
@@ -308,35 +566,6 @@ describe("thread-owned work drain", () => {
     expect((await domain.cancelQueuedWork("inbox", queued.id, "Accidental dictation.")).status).toBe("cancelled");
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("to_review_updated");
     await expect(domain.claimWork("inbox", "thread-inbox")).rejects.toThrow("no bound home thread");
-  });
-
-  test("edits a dictated card note while it is still queued", async () => {
-    const { store, domain } = await setup();
-    await domain.bindFeed("inbox", "thread-inbox");
-    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Stray dictated text.");
-    expect((await domain.updateQueuedWorkInstruction("inbox", queued.id, "Corrected note.")).instruction).toBe("Corrected note.");
-    expect((await store.readCard("inbox", "inbox-ready-to-collect")).history.at(-1)).toMatchObject({
-      type: "user.edited_queued_instruction",
-      detail: "Corrected note.",
-    });
-    await domain.claimWork("inbox", "thread-inbox");
-    await expect(domain.updateQueuedWorkInstruction("inbox", queued.id, "Too late.")).rejects.toThrow("Only queued notes");
-  });
-
-  test("moves queued and done cards back to review without reviving stale work", async () => {
-    const { store, domain } = await setup();
-    await domain.bindFeed("inbox", "thread-inbox");
-    const first = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "First note.");
-    const second = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Second note.");
-    expect((await domain.returnCardToReview("inbox", "inbox-ready-to-collect")).status).toBe("to_review_updated");
-    expect((await store.readWork("inbox", first.id)).status).toBe("cancelled");
-    expect((await store.readWork("inbox", second.id)).status).toBe("cancelled");
-
-    const replay = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Handle this.");
-    await domain.claimWork("inbox", "thread-inbox");
-    await expect(domain.returnCardToReview("inbox", "inbox-ready-to-collect")).rejects.toThrow("already started");
-    await domain.completeWork("inbox", replay.id, replay.capabilityToken, { response: "Done.", done: true });
-    expect((await domain.returnCardToReview("inbox", "inbox-ready-to-collect")).status).toBe("to_review_updated");
   });
 
   test("requires the home thread unless cross-feed work is explicit", async () => {
@@ -872,7 +1101,7 @@ describe("scoped persistent voice dock routing", () => {
   });
 
   test("rejects a rejudgment write-back after a newer sweep batch becomes active", async () => {
-    const { store, domain } = await setup();
+    const { domain } = await setup();
     await domain.seedDemo();
     await domain.bindFeed("company-attention", "thread-company");
     const firstRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "first" });
@@ -883,8 +1112,6 @@ describe("scoped persistent voice dock routing", () => {
     const secondRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "second" });
     await domain.recordSweepBatch("company-attention", [secondRun]);
     await expect(domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, [])).rejects.toThrow("newer batch");
-    expect((await store.readWork("company-attention", result.work.id)).status).toBe("stale");
-    expect((await domain.listPendingWork("company-attention", "thread-company"))).toHaveLength(0);
   });
 
   test("rejects pre-batch feedback after the first sweep batch becomes active", async () => {

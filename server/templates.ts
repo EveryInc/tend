@@ -1,4 +1,4 @@
-import type { Card, FeedConfig, SourceRecipe, ThreadBinding } from "../src/types";
+import type { Card, FeedConfig, SourceRecipe, ThreadBinding } from "../shared/types";
 import { isoNow } from "./util";
 
 export const GLOBAL_POLICY = `# Global attention policy
@@ -213,11 +213,11 @@ export function demoCards(feedId: string): Card[] {
         kind: "attention",
         status: "to_review_new",
         eyebrow: "Demo replay · Inbox · Reply draft",
-        title: "The Library of Minds invitation needs a graceful decline.",
+        title: "A podcast invitation needs a graceful decline.",
         why: "The invitation is thoughtful and specific, but the right answer is a warm pass rather than a meeting.",
         blocks: [
-          { id: "summary", type: "rich_text", label: "Brief", text: "Dara invited you onto The Library of Minds, an interactive podcast where listeners can continue a conversation with a digital version of the guest. The format is interesting, but this is not a priority right now." },
-          { id: "draft", type: "editable_text", label: "Draft reply", value: "thanks dara — appreciate the invite. i’m going to pass for now, but congrats on what you’re building!", editable: true },
+          { id: "summary", type: "rich_text", label: "Brief", text: "A podcast host invited you onto an interactive show where listeners can continue a conversation with a digital version of the guest. The format is interesting, but this is not a priority right now." },
+          { id: "draft", type: "editable_text", label: "Draft reply", value: "thanks for the thoughtful invite — i’m going to pass for now, but congrats on what you’re building!", editable: true },
           { id: "demo", type: "receipt", label: "Demo replay", text: "Local replay of a previously handled email. Buttons below simulate the workflow only; they do not touch Gmail." },
         ],
         proposedAction: { label: "Review decline", instruction: "DEMO ONLY: preserve the visible edited decline draft and return a simulated sent receipt. Do not access or mutate Gmail.", artifactBlockId: "draft" },
@@ -260,10 +260,10 @@ export function demoCards(feedId: string): Card[] {
         status: "to_review_new",
         eyebrow: "Demo replay · Inbox · Reply draft",
         title: "An investor follow-up needs a crisp answer.",
-        why: "The relationship is real and the follow-up is overdue. The useful move is a short concrete reply, not another open loop.",
+        why: "The relationship is warm and the follow-up is overdue. The useful move is a short concrete reply, not another open loop.",
         blocks: [
-          { id: "summary", type: "rich_text", label: "Brief", text: "Adil followed up about joining the Silicon Mania pre-seed round. The relevant answer is that you are interested at a small personal-check level, subject to the final details." },
-          { id: "draft", type: "editable_text", label: "Draft reply", value: "hey adil — sorry for the delay. i’d be happy to put in a $5k personal check. send over the final details when you have them.", editable: true },
+          { id: "summary", type: "rich_text", label: "Brief", text: "An investor followed up about joining a small pre-seed round. The relevant answer is that you are interested at a modest personal-check level, subject to the final details." },
+          { id: "draft", type: "editable_text", label: "Draft reply", value: "thanks for the follow-up, and sorry for the delay. i’d be happy to participate at a small personal-check level. send over the final details when you have them.", editable: true },
           { id: "demo", type: "receipt", label: "Demo replay", text: "Local replay of a previously handled email. Buttons below simulate the workflow only; they do not touch Gmail." },
         ],
         proposedAction: { label: "Review reply", instruction: "DEMO ONLY: preserve the visible edited investor reply and return a simulated sent receipt. Do not access or mutate Gmail.", artifactBlockId: "draft" },
@@ -282,17 +282,17 @@ export function demoCards(feedId: string): Card[] {
         kind: "attention",
         status: "to_review_new",
         eyebrow: "Demo replay · Inbox · Delegate",
-        title: "Justworks needs a signed Ohio form before the deadline.",
-        why: "This is real operational housekeeping, but it belongs with Arielle rather than in your queue.",
+        title: "A payroll form needs the right internal owner.",
+        why: "This is operational housekeeping, but it belongs with the finance owner rather than in your queue.",
         blocks: [
-          { id: "summary", type: "rich_text", label: "Brief", text: "Justworks says the company needs to download, sign, and upload an Ohio UA-3 form before the end of the month to complete a reporting change." },
-          { id: "draft", type: "editable_text", label: "Forward note", value: "fyi — justworks says we need to download, sign, and upload the ohio ua-3 before the deadline. can you take a look?", editable: true },
+          { id: "summary", type: "rich_text", label: "Brief", text: "A payroll provider says the company needs to download, sign, and upload a state reporting form before the end of the month to complete an account change." },
+          { id: "draft", type: "editable_text", label: "Forward note", value: "fyi — the payroll provider says we need to download, sign, and upload a state reporting form before the deadline. can you take a look?", editable: true },
           { id: "demo", type: "receipt", label: "Demo replay", text: "Local replay of a previously handled email. Buttons below simulate the workflow only; they do not touch Gmail." },
         ],
-        proposedAction: { label: "Forward to Arielle", instruction: "DEMO ONLY: preserve the visible forward note and return a simulated handoff receipt. Do not access or mutate Gmail.", artifactBlockId: "draft" },
+        proposedAction: { label: "Forward to finance owner", instruction: "DEMO ONLY: preserve the visible forward note and return a simulated handoff receipt. Do not access or mutate Gmail.", artifactBlockId: "draft" },
         actions: [
           { id: "demo-archive", label: "Archive", behavior: "queue_instruction", instruction: "DEMO ONLY: simulate archiving this replay card locally. Do not access or mutate Gmail.", shortcut: "x" },
-          { id: "demo-forward", label: "Forward to Arielle", behavior: "queue_instruction", instruction: "DEMO ONLY: preserve the visible forward note and return a simulated Arielle handoff receipt. Do not access or mutate Gmail.", artifactBlockId: "draft", variant: "primary", shortcut: "f" },
+          { id: "demo-forward", label: "Forward to finance", behavior: "queue_instruction", instruction: "DEMO ONLY: preserve the visible forward note and return a simulated finance-owner handoff receipt. Do not access or mutate Gmail.", artifactBlockId: "draft", variant: "primary", shortcut: "f" },
         ],
         readyForPass: 1,
         createdAt: now,
@@ -308,8 +308,8 @@ export function demoCards(feedId: string): Card[] {
         title: "A fund conversation needs two concrete lunch windows.",
         why: "The thread is worth continuing. The next move is a specific scheduling reply rather than delegating a vague calendar task.",
         blocks: [
-          { id: "summary", type: "rich_text", label: "Brief", text: "Doug wants to connect about a fund idea after hearing your name from an anchor investor. You are open to lunch and have two sensible windows next week." },
-          { id: "draft", type: "editable_text", label: "Draft reply", value: "doug! great to hear from you. would be happy to connect. i could do lunch tuesday or thursday next week if either works on your end.", editable: true },
+          { id: "summary", type: "rich_text", label: "Brief", text: "A fund manager wants to connect about a new idea after hearing your name from a mutual contact. You are open to lunch and have two sensible windows next week." },
+          { id: "draft", type: "editable_text", label: "Draft reply", value: "great to hear from you. happy to connect. i could do lunch tuesday or thursday next week if either works on your end.", editable: true },
           { id: "demo", type: "receipt", label: "Demo replay", text: "Local replay of a previously handled email. Buttons below simulate the workflow only; they do not touch Gmail or Calendar." },
         ],
         proposedAction: { label: "Review times", instruction: "DEMO ONLY: preserve the visible scheduling reply and return a simulated sent receipt. Do not access or mutate Gmail or Calendar.", artifactBlockId: "draft" },
@@ -328,12 +328,12 @@ export function demoCards(feedId: string): Card[] {
         kind: "attention",
         status: "to_review_new",
         eyebrow: "Demo replay · Inbox · Attachment",
-        title: "Primary Summit needs the final headshot and a short confirmation.",
+        title: "A summit organizer needs the final headshot and a short confirmation.",
         why: "The event framing is already settled. This is a straightforward housekeeping reply with one attachment.",
         blocks: [
-          { id: "summary", type: "rich_text", label: "Brief", text: "Primary confirmed that the AI-native operating company angle is resonating. They need a high-resolution headshot and a short confirmation while the run of show takes shape." },
+          { id: "summary", type: "rich_text", label: "Brief", text: "A summit organizer confirmed that the AI-native operating company angle is resonating. They need a high-resolution headshot and a short confirmation while the run of show takes shape." },
           { id: "draft", type: "editable_text", label: "Draft reply", value: "sounds great — attaching a high-res headshot here. looking forward to it.", editable: true },
-          { id: "attachment", type: "receipt", label: "Attachment", text: "dan-shipper-headshot.jpg · selected high-resolution image" },
+          { id: "attachment", type: "receipt", label: "Attachment", text: "speaker-headshot-placeholder.jpg · selected high-resolution image" },
           { id: "demo", type: "receipt", label: "Demo replay", text: "Local replay of a previously handled email. Buttons below simulate the workflow only; they do not touch Gmail." },
         ],
         proposedAction: { label: "Review reply with attachment", instruction: "DEMO ONLY: preserve the visible housekeeping reply and attachment choice, then return a simulated sent receipt. Do not access or mutate Gmail.", artifactBlockId: "draft" },
@@ -355,7 +355,7 @@ export function demoCards(feedId: string): Card[] {
         title: "A thank-you note can be archived without another decision.",
         why: "The thread is complete. This is the kind of low-attention item the feed should collapse into routine cleanup.",
         blocks: [
-          { id: "summary", type: "rich_text", label: "Brief", text: "Azeem replied with a friendly thank-you after you shared his article. There is no outstanding question or commitment." },
+          { id: "summary", type: "rich_text", label: "Brief", text: "A newsletter author replied with a friendly thank-you after you shared their article. There is no outstanding question or commitment." },
           { id: "demo", type: "receipt", label: "Demo replay", text: "Local replay of a previously handled email. Buttons below simulate the workflow only; they do not touch Gmail." },
         ],
         proposedAction: { label: "Archive", instruction: "DEMO ONLY: simulate archiving this completed replay thread locally. Do not access or mutate Gmail." },

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, readdir, rename, rm } from "node:fs/promises";
+import { mkdir, readdir, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type {
   AppFeedback,
@@ -11,6 +11,7 @@ import type {
   PolicyRevision,
   RevisionProposal,
   RoutineActionGroup,
+  SourceRun,
   SourceRecipe,
   SweepBatch,
   SweepFeedbackTrace,
@@ -20,7 +21,7 @@ import type {
   WorkItem,
   WorkspaceRevision,
   WorkspaceView,
-} from "../src/types";
+} from "../shared/types";
 import {
   BASE_JUDGE_PROMPT,
   COMPOUND_PROMPT,
@@ -36,45 +37,68 @@ import {
 } from "./templates";
 import { isoNow, makeId, readJson, writeJson, writeText } from "./util";
 import { defaultDictationCapability } from "./monologue";
-import { assertRuntimeWritable } from "./runtime";
+import { FileCardRepository, type CardRepository } from "./repositories/cards";
+import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
+import { FileRevisionRepository, type RevisionRepository } from "./repositories/revisions";
+import { FileRoutineActionGroupRepository, type RoutineActionGroupRepository } from "./repositories/routineActionGroups";
+import { FileSourceRunRepository, type SourceRunRepository } from "./repositories/sourceRuns";
+import { FileSourceRepository, type SourceRepository } from "./repositories/sources";
+import { FileSweepRepository, type SweepRepository } from "./repositories/sweeps";
+import { FileTextDocumentRepository, type TextDocumentRepository, type TextDocumentSeed } from "./repositories/textDocuments";
+import { FileWorkItemRepository, type WorkItemRepository } from "./repositories/workItems";
+import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
 export const GLOBAL_PROMPT_NAMES = ["judge.md", "compose-card.md", "execute-work.md", "distill-policy.md", "compound.md"] as const;
 export const FEED_PROMPT_NAMES = ["judge.md", "compose-card.md"] as const;
-
-function defaultSweepState(): SweepState {
-  return {
-    currentBatchId: null,
-    lastFeedbackId: null,
-    recollectionOffered: false,
-    statusMessage: null,
-  };
-}
+const DEFAULT_FEED_IDS = ["inbox", "company-attention"];
 
 export class AttentionStore {
   readonly dataDir: string;
   private tail = Promise.resolve();
+  private readonly cards: CardRepository;
+  private readonly events: FeedEventRepository;
+  private readonly revisions: RevisionRepository;
+  private readonly routineActionGroups: RoutineActionGroupRepository;
+  private readonly sourceRuns: SourceRunRepository;
+  private readonly sources: SourceRepository;
+  private readonly sweeps: SweepRepository;
+  private readonly textDocuments: TextDocumentRepository;
+  private readonly workItems: WorkItemRepository;
+  private readonly workspaceFeeds: WorkspaceFeedRepository;
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; revisions?: RevisionRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; sources?: SourceRepository; sweeps?: SweepRepository; textDocuments?: TextDocumentRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
     this.dataDir = dataDir;
+    this.cards = options.cards ?? new FileCardRepository(this.dataDir);
+    this.events = options.events ?? new FileFeedEventRepository(this.dataDir);
+    this.revisions = options.revisions ?? new FileRevisionRepository(this.dataDir);
+    this.routineActionGroups = options.routineActionGroups ?? new FileRoutineActionGroupRepository(this.dataDir);
+    this.sourceRuns = options.sourceRuns ?? new FileSourceRunRepository(this.dataDir);
+    this.sources = options.sources ?? new FileSourceRepository(this.dataDir);
+    this.sweeps = options.sweeps ?? new FileSweepRepository(this.dataDir);
+    this.textDocuments = options.textDocuments ?? new FileTextDocumentRepository(this.dataDir);
+    this.workItems = options.workItems ?? new FileWorkItemRepository(this.dataDir);
+    this.workspaceFeeds = options.workspaceFeeds ?? new FileWorkspaceFeedRepository(this.path("workspace.json"));
   }
 
   async init(): Promise<void> {
-    await assertRuntimeWritable(this.dataDir);
     await mkdir(this.dataDir, { recursive: true });
-    await this.ensureText("global-policy.md", GLOBAL_POLICY);
-    await this.ensureText("prompts/judge.md", BASE_JUDGE_PROMPT);
-    await this.ensureText("prompts/compose-card.md", COMPOSE_CARD_PROMPT);
-    await this.ensureText("prompts/execute-work.md", EXECUTE_WORK_PROMPT);
-    await this.ensureText("prompts/distill-policy.md", DISTILL_POLICY_PROMPT);
-    await this.ensureText("prompts/compound.md", COMPOUND_PROMPT);
     const dictationPath = this.path("integrations/dictation.json");
     if (!existsSync(dictationPath)) await writeJson(dictationPath, defaultDictationCapability());
-    const workspacePath = this.path("workspace.json");
-    if (!existsSync(workspacePath)) await writeJson(workspacePath, { version: 1, feedIds: ["inbox", "company-attention"], createdAt: isoNow() });
+    await this.workspaceFeeds.init(DEFAULT_FEED_IDS);
+    const feedIds = await this.workspaceFeeds.listFeedIds();
+    await this.textDocuments.init();
+    await this.ensureTextDocumentSeeds(this.globalTextDocumentSeeds());
+    await this.cards.init(feedIds);
+    await this.events.init(feedIds);
+    await this.revisions.init(feedIds);
+    await this.routineActionGroups.init(feedIds);
+    await this.sourceRuns.init(feedIds);
+    await this.sources.init(feedIds);
+    await this.sweeps.init(feedIds);
+    await this.workItems.init(feedIds);
     await this.ensureDefaultFeed("inbox");
     await this.ensureDefaultFeed("company-attention");
-    const workspace = await readJson<{ feedIds: string[] }>(workspacePath);
-    await Promise.all(workspace.feedIds.map((feedId) => this.ensureFeedPrompts(feedId)));
+    await Promise.all((await this.workspaceFeeds.listFeedIds()).map((feedId) => this.ensureFeedTextDocuments(feedId)));
   }
 
   path(...parts: string[]): string {
@@ -87,18 +111,22 @@ export class AttentionStore {
 
   async readWorkspace(feedId = "inbox"): Promise<WorkspaceView> {
     await this.init();
-    const workspace = await readJson<{ feedIds: string[] }>(this.path("workspace.json"));
-    const feeds = await Promise.all(workspace.feedIds.map(async (id) => {
+    const feedIds = await this.workspaceFeeds.listFeedIds();
+    const feeds = await Promise.all(feedIds.map(async (id) => {
       const config = await this.readConfig(id);
       return { id: config.id, name: config.name, purpose: config.purpose };
     }));
-    const selected = workspace.feedIds.includes(feedId) ? feedId : workspace.feedIds[0];
+    const selected = feedIds.includes(feedId) ? feedId : feedIds[0];
     return {
       feeds,
       active: await this.readFeed(selected),
       dictation: await this.readDictationCapability(),
       proposals: await this.readRevisionProposals(selected),
     };
+  }
+
+  async listFeedIds(): Promise<string[]> {
+    return this.workspaceFeeds.listFeedIds();
   }
 
   async readDictationCapability(): Promise<DictationCapability> {
@@ -111,22 +139,22 @@ export class AttentionStore {
 
   async readGlobalPromptWorkspace(): Promise<{ globalPolicy: string; prompts: Array<{ name: string; content: string }> }> {
     return {
-      globalPolicy: await readFile(this.path("global-policy.md"), "utf8"),
-      prompts: await Promise.all(GLOBAL_PROMPT_NAMES.map(async (name) => ({ name, content: await readFile(this.path("prompts", name), "utf8") }))),
+      globalPolicy: await this.textDocuments.read("global-policy.md"),
+      prompts: await Promise.all(GLOBAL_PROMPT_NAMES.map(async (name) => ({ name, content: await this.textDocuments.read(`prompts/${name}`) }))),
     };
   }
 
   async writeGlobalPolicy(content: string): Promise<void> {
-    await writeText(this.path("global-policy.md"), content);
+    await this.textDocuments.write("global-policy.md", content);
   }
 
   async writeGlobalPrompt(name: string, content: string): Promise<void> {
     if (!GLOBAL_PROMPT_NAMES.includes(name as (typeof GLOBAL_PROMPT_NAMES)[number])) throw new Error(`Unknown global prompt: ${name}`);
-    await writeText(this.path("prompts", name), content);
+    await this.textDocuments.write(`prompts/${name}`, content);
   }
 
   async readRevisionProposals(anchorFeedId: string): Promise<RevisionProposal[]> {
-    const proposals = await this.readDirectoryJson<RevisionProposal>(this.path("revision-proposals"));
+    const proposals = await this.revisions.listProposals();
     return proposals
       .filter((proposal) =>
         proposal.status === "proposed" &&
@@ -136,11 +164,11 @@ export class AttentionStore {
   }
 
   async readRevisionProposal(proposalId: string): Promise<RevisionProposal> {
-    return readJson<RevisionProposal>(this.path("revision-proposals", `${proposalId}.json`));
+    return this.revisions.getProposal(proposalId);
   }
 
   async writeRevisionProposal(proposal: RevisionProposal): Promise<void> {
-    await writeJson(this.path("revision-proposals", `${proposal.id}.json`), proposal);
+    await this.revisions.writeProposal(proposal);
   }
 
   async readAppFeedback(): Promise<AppFeedback[]> {
@@ -157,7 +185,7 @@ export class AttentionStore {
   }
 
   async readWorkspaceRevision(revisionId: string): Promise<WorkspaceRevision> {
-    return readJson<WorkspaceRevision>(this.path("workspace-revisions", `${revisionId}.json`));
+    return this.revisions.getWorkspaceRevision(revisionId);
   }
 
   async writeWorkspaceRevision(anchorFeedId: string, target: VoiceTarget, next: string, reason: string, source: WorkspaceRevision["source"]): Promise<WorkspaceRevision> {
@@ -176,7 +204,7 @@ export class AttentionStore {
       createdAt: isoNow(),
     };
     await this.writeTargetContent(validated, next);
-    await writeJson(this.path("workspace-revisions", `${revision.id}.json`), revision);
+    await this.revisions.writeWorkspaceRevision(revision);
     await this.appendEvent({ feedId: anchorFeedId, type: "revision.applied", detail: { revisionId: revision.id, target: validated, source } });
     return revision;
   }
@@ -189,7 +217,7 @@ export class AttentionStore {
     revision.status = "reverted";
     revision.revertedAt = isoNow();
     await this.writeTargetContent(revision.target, revision.previous);
-    await writeJson(this.path("workspace-revisions", `${revision.id}.json`), revision);
+    await this.revisions.writeWorkspaceRevision(revision);
     await this.appendEvent({ feedId: revision.anchorFeedId, type: "revision.reverted", detail: { revisionId, target: revision.target } });
     return revision;
   }
@@ -207,53 +235,52 @@ export class AttentionStore {
   }
 
   async readTargetContent(target: VoiceTarget): Promise<string> {
-    if (target.kind === "feed") return readFile(this.feedPath(target.feedId, "policy.md"), "utf8");
+    if (target.kind === "feed") return this.textDocuments.read(`feeds/${target.feedId}/policy.md`);
     if (target.kind === "source_recipe") {
-      const recipe = (await readJson<SourceRecipe[]>(this.feedPath(target.feedId, "sources.json"))).find((item) => item.id === target.sourceId);
-      if (!recipe) throw new Error(`Source recipe not found: ${target.sourceId}`);
-      return readFile(this.feedPath(target.feedId, "sources", recipe.filename), "utf8");
+      return (await this.sources.get(target.feedId, target.sourceId)).content;
     }
-    if (target.kind === "prompt_layer") return readFile(this.feedPath(target.feedId, "prompts", target.promptId), "utf8");
-    if (target.kind === "global_prompt") return readFile(this.path("prompts", target.promptId), "utf8");
-    if (target.kind === "attention") return readFile(this.path("global-policy.md"), "utf8");
+    if (target.kind === "prompt_layer") return this.textDocuments.read(`feeds/${target.feedId}/prompts/${target.promptId}`);
+    if (target.kind === "global_prompt") return this.textDocuments.read(`prompts/${target.promptId}`);
+    if (target.kind === "attention") return this.textDocuments.read("global-policy.md");
     throw new Error("This target does not contain editable prompt content.");
   }
 
   async writeTargetContent(target: VoiceTarget, content: string): Promise<void> {
     const normalized = content.replace(/\\n/g, "\n").trim();
     if (!normalized) throw new Error("Workspace content is required.");
-    if (target.kind === "feed") return writeText(this.feedPath(target.feedId, "policy.md"), normalized);
+    if (target.kind === "feed") return this.textDocuments.write(`feeds/${target.feedId}/policy.md`, normalized);
     if (target.kind === "source_recipe") {
-      const recipe = (await readJson<SourceRecipe[]>(this.feedPath(target.feedId, "sources.json"))).find((item) => item.id === target.sourceId);
-      if (!recipe) throw new Error(`Source recipe not found: ${target.sourceId}`);
-      return writeText(this.feedPath(target.feedId, "sources", recipe.filename), normalized);
+      return this.sources.writeContent(target.feedId, target.sourceId, normalized);
     }
-    if (target.kind === "prompt_layer") return writeText(this.feedPath(target.feedId, "prompts", target.promptId), normalized);
+    if (target.kind === "prompt_layer") return this.textDocuments.write(`feeds/${target.feedId}/prompts/${target.promptId}`, normalized);
     if (target.kind === "global_prompt") return this.writeGlobalPrompt(target.promptId, normalized);
-    if (target.kind === "attention") return writeText(this.path("global-policy.md"), normalized);
+    if (target.kind === "attention") return this.textDocuments.write("global-policy.md", normalized);
     throw new Error("This target does not contain editable prompt content.");
   }
 
   async readFeed(feedId: string): Promise<FeedView> {
     const config = await this.readConfig(feedId);
-    const [thread, sources, policy, cards, routineActions, work, sweep] = await Promise.all([
+    const [thread, sourceRecords, policy, cards, runs, routineActions, work, sweep] = await Promise.all([
       readJson<ThreadBinding>(this.feedPath(feedId, "thread.json")),
-      readJson<SourceRecipe[]>(this.feedPath(feedId, "sources.json")),
-      readFile(this.feedPath(feedId, "policy.md"), "utf8"),
-      this.readDirectoryJson<Card>(this.feedPath(feedId, "cards")),
-      this.readDirectoryJson<RoutineActionGroup>(this.feedPath(feedId, "routine-actions")),
-      this.readDirectoryJson<WorkItem>(this.feedPath(feedId, "work")),
+      this.sources.list(feedId),
+      this.textDocuments.read(`feeds/${feedId}/policy.md`),
+      this.cards.list(feedId),
+      this.sourceRuns.list(feedId),
+      this.routineActionGroups.list(feedId),
+      this.workItems.list(feedId),
       this.readSweepState(feedId),
     ]);
     cards.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    runs.sort((a, b) => (a.completedAt ?? "").localeCompare(b.completedAt ?? "") || a.id.localeCompare(b.id));
     routineActions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     work.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     return {
       config,
       thread,
-      sources,
+      sources: sourceRecords.map((record) => record.recipe),
       policy,
       cards,
+      runs,
       routineActions,
       work,
       sweep,
@@ -262,31 +289,23 @@ export class AttentionStore {
   }
 
   async readSweepState(feedId: string): Promise<SweepState> {
-    const file = this.feedPath(feedId, "sweep-state.json");
-    if (!existsSync(file)) return defaultSweepState();
-    const state = await readJson<SweepState & { currentRunId?: string | null }>(file);
-    return {
-      currentBatchId: state.currentBatchId ?? state.currentRunId ?? null,
-      lastFeedbackId: state.lastFeedbackId,
-      recollectionOffered: state.recollectionOffered,
-      statusMessage: state.statusMessage,
-    };
+    return this.sweeps.readState(feedId);
   }
 
   async writeSweepState(feedId: string, state: SweepState): Promise<void> {
-    await writeJson(this.feedPath(feedId, "sweep-state.json"), state);
+    await this.sweeps.writeState(feedId, state);
   }
 
   async writeSweepFeedback(trace: SweepFeedbackTrace): Promise<void> {
-    await writeJson(this.feedPath(trace.feedId, "sweep-feedback", `${trace.id}.json`), trace);
+    await this.sweeps.writeFeedback(trace);
   }
 
   async readSweepFeedback(feedId: string, feedbackId: string): Promise<SweepFeedbackTrace> {
-    return readJson<SweepFeedbackTrace>(this.feedPath(feedId, "sweep-feedback", `${feedbackId}.json`));
+    return this.sweeps.getFeedback(feedId, feedbackId);
   }
 
   async writeSweepBatch(batch: SweepBatch): Promise<void> {
-    await writeJson(this.feedPath(batch.feedId, "sweeps", `${batch.id}.json`), batch);
+    await this.sweeps.writeBatch(batch);
   }
 
   async readConfig(feedId: string): Promise<FeedConfig> {
@@ -299,34 +318,42 @@ export class AttentionStore {
   }
 
   async readCard(feedId: string, cardId: string): Promise<Card> {
-    return readJson<Card>(this.feedPath(feedId, "cards", `${cardId}.json`));
+    return this.cards.get(feedId, cardId);
+  }
+
+  async hasCard(feedId: string, cardId: string): Promise<boolean> {
+    return this.cards.has(feedId, cardId);
   }
 
   async writeCard(card: Card): Promise<void> {
     card.updatedAt = isoNow();
-    await writeJson(this.feedPath(card.feedId, "cards", `${card.id}.json`), card);
+    await this.cards.write(card);
   }
 
   async removeCard(feedId: string, cardId: string): Promise<void> {
-    await rm(this.feedPath(feedId, "cards", `${cardId}.json`), { force: true });
+    await this.cards.remove(feedId, cardId);
   }
 
   async readRoutineActionGroup(feedId: string, groupId: string): Promise<RoutineActionGroup> {
-    return readJson<RoutineActionGroup>(this.feedPath(feedId, "routine-actions", `${groupId}.json`));
+    return this.routineActionGroups.get(feedId, groupId);
+  }
+
+  async hasRoutineActionGroup(feedId: string, groupId: string): Promise<boolean> {
+    return this.routineActionGroups.has(feedId, groupId);
   }
 
   async writeRoutineActionGroup(group: RoutineActionGroup): Promise<void> {
     group.updatedAt = isoNow();
-    await writeJson(this.feedPath(group.feedId, "routine-actions", `${group.id}.json`), group);
+    await this.routineActionGroups.write(group);
   }
 
   async readWork(feedId: string, workId: string): Promise<WorkItem> {
-    return readJson<WorkItem>(this.feedPath(feedId, "work", `${workId}.json`));
+    return this.workItems.get(feedId, workId);
   }
 
   async writeWork(work: WorkItem): Promise<void> {
     work.updatedAt = isoNow();
-    await writeJson(this.feedPath(work.feedId, "work", `${work.id}.json`), work);
+    await this.workItems.write(work);
   }
 
   async readThread(feedId: string): Promise<ThreadBinding> {
@@ -339,63 +366,59 @@ export class AttentionStore {
 
   async appendEvent(event: Omit<FeedEvent, "id" | "at">): Promise<FeedEvent> {
     const full = { ...event, id: makeId("evt"), at: isoNow() };
-    await mkdir(this.feedPath(event.feedId), { recursive: true });
-    await appendFile(this.feedPath(event.feedId, "events.jsonl"), `${JSON.stringify(full)}\n`, "utf8");
+    await this.events.append(full);
     return full;
   }
 
   async readEvents(feedId: string): Promise<FeedEvent[]> {
-    const file = this.feedPath(feedId, "events.jsonl");
-    if (!existsSync(file)) return [];
-    return (await readFile(file, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as FeedEvent);
+    return this.events.list(feedId);
   }
 
   async writePolicy(feedId: string, next: string, reason: string, source: PolicyRevision["source"]): Promise<PolicyRevision> {
-    const previous = await readFile(this.feedPath(feedId, "policy.md"), "utf8");
+    const previous = await this.textDocuments.read(`feeds/${feedId}/policy.md`);
     const revision: PolicyRevision = { id: makeId("policy"), feedId, previous, next, reason, source, status: "applied", createdAt: isoNow() };
-    await writeText(this.feedPath(feedId, "policy.md"), next);
-    await writeJson(this.feedPath(feedId, "policy-revisions", `${revision.id}.json`), revision);
+    await this.textDocuments.write(`feeds/${feedId}/policy.md`, next);
+    await this.revisions.writePolicyRevision(revision);
     await this.appendEvent({ feedId, type: "policy.applied", detail: { revisionId: revision.id, source, reason } });
     return revision;
   }
 
   async revertPolicy(feedId: string, revisionId: string): Promise<PolicyRevision> {
-    const file = this.feedPath(feedId, "policy-revisions", `${revisionId}.json`);
-    const revision = await readJson<PolicyRevision>(file);
+    const revision = await this.revisions.getPolicyRevision(feedId, revisionId);
     if (revision.status !== "applied") throw new Error("Policy revision is not active.");
     revision.status = "reverted";
     revision.revertedAt = isoNow();
-    await writeText(this.feedPath(feedId, "policy.md"), revision.previous);
-    await writeJson(file, revision);
+    await this.textDocuments.write(`feeds/${feedId}/policy.md`, revision.previous);
+    await this.revisions.writePolicyRevision(revision);
     await this.appendEvent({ feedId, type: "policy.reverted", detail: { revisionId } });
     return revision;
   }
 
   async addSource(feedId: string, recipe: SourceRecipe, markdown: string): Promise<void> {
-    const file = this.feedPath(feedId, "sources.json");
-    const recipes = await readJson<SourceRecipe[]>(file);
-    const next = [...recipes.filter((item) => item.id !== recipe.id), recipe];
-    await writeJson(file, next);
-    await writeText(this.feedPath(feedId, "sources", recipe.filename), markdown);
-    const checkpointPath = this.feedPath(feedId, "checkpoints", recipe.checkpointFilename);
-    if (!existsSync(checkpointPath)) await writeJson(checkpointPath, { sourceId: recipe.id, updatedAt: null, cursor: null });
+    await this.sources.write(feedId, recipe, markdown);
     await this.appendEvent({ feedId, type: "source.recipe_added", detail: { sourceId: recipe.id } });
   }
 
   async removeSource(feedId: string, sourceId: string): Promise<void> {
-    const file = this.feedPath(feedId, "sources.json");
-    const recipes = await readJson<SourceRecipe[]>(file);
-    if (!recipes.some((item) => item.id === sourceId)) throw new Error(`Source recipe not found: ${sourceId}`);
-    await writeJson(file, recipes.filter((item) => item.id !== sourceId));
+    await this.sources.remove(feedId, sourceId);
     await this.appendEvent({ feedId, type: "source.recipe_removed", detail: { sourceId } });
   }
 
   async writeSourceRecipe(feedId: string, sourceId: string, content: string): Promise<void> {
-    const recipes = await readJson<SourceRecipe[]>(this.feedPath(feedId, "sources.json"));
-    const recipe = recipes.find((item) => item.id === sourceId);
-    if (!recipe) throw new Error(`Source recipe not found: ${sourceId}`);
-    await writeText(this.feedPath(feedId, "sources", recipe.filename), content);
+    await this.sources.writeContent(feedId, sourceId, content);
     await this.appendEvent({ feedId, type: "source.recipe_edited", detail: { sourceId } });
+  }
+
+  async readSourceContent(feedId: string, sourceId: string): Promise<string> {
+    return (await this.sources.get(feedId, sourceId)).content;
+  }
+
+  async readSourceCheckpoint(feedId: string, sourceId: string): Promise<unknown> {
+    return (await this.sources.get(feedId, sourceId)).checkpoint;
+  }
+
+  async writeSourceCheckpoint(feedId: string, sourceId: string, checkpoint: unknown): Promise<void> {
+    await this.sources.writeCheckpoint(feedId, sourceId, checkpoint);
   }
 
   async writeRawSnapshot(feedId: string, runId: string, sourceId: string, snapshotId: string, value: unknown): Promise<void> {
@@ -404,30 +427,29 @@ export class AttentionStore {
     await writeJson(file, value);
   }
 
-  async writeRun(feedId: string, runId: string, value: unknown): Promise<void> {
-    await writeJson(this.feedPath(feedId, "runs", `${runId}.json`), value);
+  async writeRun(run: SourceRun): Promise<void> {
+    await this.sourceRuns.write(run);
   }
 
-  async readRun(feedId: string, runId: string): Promise<{ id: string; feedId: string; triggerWorkId?: string; completedAt?: string }> {
-    return readJson<{ id: string; feedId: string; triggerWorkId?: string; completedAt?: string }>(this.feedPath(feedId, "runs", `${runId}.json`));
+  async readRun(feedId: string, runId: string): Promise<SourceRun> {
+    return this.sourceRuns.get(feedId, runId);
   }
 
   async readSweepBatch(feedId: string, batchId: string): Promise<SweepBatch> {
-    return readJson<SweepBatch>(this.feedPath(feedId, "sweeps", `${batchId}.json`));
+    return this.sweeps.getBatch(feedId, batchId);
   }
 
   async createFeed(config: FeedConfig, homeThreadId: string | null = null): Promise<FeedView> {
     return this.serialize(async () => {
-      const workspace = await readJson<{ version: number; feedIds: string[]; createdAt: string }>(this.path("workspace.json"));
-      if (workspace.feedIds.includes(config.id)) throw new Error(`Feed already exists: ${config.id}`);
-      workspace.feedIds.push(config.id);
-      await writeJson(this.path("workspace.json"), workspace);
+      const feedIds = await this.workspaceFeeds.listFeedIds();
+      if (feedIds.includes(config.id)) throw new Error(`Feed already exists: ${config.id}`);
       await writeJson(this.feedPath(config.id, "feed.json"), config);
       await writeText(this.feedPath(config.id, "feed.md"), `# ${config.name}\n\n${config.purpose}\n`);
-      await writeText(this.feedPath(config.id, "policy.md"), `# ${config.name} policy\n\n- Start with a high attention bar. Learn from explicit corrections and outcomes.\n`);
+      await this.textDocuments.write(`feeds/${config.id}/policy.md`, `# ${config.name} policy\n\n- Start with a high attention bar. Learn from explicit corrections and outcomes.\n`);
       await writeJson(this.feedPath(config.id, "thread.json"), { ...threadBinding(), homeThreadId, boundAt: homeThreadId ? isoNow() : null });
       await writeJson(this.feedPath(config.id, "sources.json"), []);
-      await this.ensureFeedPrompts(config.id);
+      await this.ensureFeedTextDocuments(config.id);
+      await this.workspaceFeeds.addFeedId(config.id);
       await this.appendEvent({ feedId: config.id, type: "feed.created", detail: { homeThreadId } });
       return this.readFeed(config.id);
     });
@@ -436,11 +458,10 @@ export class AttentionStore {
   async archiveFeed(feedId: string): Promise<void> {
     await this.serialize(async () => {
       if (feedId === "inbox" || feedId === "company-attention") throw new Error("Default feeds cannot be archived.");
-      const workspace = await readJson<{ version: number; feedIds: string[]; createdAt: string }>(this.path("workspace.json"));
-      if (!workspace.feedIds.includes(feedId)) throw new Error(`Feed not found: ${feedId}`);
+      const feedIds = await this.workspaceFeeds.listFeedIds();
+      if (!feedIds.includes(feedId)) throw new Error(`Feed not found: ${feedId}`);
       await this.appendEvent({ feedId, type: "feed.archived" });
-      workspace.feedIds = workspace.feedIds.filter((id) => id !== feedId);
-      await writeJson(this.path("workspace.json"), workspace);
+      await this.workspaceFeeds.removeFeedId(feedId);
       await mkdir(this.path("archived-feeds"), { recursive: true });
       await rename(this.feedPath(feedId), this.path("archived-feeds", `${feedId}-${Date.now()}`));
     });
@@ -453,7 +474,6 @@ export class AttentionStore {
   }
 
   private async withFilesystemLock<T>(callback: () => Promise<T>): Promise<T> {
-    await assertRuntimeWritable(this.dataDir);
     const lockPath = this.path(".mutation-lock");
     for (let attempt = 0; attempt < 400; attempt += 1) {
       try {
@@ -479,7 +499,7 @@ export class AttentionStore {
       : feedConfig({ id: "company-attention", name: "Company Attention", purpose: "Surface a small number of exceptional company signals with enough evidence to decide or act.", defaultCleanup: "Dismiss this card and suppress unchanged repeats." });
     await writeJson(this.feedPath(feedId, "feed.json"), config);
     await writeText(this.feedPath(feedId, "feed.md"), `# ${config.name}\n\n${config.purpose}\n`);
-    await writeText(this.feedPath(feedId, "policy.md"), `# ${config.name} policy\n\n- Start with a high attention bar.\n- Preserve provenance and do not pad.\n`);
+    await this.textDocuments.write(`feeds/${feedId}/policy.md`, `# ${config.name} policy\n\n- Start with a high attention bar.\n- Preserve provenance and do not pad.\n`);
     await writeJson(this.feedPath(feedId, "thread.json"), threadBinding());
     await writeJson(this.feedPath(feedId, "sources.json"), []);
     const source = inbox ? inboxRecipe() : companyRecipe();
@@ -487,9 +507,8 @@ export class AttentionStore {
     await this.writeCard(setupCard(feedId, inbox ? "inbox" : "company"));
   }
 
-  private async ensureFeedPrompts(feedId: string): Promise<void> {
-    await this.ensureText(`feeds/${feedId}/prompts/judge.md`, "# Feed judge prompt layer\n\nAdd feed-specific judging refinements here. Global policy and the global judge prompt remain in force.\n");
-    await this.ensureText(`feeds/${feedId}/prompts/compose-card.md`, "# Feed card prompt layer\n\nAdd feed-specific card composition refinements here. Keep the outer card calm and compact.\n");
+  private async ensureFeedTextDocuments(feedId: string): Promise<void> {
+    await this.ensureTextDocumentSeeds(await this.feedTextDocumentSeeds(feedId));
   }
 
   private async isValidVoiceTarget(target: VoiceTarget): Promise<boolean> {
@@ -497,15 +516,33 @@ export class AttentionStore {
     if (target.kind === "global_prompt") return GLOBAL_PROMPT_NAMES.includes(target.promptId as (typeof GLOBAL_PROMPT_NAMES)[number]);
     if (!existsSync(this.feedPath(target.feedId, "feed.json"))) return false;
     if (target.kind === "feed" || target.kind === "sweep") return true;
-    if (target.kind === "card") return existsSync(this.feedPath(target.feedId, "cards", `${target.cardId}.json`));
+    if (target.kind === "card") return this.hasCard(target.feedId, target.cardId);
     if (target.kind === "prompt_layer") return FEED_PROMPT_NAMES.includes(target.promptId as (typeof FEED_PROMPT_NAMES)[number]);
-    const recipes = await readJson<SourceRecipe[]>(this.feedPath(target.feedId, "sources.json"));
-    return recipes.some((recipe) => recipe.id === target.sourceId);
+    return (await this.sources.list(target.feedId)).some((record) => record.recipe.id === target.sourceId);
   }
 
-  private async ensureText(relativePath: string, value: string): Promise<void> {
-    const full = this.path(relativePath);
-    if (!existsSync(full)) await writeText(full, value);
+  private async ensureTextDocumentSeeds(seeds: TextDocumentSeed[]): Promise<void> {
+    for (const seed of seeds) await this.textDocuments.ensure(seed);
+  }
+
+  private globalTextDocumentSeeds(): TextDocumentSeed[] {
+    return [
+      { key: "global-policy.md", content: GLOBAL_POLICY },
+      { key: "prompts/judge.md", content: BASE_JUDGE_PROMPT },
+      { key: "prompts/compose-card.md", content: COMPOSE_CARD_PROMPT },
+      { key: "prompts/execute-work.md", content: EXECUTE_WORK_PROMPT },
+      { key: "prompts/distill-policy.md", content: DISTILL_POLICY_PROMPT },
+      { key: "prompts/compound.md", content: COMPOUND_PROMPT },
+    ];
+  }
+
+  private async feedTextDocumentSeeds(feedId: string): Promise<TextDocumentSeed[]> {
+    const config = await this.readConfig(feedId);
+    return [
+      { key: `feeds/${feedId}/policy.md`, content: `# ${config.name} policy\n\n- Start with a high attention bar.\n- Preserve provenance and do not pad.\n` },
+      { key: `feeds/${feedId}/prompts/judge.md`, content: "# Feed judge prompt layer\n\nAdd feed-specific judging refinements here. Global policy and the global judge prompt remain in force.\n" },
+      { key: `feeds/${feedId}/prompts/compose-card.md`, content: "# Feed card prompt layer\n\nAdd feed-specific card composition refinements here. Keep the outer card calm and compact.\n" },
+    ];
   }
 
   private async readDirectoryJson<T>(directory: string): Promise<T[]> {
