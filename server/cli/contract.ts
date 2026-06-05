@@ -55,3 +55,7 @@ export const INTERNAL_CLI_COMMANDS = [
 export function cliCommandName(command: string): string {
   return command.split(" ")[0] ?? command;
 }
+
+export function cliCommandUsage(commandName: string): string | undefined {
+  return [...CLI_COMMANDS, ...INTERNAL_CLI_COMMANDS].find((command) => cliCommandName(command) === commandName);
+}

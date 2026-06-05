@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { AttentionDomain } from "./server/domain";
 import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS } from "./server/cli/contract";
+import { MissingFlagError, formatCliError } from "./server/cli/errors";
 import { formatWorkClaimOutput, formatWorkListOutput } from "./server/operator";
 import { createLocalRuntime, resolveArtifactsDir, resolveDbPath, resolveRuntimeRoot } from "./server/runtime";
 
@@ -20,7 +21,7 @@ const flag = (name: string) => argv.includes(`--${name}`);
 const json = (input?: string) => input ? JSON.parse(input) : undefined;
 const required = (name: string) => {
   const result = value(name);
-  if (!result) throw new Error(`Missing --${name}`);
+  if (!result) throw new MissingFlagError(command, name);
   return result;
 };
 const text = async (name: string) => {
@@ -293,17 +294,6 @@ try {
 
   process.stdout.write(`${JSON.stringify(output, null, 2)}\n`);
 } catch (error) {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${JSON.stringify({ ok: false, error: message, hint: errorHint(message, command) }, null, 2)}\n`);
+  process.stderr.write(`${JSON.stringify(formatCliError(error), null, 2)}\n`);
   process.exit(1);
-}
-
-function errorHint(message: string, activeCommand: string): string {
-  if (message.startsWith("Missing --")) return `Run attention cli help and retry ${activeCommand} with the required flag.`;
-  if (message.includes("does not own the feed")) return "Use the feed's bound home thread id, or pass --cross-feed only for explicit cross-feed operation.";
-  if (message.includes("Invalid scoped work capability token")) return "Use the capabilityToken returned by the latest successful work:claim for this work item.";
-  if (message.includes("Approved action must pass action:verify")) return "Call attention cli action:verify immediately before the external mutation, then complete with the same token.";
-  if (message.includes("Approval stale")) return "Reread the current card or routine group, then return it to review or ask the user to approve the current snapshot.";
-  if (message.includes("Source recipe not found")) return "Inspect the feed sources with attention cli inspect --feed <id>, then use a configured source id.";
-  return "Run attention cli help for the command contract and retry with current feed/work state.";
 }

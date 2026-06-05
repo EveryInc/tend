@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS, cliCommandName } from "../server/cli/contract";
+import { MissingFlagError, formatCliError } from "../server/cli/errors";
 
 describe("CLI contract", () => {
   test("keeps public help focused on the v0 agent surface", () => {
@@ -27,5 +28,16 @@ describe("CLI contract", () => {
 
     expect(documented.length).toBeGreaterThan(10);
     for (const command of documented) expect(commandNames).toContain(command);
+  });
+
+  test("formats command-owned usage hints for missing flags", () => {
+    const error = formatCliError(new MissingFlagError("work:claim", "thread"));
+
+    expect(error).toEqual({
+      ok: false,
+      error: "Missing --thread",
+      code: "missing_flag",
+      hint: "Usage: attention cli work:claim --feed <id> --thread <id> [--cross-feed]",
+    });
   });
 });
