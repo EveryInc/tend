@@ -45,11 +45,11 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Run project checks
+        run: pnpm check
+
       - name: Build web app
         run: pnpm build
-
-      - name: Run tests
-        run: pnpm test
 
       - name: Compile local binary
         run: pnpm attention:build

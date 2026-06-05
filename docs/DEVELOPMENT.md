@@ -9,7 +9,7 @@ development.
 ```sh
 pnpm install
 pnpm start
-pnpm test
+pnpm check
 pnpm build
 pnpm attention -- version
 pnpm attention -- doctor
@@ -64,17 +64,18 @@ Pull requests run the same core gates expected locally:
 
 ```sh
 pnpm install --frozen-lockfile
+pnpm check
 pnpm build
-pnpm test
 pnpm attention:build
 pnpm attention:smoke
 pnpm attention:package
 ```
 
-`pnpm attention:smoke` starts the compiled `dist-bin/attention` binary in foreground mode against a temporary
-`ATTENTION_HOME`, checks `attention version`, checks `/api/status`, validates the app version, CLI
-contract version and schema version, verifies the built UI is served, confirms core JSON CLI
-commands work, stops the server, and removes the temporary data directory.
+`pnpm check` runs TypeScript, Oxlint, and Bun tests. `pnpm attention:smoke` starts the compiled
+`dist-bin/attention` binary in foreground mode against a temporary `ATTENTION_HOME`, checks
+`attention version`, checks `/api/status`, validates the app version, CLI contract version and schema
+version, verifies the built UI is served, confirms core JSON CLI commands work, stops the server,
+and removes the temporary data directory.
 
 Use `pnpm attention:package` after the smoke check when preparing a local release archive. It writes
 a platform-specific tarball and checksum under `dist-bin/releases/`. The tarball includes the

@@ -38,8 +38,8 @@ Compatibility rules:
 
    ```sh
    pnpm install --frozen-lockfile
+   pnpm check
    pnpm build
-   pnpm test
    pnpm attention:build
    pnpm attention:smoke
    pnpm attention:package

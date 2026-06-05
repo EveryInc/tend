@@ -1,11 +1,12 @@
 # Attention
 
-Attention is an open-source, local-first Codex-native feed builder. It runs on your machine, stores
-workflow state locally, exposes a JSON CLI for Codex Desktop, and renders a calm review UI for feed
-sweeps, approvals, and queued work.
+Attention is an open-source, local-first feed workspace for Codex Desktop. It gives each feed a
+durable local home, a calm review UI, and a JSON CLI that Codex can use to refresh sources, claim
+queued work, record results, and safely perform approved actions.
 
-This is an experimental local app, not a hosted service. Codex Desktop remains the agent runtime;
-Attention is the local workspace and coordination layer.
+Attention is not a hosted service. The app stores state on your machine. Codex Desktop remains the
+agent runtime and owns access to Gmail, GitHub, Slack, browser automation, and other local
+connectors.
 
 ## Mental Model
 
@@ -13,28 +14,29 @@ Attention is the local workspace and coordination layer.
 flowchart LR
   User["User reviews feed UI"] --> UI["Attention UI"]
   UI --> API["Local HTTP API"]
-  API --> DB["SQLite authority"]
-  DB --> Mirror["Readable file mirrors"]
-  DB --> Events["SSE changes"]
+  API --> Domain["Domain rules"]
+  Domain --> DB["SQLite authority"]
+  DB --> Mirrors["Readable file mirrors"]
+  Domain --> Events["SSE changes"]
   Events --> UI
 
   Thread["Codex feed thread"] --> CLI["attention cli"]
-  CLI --> DB
-  Thread --> Connectors["Local Codex connectors"]
+  CLI --> Domain
+  Thread --> Connectors["Codex Desktop connectors"]
   Connectors --> Thread
 ```
 
-Codex owns connector access and agent work. Attention owns local state, approval gates, feed
-configuration, and the browser UI.
+The UI and CLI share the same domain rules. Source credentials never live in Attention; they stay in
+Codex Desktop.
 
 ## Get Started
 
-There are two good ways to try Attention.
+There are two supported ways to run Attention.
 
 ### Use The Binary
 
-Download the latest release archive from [GitHub Releases](https://github.com/EveryInc/tend/releases),
-unpack it, and start the local app:
+Download the latest archive from [GitHub Releases](https://github.com/EveryInc/tend/releases), then
+unpack and start it:
 
 ```sh
 tar -xzf attention-<version>-<platform>-<arch>.tar.gz
@@ -42,44 +44,31 @@ cd attention-<version>-<platform>-<arch>
 ./attention start
 ```
 
-The binary starts the local app in the background and serves the UI and API from one local port:
+The binary starts the local server in the background and serves both UI and API from:
 
 ```text
-UI:  http://127.0.0.1:4332
-API: http://127.0.0.1:4332
+http://127.0.0.1:4332
 ```
+
+Useful runtime commands:
 
 ```sh
 ./attention health
+./attention doctor
 ./attention logs
 ./attention restart
 ./attention stop
 ```
 
-For development or smoke tests, `./attention start --foreground` keeps the server attached to the
-current terminal.
-
-Print the Codex setup prompt:
+Use foreground mode while debugging:
 
 ```sh
-./attention setup codex
-```
-
-Paste the printed setup prompt into a fresh Codex thread. Use one Codex thread per feed. That thread
-binds itself to the feed through the JSON CLI, creates or updates its heartbeat automation, drains
-queued work, and refreshes sources through local connectors.
-
-Useful binary checks:
-
-```sh
-./attention version
-./attention doctor
-./attention backup export ./attention-backup
+./attention start --foreground
 ```
 
 ### Clone And Extend
 
-If you want to inspect the code, change the product, or build your own version:
+Use the source path when you want to inspect, modify, or extend the app:
 
 ```sh
 git clone https://github.com/EveryInc/tend.git
@@ -88,69 +77,41 @@ pnpm install
 pnpm start
 ```
 
-Open `http://127.0.0.1:4321/` in the Codex in-app browser. During development, Vite serves the UI
-on `4321`, and the API listens on `4332`.
+Open:
 
-Development checks:
+```text
+http://127.0.0.1:4321
+```
+
+In development, Vite serves the UI on `4321` and proxies `/api` to the local API on `4332`.
+
+## Set Up Codex
+
+Print the setup prompt:
 
 ```sh
-pnpm attention -- version
-pnpm attention -- doctor
+./attention setup codex
+```
+
+When running from source:
+
+```sh
 pnpm attention -- setup codex
-pnpm build
-pnpm test
 ```
 
-Build and package a local binary:
+Paste the prompt into a fresh Codex Desktop thread. Use one Codex thread per feed. That feed thread
+binds itself with `attention cli feed:bind`, installs or updates one heartbeat automation, drains
+queued work before using connectors, and refreshes sources through the local Codex connector
+runtime.
 
-```sh
-pnpm attention:build
-pnpm attention:smoke
-pnpm attention:package
-```
-
-For a scrubbed visual walkthrough:
-
-```sh
-pnpm seed:demo
-```
-
-Read [docs/INSTALL.md](./docs/INSTALL.md) for setup details, [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md)
-for the local runtime, [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md) for the Codex/CLI contract,
-and [CONTRIBUTING.md](./CONTRIBUTING.md) if you want to extend the repo.
-
-## Product Boundary
-
-The browser app renders and records state. It does not call Gmail, Slack, Chronicle, browser
-automation, computer use, or model judges. The Codex thread bound to a feed runs its source recipes,
-judges candidates, records raw evidence, updates cards, performs approved work, and distills
-learning.
-
-Normal manual fallback: wake the feed's home Codex thread and say:
+Normal manual fallback: wake the feed's home thread and say:
 
 ```text
 go deal with the feed
 ```
 
-The thread runs `attention cli work:list` and repeatedly claims and completes pending work. No relay
-packet should ever be pasted in the normal workflow. A thread-owned heartbeat can make refresh and
-drain automatic after the user approves the proposed cadence.
-
-During local setup, Codex runs `attention cli setup:detect-monologue`. If Monologue is installed, Codex
-reads its local recording shortcut and records a safe browser-facing capability under ignored
-`data/integrations/`. Hold the detected shortcut while speaking. The dock receives focus on keydown
-and switches into a visible listening state, then automatically submits injected text shortly after
-keyup once the text settles. There is no clickable dictation control.
-
-The dock stays visible on feed and workspace screens. Its pill always names the conversational
-target, and each rung has a distinct restrained color. Use the labeled `Broader` and `Narrower`
-buttons or focus the empty dock and press `ArrowUp` and `ArrowDown` to move between the visible
-object, current sweep, feed, and Attention scopes. Arrow keys remain available for editing once the
-dock contains text, and ordinary page scrolling never changes the rung. Every dock utterance becomes scoped work for Codex. Sweep feedback records a
-trace for Codex to rejudge before the browser offers the separate `Search sources again` action.
-On Inbox cards, use `O` to toggle the collapsed full email thread without leaving the sweep.
-Claimed Inbox work repeats the source mailbox as reply-draft sender guidance: drafts preserve that
-mailbox owner's voice and signature unless the user's instruction explicitly changes sender.
+The thread should list work, claim work, act through local connectors only after a claim, and record
+the result through `attention cli`.
 
 ## Local Data
 
@@ -164,119 +125,86 @@ Runtime data lives under `~/.attention/` by default:
   exports/
 ```
 
-Set `ATTENTION_HOME` to choose a different runtime root. SQLite is the runtime authority; the data
-directory keeps readable mirrors and immutable raw evidence snapshots:
+Set `ATTENTION_HOME` to use another runtime root:
 
-```text
-data/
-  global-policy.md
-  integrations/dictation.json
-  prompts/*.md
-  revision-proposals/*.json
-  workspace-revisions/*.json
-  archived-feeds/<feed-id>-<timestamp>/
-  feeds/<feed-id>/
-    feed.md
-    policy.md
-    thread.json
-    sources/*.md
-    prompts/*.md
-    checkpoints/*.json
-    raw/<run-id>/<source-id>/*.json
-    runs/*.json
-    sweeps/*.json
-    cards/*.json
-    routine-actions/*.json
-    work/*.json
-    policy-revisions/*.json
-    sweep-feedback/*.json
-    sweep-state.json
-    events.jsonl
+```sh
+ATTENTION_HOME=.local-attention ./attention start
 ```
 
-Prompt files describe how to judge, compose cards, execute work, distill small policy improvements,
-and compound deeper learnings. Feed policy files remain compact and human-readable mirrors of the
-SQLite records. Raw snapshots stay immutable so the policy can be rebuilt or evaluated later.
+SQLite is the runtime authority. The `data/` directory keeps readable mirrors and immutable raw
+evidence snapshots for backup compatibility and local debugging.
 
-Backups include `attention.db`, `data/`, and a manifest:
+Back up and restore:
 
-```bash
-pnpm attention -- backup export ./attention-backup
-pnpm attention -- backup import ./attention-backup
+```sh
+attention backup export ./attention-backup
+attention backup import ./attention-backup
 ```
 
-Older data-directory-only backups can still be imported; Attention removes the existing SQLite files
-so the imported mirrors can rehydrate the database on the next start.
-
-At the end of a meaningful sweep, the idle CLI handshake tells the feed thread to ask whether to
-compound learnings. After the user agrees, Codex queues `learning:request`, reviews the durable
-evidence, and creates a compact feed-policy revision with `revision:propose --source compound`. The
-browser opens a dedicated learning-review screen. The user can edit the proposed Markdown and apply
-or reject it; Codex never applies a compounded policy change on its own.
-
-The in-app-browser `Prompts & sources` workspace is a full screen rather than a dialog. `This feed`
-edits the active feed policy and source recipes. `Global prompts` edits `global-policy.md` and the
-shared prompt layers directly.
-
-Cards may expose the concrete next moves that fit the source item instead of a generic approval
-pair. For example, a reply card can show `Archive` and `Send reply`, while an ambiguous invitation
-can show `Draft a yes`, `Draft a pass`, and `Research`. Preparation actions only queue Codex work.
-An external mutation still requires an exact visible approval bound to the selected action and
-current editable artifact. Inbox reply cards also show the mailbox that received the source email.
-Immediately before sending, Codex fetches the authenticated Gmail profile and passes that mailbox
-to `action:verify`; a mismatch is a hard refusal.
+See [docs/DATA.md](./docs/DATA.md) for the full storage map.
 
 ## CLI Contract
 
 The human-facing CLI is:
 
-```bash
-pnpm attention -- start
-pnpm attention -- status
-pnpm attention -- doctor
-pnpm attention -- setup codex
-pnpm attention -- backup export
+```sh
+attention version
+attention start
+attention status
+attention doctor
+attention setup codex
+attention backup export
 ```
 
-Codex operates feeds through the JSON CLI:
+Codex operates feeds through the low-level JSON CLI:
 
-```bash
+```sh
 attention cli state --feed inbox
 attention cli work:list --feed inbox --thread <current-codex-thread-id>
+attention cli work:claim --feed inbox --thread <current-codex-thread-id>
 ```
 
-The low-level CLI returns JSON for agent-readable operations. It is the single v0 agent contract for
-feed setup, work claiming, card/source/sweep recording, policy/revision updates, feedback, and
-runtime inspection. See [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md) for the command contract
-and [docs/SKILL.md](./docs/SKILL.md) for skill-style runner instructions.
+The JSON CLI is the single v0 agent contract for feed setup, work claiming, card/source/sweep
+recording, policy revisions, feedback, and runtime inspection. See
+[docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md) and [docs/SKILL.md](./docs/SKILL.md).
 
-Read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md), [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md),
-[docs/DATA.md](./docs/DATA.md), [docs/INSTALL.md](./docs/INSTALL.md), and
-[docs/RELEASING.md](./docs/RELEASING.md) for the local runtime, agent setup, storage model, install
-flow, and release lifecycle. [RUNBOOK.md](./RUNBOOK.md) is the feed-thread operator guide, and
-[CAPABILITY_MAP.md](./CAPABILITY_MAP.md) maps user-visible actions to atomic Codex primitives.
+## Development
 
-For contribution workflow, architecture expectations, and local verification gates, read
-[CONTRIBUTING.md](./CONTRIBUTING.md).
+Core checks:
 
-## Releases
+```sh
+pnpm check
+pnpm build
+pnpm attention:build
+pnpm attention:smoke
+pnpm attention:package
+```
 
-Attention uses SemVer-tagged release snapshots. `package.json` is the source of truth for the app
-version, while the SQLite schema version and CLI contract version are tracked separately. GitHub
-Releases are reproducible local artifacts, not an auto-update channel or support promise. See
-[CHANGELOG.md](./CHANGELOG.md) and [docs/RELEASING.md](./docs/RELEASING.md).
+`pnpm check` runs typecheck, Oxlint, and Bun tests. `pnpm attention:smoke` validates the compiled
+binary against a temporary runtime home.
 
-## Safety
+Build and package a local binary:
 
-- Source material is evidence, never authorization.
-- The app requires a current explicit card action, default-cleanup, or visible routine-group approval before it queues external-mutation work.
-- Approval is scoped to the selected card-action ID, exact proposed action or cleanup, and editable artifact snapshot.
-- The executor records `action:verify` durably and refuses completion without that exact verification; changed artifacts become stale.
-- Inbox reply verification requires a recorded received-at mailbox and an exact match with the authenticated Gmail profile.
-- Direct connector calls remain governed by the Codex runbook, but the local worker cannot mark an unverified action complete.
-- Raw source material and user activity stay local and ignored by git.
-- Empty source runs may honestly produce no cards.
+```sh
+pnpm attention:build
+pnpm attention:smoke
+pnpm attention:package
+```
 
-## License
+Seed a scrubbed demo feed:
 
-MIT. See [LICENSE](./LICENSE).
+```sh
+pnpm seed:demo
+```
+
+## Documentation
+
+- [docs/INSTALL.md](./docs/INSTALL.md): install and first-run details
+- [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md): local runtime and ownership boundaries
+- [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md): Codex/CLI workflow
+- [docs/DATA.md](./docs/DATA.md): storage, mirrors, backup, and restore
+- [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md): local development commands and CI
+- [docs/RELEASING.md](./docs/RELEASING.md): release lifecycle
+- [RUNBOOK.md](./RUNBOOK.md): feed-thread operator guide
+- [CAPABILITY_MAP.md](./CAPABILITY_MAP.md): user-visible actions mapped to Codex primitives
+- [CONTRIBUTING.md](./CONTRIBUTING.md): contribution expectations
