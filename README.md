@@ -66,6 +66,14 @@ Use foreground mode while debugging:
 ./attention start --foreground
 ```
 
+macOS release binaries are not Apple Developer ID signed or notarized yet. If Gatekeeper warns on
+first launch, open the binary explicitly from Finder or remove the quarantine attribute:
+
+```sh
+xattr -d com.apple.quarantine ./attention
+./attention start
+```
+
 ### Clone And Extend
 
 Use the source path when you want to inspect, modify, or extend the app:

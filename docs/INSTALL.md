@@ -55,6 +55,15 @@ operator/capability references.
 The packaged executable resolves UI assets from the sibling `dist/` directory, so it can be launched
 from inside the extracted folder or by absolute path from another working directory.
 
+Release binaries are not Apple Developer ID signed or notarized yet. On macOS, Gatekeeper may show a
+first-run warning for downloaded archives. You can still run Attention by opening the binary
+explicitly from Finder or by removing the quarantine attribute:
+
+```sh
+xattr -d com.apple.quarantine ./attention
+./attention start
+```
+
 ## Codex Setup
 
 ```sh
