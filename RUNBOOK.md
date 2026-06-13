@@ -10,6 +10,10 @@ In the canonical source checkout, `pnpm cli` and `./bin/tend-live` both resolve
 `ATTENTION_HOME=<tmp>` explicitly; otherwise the CLI refuses to operate while a healthy live Tend
 service owns a different runtime.
 
+`./bin/tend-live start` and `./bin/tend-live restart` build the production UI from the current
+canonical checkout before launching it. A restart builds before stopping the healthy service, so a
+failed build cannot replace the live app with stale or broken assets.
+
 The live local app is owned by one CLI:
 
 ```bash

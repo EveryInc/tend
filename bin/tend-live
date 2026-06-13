@@ -67,7 +67,16 @@ with_lock() {
   trap - EXIT INT TERM
 }
 
+build_live() {
+  echo "Building the current Tend checkout..."
+  (
+    cd "$ROOT"
+    "$PNPM" build
+  )
+}
+
 start_live() {
+  local assets_ready="${1:-false}"
   local pid
   local port
   if service_exists; then
@@ -89,6 +98,10 @@ start_live() {
       exit 1
     fi
   done
+
+  if [[ "$assets_ready" != "true" ]]; then
+    build_live
+  fi
 
   launchctl submit \
     -l "$SERVICE_LABEL" \
@@ -144,8 +157,9 @@ stop_live() {
 }
 
 restart_live() {
+  build_live
   stop_live
-  start_live
+  start_live true
 }
 
 status_live() {
