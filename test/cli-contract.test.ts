@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS, cliCommandName } from "../server/cli/contract";
 import { MissingFlagError, formatCliError } from "../server/cli/errors";
+import { assertCliRuntimeMatchesLive } from "../server/cli/runtimeGuard";
 import { setupCodexPrompt } from "../server/cli/setup";
 
 describe("CLI contract", () => {
@@ -56,5 +57,20 @@ describe("CLI contract", () => {
     expect(prompt).toContain("Use the local Attention CLI contract, not a hosted Attention or MCP setup.");
     expect(prompt).toContain("Do setup sequentially: bind first and wait for it to finish, then propose/install the heartbeat.");
     expect(prompt).toContain("ATTENTION_HOME='/tmp/attention home' '/tmp/attention install/attention' cli feed:bind --feed inbox --thread <current-codex-thread-id>");
+  });
+
+  test("refuses an implicit CLI runtime that differs from healthy tend-live", async () => {
+    const mismatch = assertCliRuntimeMatchesLive("card:upsert", "/tmp/quiet-runtime", {
+      fetchStatus: async () => ({ dataDir: "/tmp/live-runtime/data" }),
+    });
+    await expect(mismatch).rejects.toMatchObject({
+      code: "runtime_mismatch",
+      hint: "Run the CLI from the canonical checkout or set ATTENTION_HOME explicitly for isolated validation.",
+    });
+
+    await expect(assertCliRuntimeMatchesLive("card:upsert", "/tmp/quiet-runtime", {
+      explicitRuntime: true,
+      fetchStatus: async () => ({ dataDir: "/tmp/live-runtime/data" }),
+    })).resolves.toBeUndefined();
   });
 });

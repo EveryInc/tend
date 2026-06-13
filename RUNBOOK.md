@@ -5,6 +5,11 @@ runtime state under `~/.attention/` by default, including the SQLite authority d
 data mirrors, logs, and exports. A checkout may run the source scripts for development, but feed
 threads should prefer the installed executable once it exists.
 
+In the canonical source checkout, `pnpm cli` and `./bin/tend-live` both resolve
+`../.attention-workbench` automatically. A worktree or branch validation must set
+`ATTENTION_HOME=<tmp>` explicitly; otherwise the CLI refuses to operate while a healthy live Tend
+service owns a different runtime.
+
 The live local app is owned by one CLI:
 
 ```bash

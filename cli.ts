@@ -5,15 +5,23 @@ import { AttentionDomain } from "./server/domain";
 import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS } from "./server/cli/contract";
 import { MissingFlagError, formatCliError } from "./server/cli/errors";
 import { importLegacyAttentionCard, importLegacyInboxCard } from "./server/cli/legacyImports";
+import { assertCliRuntimeMatchesLive } from "./server/cli/runtimeGuard";
 import { formatWorkClaimOutput, formatWorkListOutput } from "./server/operator";
-import { createLocalRuntime, resolveArtifactsDir, resolveDbPath, resolveRuntimeRoot } from "./server/runtime";
+import { createLocalRuntime, resolveArtifactsDir, resolveDataDir, resolveDbPath, resolveRuntimeRoot } from "./server/runtime";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+const [command = "help", ...argv] = process.argv.slice(2);
 const runtimeRoot = resolveRuntimeRoot(root);
-const { dataDir, store } = await createLocalRuntime();
+try {
+  await assertCliRuntimeMatchesLive(command, runtimeRoot, { explicitRuntime: Boolean(process.env.ATTENTION_HOME) });
+} catch (error) {
+  process.stderr.write(`${JSON.stringify(formatCliError(error), null, 2)}\n`);
+  process.exit(1);
+}
+const dataDir = resolveDataDir(root);
+const { store } = await createLocalRuntime(dataDir, resolveDbPath(root));
 const domain = new AttentionDomain(store);
 
-const [command = "help", ...argv] = process.argv.slice(2);
 const value = (name: string) => {
   const index = argv.indexOf(`--${name}`);
   return index >= 0 ? argv[index + 1] : undefined;

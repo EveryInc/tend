@@ -6,7 +6,7 @@ import { apiRoutes } from "./server/routes/api";
 import { assetRoutes } from "./server/routes/assets";
 import { createRealtimeHub } from "./server/routes/realtime";
 import { createFeedEventBridge } from "./server/realtime/feedEventBridge";
-import { createLocalRuntime, resolveArtifactsDir, resolveRuntimeRoot } from "./server/runtime";
+import { createLocalRuntime, resolveArtifactsDir, resolveDataDir, resolveDbPath, resolveRuntimeRoot } from "./server/runtime";
 import { DrainDispatcher } from "./server/dispatcher";
 
 declare const Bun: {
@@ -18,7 +18,8 @@ const port = Number(process.env.ATTENTION_API_PORT ?? 4332);
 const clientDir = process.env.ATTENTION_CLIENT_DIR ?? path.join(root, "dist");
 const runtimeRoot = resolveRuntimeRoot(root);
 const artifactsDir = resolveArtifactsDir(root);
-const { dataDir, sqlite, store } = await createLocalRuntime();
+const dataDir = resolveDataDir(root);
+const { sqlite, store } = await createLocalRuntime(dataDir, resolveDbPath(root));
 const domain = new AttentionDomain(store);
 const realtime = createRealtimeHub();
 const feedEventBridge = createFeedEventBridge(store, realtime.notify);
