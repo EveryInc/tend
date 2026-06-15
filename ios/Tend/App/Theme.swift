@@ -81,7 +81,7 @@ struct TendSecondaryButtonStyle: ButtonStyle {
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(TendTheme.secondaryInk, lineWidth: 1)
+                    .strokeBorder(TendTheme.secondaryInk, lineWidth: 2)
             }
     }
 }

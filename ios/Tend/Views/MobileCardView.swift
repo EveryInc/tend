@@ -151,7 +151,7 @@ private struct MobileBlockView: View {
     }
 
     private func itemList(icon: String) -> some View {
-        VStack(alignment: .leading, spacing: 11) {
+        LazyVStack(alignment: .leading, spacing: 11) {
             blockLabel
             ForEach(block.items ?? []) { item in
                 switch item {

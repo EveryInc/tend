@@ -102,39 +102,40 @@ struct FeedReviewView: View {
     }
 
     private func cardDeck(feed: MobileFeed, card: MobileCard) -> some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                reviewProgress(feed: feed)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 14) {
+                    reviewProgress(feed: feed)
 
-                MobileCardView(
-                    card: card,
-                    edits: $edits,
-                    openURL: openURL,
-                    openMind: {
-                        model.selectedTab = 1
-                        dismiss()
-                    }
-                )
-                .offset(x: 0)
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 24)
-                        .onEnded { value in
-                            guard value.translation.width < -90,
-                                  abs(value.translation.width) > abs(value.translation.height) * 1.35,
-                                  card.archiveAction != nil else { return }
-                            archive(card)
+                    MobileCardView(
+                        card: card,
+                        edits: $edits,
+                        openURL: openURL,
+                        openMind: {
+                            model.selectedTab = 1
+                            dismiss()
                         }
-                )
+                    )
+                    .offset(x: 0)
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 24)
+                            .onEnded { value in
+                                guard value.translation.width < -90,
+                                      abs(value.translation.width) > abs(value.translation.height) * 1.35,
+                                      card.archiveAction != nil else { return }
+                                archive(card)
+                            }
+                    )
 
-                Text("Swipe left to archive")
-                    .font(.caption)
-                    .foregroundStyle(TendTheme.secondaryInk)
-                    .padding(.bottom, 4)
+                    Text("Swipe left to archive")
+                        .font(.caption)
+                        .foregroundStyle(TendTheme.secondaryInk)
+                        .padding(.bottom, 4)
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 16)
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 124)
-        }
-        .safeAreaInset(edge: .bottom) {
+
             ReviewActionTray(
                 card: card,
                 isSubmitting: model.isSubmitting,
