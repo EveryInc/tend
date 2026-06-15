@@ -11,7 +11,7 @@ struct MobileCardView: View {
             VStack(alignment: .leading, spacing: 11) {
                 Text(card.eyebrow.uppercased())
                     .font(.caption2.weight(.bold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TendTheme.secondaryInk)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(card.title)
                     .font(.system(.title, design: .serif, weight: .medium))
@@ -38,7 +38,7 @@ struct MobileCardView: View {
             if let mailbox = card.sourceMailbox {
                 Label("Acts as \(mailbox)", systemImage: "person.crop.circle.badge.checkmark")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TendTheme.secondaryInk)
             }
         }
         .padding(20)
@@ -189,7 +189,7 @@ private struct MobileBlockView: View {
                 if let value = detail.detail {
                     Text(value)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TendTheme.secondaryInk)
                         .multilineTextAlignment(.leading)
                 }
             }
@@ -214,7 +214,7 @@ private struct MobileBlockView: View {
                 .accessibilityLabel(block.label ?? "Editable note")
             Text("Edits are included only when you approve the matching action.")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(TendTheme.secondaryInk)
         }
     }
 
@@ -276,7 +276,7 @@ private struct MobileBlockView: View {
                         if let subtitle = profile.subtitle {
                             Text(subtitle)
                                 .font(.subheadline)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(TendTheme.secondaryInk)
                         }
                     }
                     Spacer()
@@ -346,7 +346,7 @@ private struct MobileBlockView: View {
                             if let detail = row.detail {
                                 Text(detail)
                                     .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(TendTheme.secondaryInk)
                             }
                         }
                         ForEach(Array(row.values.enumerated()), id: \.offset) { index, value in
@@ -372,7 +372,7 @@ private struct MobileBlockView: View {
                 if let note = chart.note {
                     Text(note)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TendTheme.secondaryInk)
                 }
             }
         }
@@ -400,7 +400,7 @@ private struct MobileBlockView: View {
         if let label = block.label {
             Text(label.uppercased())
                 .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(TendTheme.secondaryInk)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }

@@ -136,5 +136,13 @@ jobs:
             -project ios/Tend.xcodeproj \
             -scheme Tend \
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -resultBundlePath "$RUNNER_TEMP/TendTests.xcresult" \
             CODE_SIGNING_ALLOWED=NO \
             DEVELOPMENT_TEAM=
+
+      - name: Upload iOS test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TendTests-xcresult
+          path: ${{ runner.temp }}/TendTests.xcresult

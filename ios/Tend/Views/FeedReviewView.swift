@@ -54,7 +54,7 @@ struct FeedReviewView: View {
                         .font(.headline)
                     Text(cards.isEmpty ? "All clear" : "\(cards.count) left")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TendTheme.secondaryInk)
                 }
                 .accessibilityElement(children: .combine)
             }
@@ -128,7 +128,7 @@ struct FeedReviewView: View {
 
                 Text("Swipe left to archive")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TendTheme.secondaryInk)
                     .padding(.bottom, 4)
             }
             .padding(.horizontal, 14)
@@ -153,12 +153,12 @@ struct FeedReviewView: View {
                 .foregroundStyle(TendTheme.cobalt)
             Text(feed.purpose)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(TendTheme.secondaryInk)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
             Text("Pass \(feed.currentPass)")
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(TendTheme.secondaryInk)
         }
         .padding(.top, 8)
     }
@@ -338,7 +338,7 @@ private struct EmptyFeedView: View {
                 .multilineTextAlignment(.center)
             if let nextFeed {
                 Text("\(nextFeed.name) has \(nextFeed.reviewCount) waiting.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TendTheme.secondaryInk)
                 Button("Back to feeds") {
                     done()
                 }
@@ -346,7 +346,7 @@ private struct EmptyFeedView: View {
                 .controlSize(.large)
             } else {
                 Text("Nothing else needs review right now.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TendTheme.secondaryInk)
                 Button("Back to feeds") {
                     done()
                 }
@@ -382,13 +382,13 @@ private struct InstructionComposer: View {
                         .lineLimit(2)
                     Label("Use the Monologue keyboard or type normally", systemImage: "waveform")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TendTheme.secondaryInk)
                 }
 
                 ZStack(alignment: .topLeading) {
                     if text.isEmpty {
                         Text("Tell Codex what to notice, change, research, or do…")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(TendTheme.secondaryInk)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 10)
                             .allowsHitTesting(false)
@@ -460,7 +460,7 @@ private struct ActionApprovalSheet: View {
                             .font(.tendSerif(.title))
                         Text(card.title)
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(TendTheme.secondaryInk)
                     }
 
                     if let confirmation = action.confirmation {
@@ -484,7 +484,7 @@ private struct ActionApprovalSheet: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(block.label ?? "Approved text")
                                 .font(.caption.weight(.bold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(TendTheme.secondaryInk)
                                 .textCase(.uppercase)
                             TextEditor(text: editBinding(for: block))
                                 .font(.body)
@@ -503,7 +503,7 @@ private struct ActionApprovalSheet: View {
 
                     Text("Your tap authorizes this one exact action and the visible text above. If the card, action, recipient, mailbox, or digest changes, Tend rejects it.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TendTheme.secondaryInk)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(18)
