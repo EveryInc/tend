@@ -306,6 +306,12 @@ pre { overflow: auto; padding: 12px; background: #f4f2eb; color: var(--ink-2); w
 .workspace-editor h3 { margin: 0; font-size: 15px; }
 .workspace-editor textarea { width: 100%; margin-top: 11px; resize: vertical; padding: 12px 13px; border: 1px solid var(--line); border-radius: 6px; outline: 0; background: #fff; color: var(--ink-2); font: 12px/1.55 var(--mono); }
 .workspace-editor textarea:focus { border-color: #aab8dc; box-shadow: 0 0 0 3px var(--blue-soft); }
+.thread-status { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,254,250,.72); }
+.thread-status div { display: grid; gap: 4px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.thread-status div:nth-child(odd) { border-right: 1px solid var(--line); }
+.thread-status div:nth-last-child(-n+2) { border-bottom: 0; }
+.thread-status span { color: var(--ink-4); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.thread-status strong { overflow-wrap: anywhere; color: var(--ink-2); font-size: 13px; }
 .learning-page { max-width: 900px; margin: 0 auto; padding: 31px 34px 190px; }
 .learning-title { max-width: 680px; margin: 27px 0 22px; }
 .learning-title h1, .learning-empty h1 { margin: 5px 0 9px; font: 500 39px/1.06 var(--serif); letter-spacing: -.03em; }

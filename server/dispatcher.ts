@@ -105,9 +105,11 @@ export class DrainDispatcher {
 
   private async recoverStaleRunning(): Promise<void> {
     for (const feedId of await this.store.listFeedIds()) {
-      const drain = await this.store.readDrainState(feedId);
-      if (drain.status !== "running" || this.running.has(feedId)) continue;
-      await this.store.writeDrainState(feedId, { ...drain, status: "idle", lastError: drain.lastError ?? "Drain interrupted by a server restart." });
+      await this.store.serialize(async () => {
+        const drain = await this.store.readDrainState(feedId);
+        if (drain.status !== "running" || this.running.has(feedId)) return;
+        await this.store.writeDrainState(feedId, { ...drain, status: "idle", lastError: drain.lastError ?? "Drain interrupted by a server restart." });
+      });
     }
   }
 
@@ -135,9 +137,16 @@ export class DrainDispatcher {
     this.running.add(feedId);
     const prompt = drainPrompt(feedId, threadId);
     const startedAt = isoNow();
-    const drain = await this.store.readDrainState(feedId);
-    await this.store.writeDrainState(feedId, { ...drain, status: "running", lastDispatchedAt: startedAt, lastError: undefined });
-    await this.store.appendEvent({ feedId, type: "drain.dispatched", detail: { threadId, reason: decision.reason, queued: decision.queued, oldestQueuedAt: decision.oldestQueuedAt } });
+    try {
+      await this.store.serialize(async () => {
+        const drain = await this.store.readDrainState(feedId);
+        await this.store.writeDrainState(feedId, { ...drain, status: "running", lastDispatchedAt: startedAt, lastError: undefined });
+        await this.store.appendEvent({ feedId, type: "drain.dispatched", detail: { threadId, reason: decision.reason, queued: decision.queued, oldestQueuedAt: decision.oldestQueuedAt } });
+      });
+    } catch (error) {
+      this.running.delete(feedId);
+      throw error;
+    }
     void this.runAndSettle(feedId, threadId, prompt, startedAt).catch((error) => console.error(`[dispatcher] drain ${feedId} settle failed:`, error));
   }
 
@@ -154,22 +163,24 @@ export class DrainDispatcher {
       this.running.delete(feedId);
     }
     const succeeded = exitCode === 0 && !failureDetail;
-    const drain = await this.store.readDrainState(feedId);
-    const consecutiveFailures = succeeded ? 0 : (drain.consecutiveFailures ?? 0) + 1;
-    const cooldownMs = succeeded ? 0 : Math.min(5 * 60_000 * 2 ** (consecutiveFailures - 1), 30 * 60_000);
-    await this.store.writeDrainState(feedId, {
-      ...drain,
-      status: "idle",
-      lastExitCode: exitCode,
-      lastCompletedAt: isoNow(),
-      lastError: succeeded ? undefined : failureDetail ?? `Drain exited with code ${exitCode}.`,
-      consecutiveFailures,
-      cooldownUntil: succeeded ? undefined : new Date(Date.now() + cooldownMs).toISOString(),
-    });
-    await this.store.appendEvent({
-      feedId,
-      type: succeeded ? "drain.completed" : "drain.failed",
-      detail: { threadId, exitCode, startedAt, error: succeeded ? undefined : failureDetail, consecutiveFailures },
+    await this.store.serialize(async () => {
+      const drain = await this.store.readDrainState(feedId);
+      const consecutiveFailures = succeeded ? 0 : (drain.consecutiveFailures ?? 0) + 1;
+      const cooldownMs = succeeded ? 0 : Math.min(5 * 60_000 * 2 ** (consecutiveFailures - 1), 30 * 60_000);
+      await this.store.writeDrainState(feedId, {
+        ...drain,
+        status: "idle",
+        lastExitCode: exitCode,
+        lastCompletedAt: isoNow(),
+        lastError: succeeded ? undefined : failureDetail ?? `Drain exited with code ${exitCode}.`,
+        consecutiveFailures,
+        cooldownUntil: succeeded ? undefined : new Date(Date.now() + cooldownMs).toISOString(),
+      });
+      await this.store.appendEvent({
+        feedId,
+        type: succeeded ? "drain.completed" : "drain.failed",
+        detail: { threadId, exitCode, startedAt, error: succeeded ? undefined : failureDetail, consecutiveFailures },
+      });
     });
   }
 

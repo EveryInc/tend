@@ -1,24 +1,26 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { attentionHome, attentionLogDir } from "../paths";
+import { attentionDataDir, attentionHome, attentionLogDir } from "../paths";
 import { apiPort, apiUrl, print } from "./shared";
 
 export async function startBackgroundCommand(): Promise<void> {
   await withServiceLock(async () => {
     if (await serviceHealthy()) {
-      print(`Attention is already healthy (pid ${await readPid() ?? "unknown"}, url ${apiUrl()}, home ${attentionHome()}).`);
+      print(`Attention is already healthy (pid ${(await readPidRecord())?.pid ?? "unknown"}, url ${apiUrl()}, home ${attentionHome()}).`);
       return;
     }
-    const stalePid = await readPid();
-    if (stalePid && processAlive(stalePid)) {
-      throw new Error(`Attention pid ${stalePid} exists but is not healthy. Run: attention restart`);
+    const staleRecord = await readPidRecord();
+    if (staleRecord && processAlive(staleRecord.pid)) {
+      if (await ownsAttentionProcess(staleRecord)) {
+        throw new Error(`Attention pid ${staleRecord.pid} exists but is not healthy. Run: attention restart`);
+      }
     }
     await rm(pidFile(), { force: true });
     await launchDetached();
     for (let index = 0; index < 60; index += 1) {
       if (await serviceHealthy()) {
-        print(`Attention is healthy (pid ${await readPid() ?? "unknown"}, url ${apiUrl()}, home ${attentionHome()}).`);
+        print(`Attention is healthy (pid ${(await readPidRecord())?.pid ?? "unknown"}, url ${apiUrl()}, home ${attentionHome()}).`);
         return;
       }
       await Bun.sleep(250);
@@ -29,18 +31,29 @@ export async function startBackgroundCommand(): Promise<void> {
 
 export async function stopCommand(): Promise<void> {
   await withServiceLock(async () => {
-    const pid = await readPid();
-    if (!pid) {
+    const record = await readPidRecord();
+    if (!record) {
       print("Attention is not running as a background service.");
       return;
     }
-    terminate(pid);
-    await rm(pidFile(), { force: true });
+    if (!processAlive(record.pid)) {
+      await rm(pidFile(), { force: true });
+      print("Attention is not running as a background service.");
+      return;
+    }
+    if (!await ownsAttentionProcess(record)) {
+      throw new Error(`Refusing to stop pid ${record.pid}: it is not the Attention process recorded by this runtime.`);
+    }
+    await terminate(record.pid);
     for (let index = 0; index < 40; index += 1) {
-      if (!await serviceHealthy()) break;
+      if (!processAlive(record.pid) && !await serviceHealthy()) {
+        await rm(pidFile(), { force: true });
+        print(`Stopped Attention pid ${record.pid}.`);
+        return;
+      }
       await Bun.sleep(250);
     }
-    print(`Stopped Attention pid ${pid}.`);
+    throw new Error(`Attention pid ${record.pid} did not stop cleanly; the pid record was preserved.`);
   });
 }
 
@@ -50,9 +63,9 @@ export async function restartCommand(): Promise<void> {
 }
 
 export async function healthCommand(): Promise<void> {
-  const pid = await readPid();
-  if (!await serviceHealthy()) throw new Error(`Attention${pid ? ` pid ${pid}` : ""} is not healthy at ${apiUrl()}.`);
-  print(`Attention is healthy (pid ${pid ?? "unknown"}, url ${apiUrl()}, home ${attentionHome()}).`);
+  const record = await readPidRecord();
+  if (!await serviceHealthy()) throw new Error(`Attention${record ? ` pid ${record.pid}` : ""} is not healthy at ${apiUrl()}.`);
+  print(`Attention is healthy (pid ${record?.pid ?? "unknown"}, url ${apiUrl()}, home ${attentionHome()}).`);
 }
 
 export async function logsCommand(): Promise<void> {
@@ -62,7 +75,8 @@ export async function logsCommand(): Promise<void> {
 async function launchDetached(): Promise<void> {
   await mkdir(attentionHome(), { recursive: true });
   await mkdir(attentionLogDir(), { recursive: true });
-  const proc = Bun.spawn(backgroundCommand(), {
+  const foregroundCommand = [...currentCliCommand(), "start", "--foreground"];
+  const proc = Bun.spawn(backgroundCommand(foregroundCommand), {
     cwd: process.cwd(),
     detached: true,
     env: {
@@ -76,11 +90,16 @@ async function launchDetached(): Promise<void> {
     windowsHide: true,
   });
   proc.unref();
-  await writeFile(pidFile(), `${proc.pid}\n`);
+  await writeFile(pidFile(), `${JSON.stringify({
+    pid: proc.pid,
+    command: foregroundCommand,
+    home: path.resolve(attentionHome()),
+    apiPort: apiPort(),
+    startedAt: new Date().toISOString(),
+  }, null, 2)}\n`);
 }
 
-function backgroundCommand(): string[] {
-  const command = [...currentCliCommand(), "start", "--foreground"];
+function backgroundCommand(command: string[]): string[] {
   if (process.platform === "win32") {
     return ["cmd.exe", "/d", "/s", "/c", `${quoteWindowsCommand(command)} >> ${quoteWindowsArg(logFile())} 2>&1`];
   }
@@ -101,9 +120,25 @@ function currentCliCommand(): string[] {
 }
 
 async function serviceHealthy(): Promise<boolean> {
-  const health = await checkUrl(`${apiUrl()}/api/health`);
-  const ui = await checkUrl(apiUrl());
-  return health && ui;
+  const status = await fetchStatus();
+  return status?.ok === true
+    && typeof status.dataDir === "string"
+    && path.resolve(status.dataDir) === path.resolve(attentionDataDir())
+    && await checkUrl(apiUrl());
+}
+
+async function fetchStatus(): Promise<{ ok?: boolean; dataDir?: string } | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1000);
+  try {
+    const response = await fetch(`${apiUrl()}/api/status`, { signal: controller.signal });
+    if (!response.ok) return null;
+    return await response.json() as { ok?: boolean; dataDir?: string };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function checkUrl(url: string): Promise<boolean> {
@@ -133,28 +168,104 @@ async function withServiceLock(callback: () => Promise<void>): Promise<void> {
   }
 }
 
-async function readPid(): Promise<string | null> {
+type ServicePidRecord = {
+  pid: number;
+  command: string[];
+  home: string;
+  apiPort: number;
+  startedAt?: string;
+};
+
+async function readPidRecord(): Promise<ServicePidRecord | null> {
   try {
-    return (await readFile(pidFile(), "utf8")).trim() || null;
+    const contents = (await readFile(pidFile(), "utf8")).trim();
+    if (!contents) return null;
+    if (/^\d+$/.test(contents)) {
+      return {
+        pid: Number(contents),
+        command: [...currentCliCommand(), "start", "--foreground"],
+        home: path.resolve(attentionHome()),
+        apiPort: apiPort(),
+      };
+    }
+    const record = JSON.parse(contents) as Partial<ServicePidRecord>;
+    if (
+      typeof record.pid !== "number" ||
+      !Number.isInteger(record.pid) ||
+      !Array.isArray(record.command) ||
+      record.command.some((item) => typeof item !== "string")
+    ) {
+      throw new Error("Invalid Attention pid record.");
+    }
+    return {
+      pid: record.pid,
+      command: record.command,
+      home: typeof record.home === "string" ? record.home : path.resolve(attentionHome()),
+      apiPort: typeof record.apiPort === "number" ? record.apiPort : apiPort(),
+      startedAt: record.startedAt,
+    };
   } catch {
     return null;
   }
 }
 
-function processAlive(pid: string): boolean {
+function processAlive(pid: number): boolean {
   try {
-    process.kill(Number(pid), 0);
+    process.kill(pid, 0);
     return true;
   } catch {
     return false;
   }
 }
 
-function terminate(pid: string): void {
-  const numericPid = Number(pid);
+async function ownsAttentionProcess(record: ServicePidRecord): Promise<boolean> {
+  if (path.resolve(record.home) !== path.resolve(attentionHome()) || record.apiPort !== apiPort()) return false;
+  const commandLine = await readProcessCommandLine(record.pid);
+  if (!commandLine) return false;
+  const identity = record.command.find((item) => item.endsWith(".ts"))
+    ?? record.command[0];
+  const normalize = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
+  const normalizedCommand = normalize(commandLine);
+  return Boolean(identity)
+    && normalizedCommand.includes(normalize(identity))
+    && normalizedCommand.includes("start")
+    && normalizedCommand.includes("--foreground");
+}
+
+async function readProcessCommandLine(pid: number): Promise<string | null> {
   try {
-    if (process.platform !== "win32") process.kill(-numericPid, "SIGTERM");
-    else process.kill(numericPid, "SIGTERM");
+    const command = process.platform === "win32"
+      ? ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`]
+      : ["ps", "-p", String(pid), "-ww", "-o", "command="];
+    const subprocess = Bun.spawn(command, { stderr: "pipe", stdout: "pipe" });
+    const [commandLine, exitCode] = await Promise.all([
+      new Response(subprocess.stdout).text(),
+      subprocess.exited,
+    ]);
+    return exitCode === 0 ? commandLine.trim() || null : null;
+  } catch {
+    return null;
+  }
+}
+
+async function terminate(numericPid: number): Promise<void> {
+  if (process.platform === "win32") {
+    const subprocess = Bun.spawn(["taskkill.exe", "/PID", String(numericPid), "/T", "/F"], {
+      stderr: "pipe",
+      stdout: "pipe",
+      windowsHide: true,
+    });
+    const [output, exitCode] = await Promise.all([
+      new Response(subprocess.stderr).text(),
+      subprocess.exited,
+    ]);
+    if (exitCode !== 0 && processAlive(numericPid)) {
+      throw new Error(`Failed to stop Attention pid ${numericPid}: ${output.trim() || `taskkill exited with code ${exitCode}`}`);
+    }
+    return;
+  }
+  try {
+    process.kill(-numericPid, "SIGTERM");
   } catch {
     try {
       process.kill(numericPid, "SIGTERM");

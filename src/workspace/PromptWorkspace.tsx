@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, post } from "../app/api";
 import type { Inspector, WorkspaceTab } from "../app/types";
 import type { VoiceTarget, WorkspaceRevision, WorkspaceView } from "../types";
@@ -55,14 +55,31 @@ function WorkspaceEditor({
   );
 }
 
-export function PromptWorkspace({ state, tab, onTab, onBack, onInspector, onSaved, onTargetFocus }: { state: WorkspaceView; tab: WorkspaceTab; onTab: (tab: WorkspaceTab) => void; onBack: () => void; onInspector: (value: Inspector) => void; onSaved: (message: string) => void; onTargetFocus: (target: VoiceTarget) => void }) {
+export function PromptWorkspace({ state, refreshVersion, tab, onTab, onBack, onInspector, onSaved, onTargetFocus }: { state: WorkspaceView; refreshVersion: number; tab: WorkspaceTab; onTab: (tab: WorkspaceTab) => void; onBack: () => void; onInspector: (value: Inspector) => void; onSaved: (message: string) => void; onTargetFocus: (target: VoiceTarget) => void }) {
   const [feedWorkspace, setFeedWorkspace] = useState<any>(null);
   const [globalWorkspace, setGlobalWorkspace] = useState<any>(null);
+  const feedRequest = useRef(0);
+  const globalRequest = useRef(0);
   const feedId = state.active.config.id;
-  const reloadFeed = useCallback(async () => setFeedWorkspace(await api(`/api/feeds/${feedId}/how`)), [feedId]);
-  const reloadGlobal = useCallback(async () => setGlobalWorkspace(await api("/api/global-prompts")), []);
-  useEffect(() => { void reloadFeed(); }, [reloadFeed]);
-  useEffect(() => { if (tab === "global") void reloadGlobal(); }, [reloadGlobal, tab]);
+  const reloadFeed = useCallback(async () => {
+    const request = ++feedRequest.current;
+    const workspace = await api(`/api/feeds/${feedId}/how`);
+    if (request === feedRequest.current) setFeedWorkspace(workspace);
+  }, [feedId]);
+  const reloadGlobal = useCallback(async () => {
+    const request = ++globalRequest.current;
+    const workspace = await api("/api/global-prompts");
+    if (request === globalRequest.current) setGlobalWorkspace(workspace);
+  }, []);
+  useEffect(() => {
+    setFeedWorkspace(null);
+    return () => { feedRequest.current += 1; };
+  }, [feedId]);
+  useEffect(() => { void reloadFeed(); }, [reloadFeed, refreshVersion]);
+  useEffect(() => {
+    if (tab === "global") void reloadGlobal();
+    return () => { globalRequest.current += 1; };
+  }, [reloadGlobal, tab]);
   const save = async <T,>(callback: () => Promise<T>, message: string, reload: () => Promise<void>): Promise<T> => {
     try {
       const result = await callback();
@@ -101,7 +118,12 @@ export function PromptWorkspace({ state, tab, onTab, onBack, onInspector, onSave
           </section>
           <section className="workspace-section">
             <h2>Home thread</h2>
-            <pre>{JSON.stringify(feedWorkspace.thread, null, 2)}</pre>
+            <div className="thread-status">
+              <div><span>Thread</span><strong>{feedWorkspace.thread.homeThreadId ?? "Not bound"}</strong></div>
+              <div><span>Bound</span><strong>{feedWorkspace.thread.boundAt ? new Date(feedWorkspace.thread.boundAt).toLocaleString() : "Not yet"}</strong></div>
+              <div><span>Heartbeat</span><strong>{feedWorkspace.thread.heartbeat.status.replace("_", " ")}</strong></div>
+              <div><span>Cadence</span><strong>{feedWorkspace.thread.heartbeat.cadence ?? "Not configured"}</strong></div>
+            </div>
           </section>
         </div>
       ) : !globalWorkspace ? <p>Loading global prompts…</p> : (

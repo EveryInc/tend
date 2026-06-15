@@ -9,7 +9,14 @@ a promise of ongoing maintenance.
   trails, and source-backed feed influence receipts.
 - Advance the CLI contract to `0.2` with context binding, publication, health, and feed-safe read
   commands.
-- Advance the SQLite schema to `12` for mirrored context binding and update records.
+- Add the native Tend iPhone companion, private Supabase projection, and idempotent mobile command
+  bridge.
+- Advance the SQLite schema to `14` for mirrored mobile command receipts and deterministic audit
+  event ordering.
+- Harden local mutations, identifiers, backup/restore, background-process ownership, and
+  transactional multi-record writes.
+- Add Supabase and native iOS CI coverage, reproducible source prerequisites, and complete packaged
+  documentation.
 
 ## 0.1.0 - Initial Local-First OSS Snapshot
 

@@ -6,7 +6,12 @@ that an agent can perform goes through the same domain invariants as the UI.
 
 ## Local Setup
 
+Install Bun 1.3.11 or newer and Node.js 22 or newer, then enable the repository's pinned pnpm
+version:
+
 ```sh
+corepack enable
+corepack prepare pnpm@9.15.4 --activate
 pnpm install
 pnpm start
 ```
@@ -34,6 +39,7 @@ pnpm build
 pnpm attention:build
 pnpm attention:smoke
 pnpm attention:package
+pnpm audit
 ```
 
 ## Architecture Expectations

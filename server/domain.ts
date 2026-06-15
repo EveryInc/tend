@@ -35,7 +35,7 @@ import { containsFullEmail } from "../shared/emailThread";
 import { AttentionStore, FEED_PROMPT_NAMES } from "./store";
 import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
-import { digest, isoNow, makeId, makeToken, slugify } from "./util";
+import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./util";
 import { actionDigest, cleanupDigest, configuredApprovalAction, requiredSourceMailbox, routineActionDigest, verifySourceMailbox } from "./workflow/approvals";
 import { queuedWork } from "./workflow/workItems";
 import { mobileActionConfirmation, projectMobileCard, projectMobileRoutineAction } from "./mobile/projection";
@@ -850,7 +850,7 @@ export class AttentionDomain {
   async submitVoiceInstruction(anchorFeedId: string, requested: VoiceTarget, instruction: string) {
     if (!instruction.trim()) throw new Error("Instruction is required.");
     const target = await this.store.validateVoiceTarget(requested);
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       if (target.kind === "sweep") {
         const feed = await this.store.readFeed(target.feedId);
         const visibleCardIds = feed.cards
@@ -1490,7 +1490,7 @@ export class AttentionDomain {
     if (!MOBILE_COMMAND_ID_PATTERN.test(command.id) || !command.feedId.trim() || !command.cardId.trim()) {
       throw new Error("Mobile command id, feedId, and cardId are required.");
     }
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       if (await this.store.hasMobileCommandReceipt(command.id)) {
         const receipt = await this.store.readMobileCommandReceipt(command.id);
         if (
@@ -2152,6 +2152,8 @@ export class AttentionDomain {
   }
 
   async upsertCard(feedId: string, input: Partial<Card> & Pick<Card, "id" | "title" | "why" | "blocks">): Promise<Card> {
+    safeIdentifier(feedId, "Feed id");
+    safeIdentifier(input.id, "Card id");
     validateCardBlocks(input.blocks);
     const sourceRunIds = validateSourceRunIds(input.sourceRunIds);
     return this.store.serialize(async () => {

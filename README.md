@@ -8,6 +8,12 @@ Attention is not a hosted service. The app stores state on your machine. Codex D
 agent runtime and owns access to Gmail, GitHub, Slack, browser automation, and other local
 connectors.
 
+## Naming
+
+**Attention** is the open-source project, local runtime, web app, and CLI. **Tend** is the optional
+native iPhone companion and the name retained by the maintainer launcher, `bin/tend-live`. The
+repository URL remains `EveryInc/tend`, while user-facing runtime commands use `attention`.
+
 ## Mental Model
 
 ```mermaid
@@ -78,9 +84,16 @@ xattr -d com.apple.quarantine ./attention
 
 Use the source path when you want to inspect, modify, or extend the app:
 
+Prerequisites:
+
+- Bun 1.3.11 or newer
+- Node.js 22 or newer
+- pnpm 9.15.4, enabled through Corepack or installed directly
+
 ```sh
 git clone https://github.com/EveryInc/tend.git
 cd tend
+corepack enable
 pnpm install
 pnpm start
 ```
@@ -146,8 +159,12 @@ Back up and restore:
 
 ```sh
 attention backup export ./attention-backup
+attention stop
 attention backup import ./attention-backup
 ```
+
+Exports require a new destination and never delete an existing path. Imports are staged before the
+current data is swapped, and Attention refuses to import while the same runtime is active.
 
 See [docs/DATA.md](./docs/DATA.md) for the full storage map.
 
@@ -155,7 +172,7 @@ See [docs/DATA.md](./docs/DATA.md) for the full storage map.
 
 The optional native iPhone app mirrors every configured feed through a private Supabase project.
 The Mac remains authoritative: the phone reviews cached projections and records commands, while the
-canonical Tend runtime validates and imports those commands through the same domain rules used by
+canonical Attention runtime validates and imports those commands through the same domain rules used by
 the web app and CLI.
 
 The SwiftUI project, database migration, and production setup are documented in

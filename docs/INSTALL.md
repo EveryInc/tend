@@ -1,5 +1,16 @@
 # Install
 
+## Prerequisites
+
+Source development requires Bun 1.3.11 or newer, Node.js 22 or newer, and pnpm 9.15.4.
+
+```sh
+bun --version
+node --version
+corepack enable
+corepack prepare pnpm@9.15.4 --activate
+```
+
 ## From Source
 
 ```sh
@@ -50,8 +61,8 @@ pnpm attention:package
 
 The package command writes `dist-bin/releases/attention-<version>-<platform>-<arch>.tar.gz` plus a
 `.sha256` checksum. The archive contains the `attention` executable, built `dist/` UI assets, README,
-license, contributor notes, install/agent/data/security/releasing docs, changelog, and the
-operator/capability references.
+license, contributor notes, all public install/architecture/agent/data/development/iPhone/security/
+releasing docs, changelog, and the operator/capability references.
 The packaged executable resolves UI assets from the sibling `dist/` directory, so it can be launched
 from inside the extracted folder or by absolute path from another working directory.
 
@@ -90,7 +101,11 @@ the full server, version contract, and API readiness check to be green.
 
 ```sh
 pnpm attention -- backup export ./attention-backup
+pnpm attention -- stop
 pnpm attention -- backup import ./attention-backup
 ```
 
-Backups include `attention.db`, the readable `data/` mirrors, and a manifest. Legacy data-directory-only backups can still be imported; Attention removes the existing SQLite files so the imported mirrors become the source for rehydration on the next start.
+Backups include a consistent SQLite snapshot, the readable `data/` mirrors, and a manifest. Export
+requires a destination that does not already exist. Import stages and validates the backup before
+swapping data, preserves the previous runtime until the swap succeeds, and refuses to run while the
+same Attention home is active. Legacy data-directory-only backups can still be imported.

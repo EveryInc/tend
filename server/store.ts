@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, rename, rm } from "node:fs/promises";
+import { mkdir, readdir, rename } from "node:fs/promises";
 import path from "node:path";
 import type {
   AppFeedback,
@@ -38,7 +38,7 @@ import {
   setupCard,
   threadBinding,
 } from "./templates";
-import { isoNow, makeId, readJson, writeJson, writeText } from "./util";
+import { isoNow, makeId, readJson, withMutationLock, writeJson, writeText } from "./util";
 import { defaultDictationCapability } from "./monologue";
 import { FileCardRepository, type CardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
@@ -57,6 +57,8 @@ import type { MobileCommandReceipt } from "../shared/mobile";
 export const GLOBAL_PROMPT_NAMES = ["judge.md", "compose-card.md", "execute-work.md", "distill-policy.md", "compound.md"] as const;
 export const FEED_PROMPT_NAMES = ["judge.md", "compose-card.md"] as const;
 const DEFAULT_FEED_IDS = ["inbox", "company-attention"];
+
+type AtomicRunner = <T>(callback: () => Promise<T>) => Promise<T>;
 
 function defaultDrainState(): DrainState {
   return { status: "idle", consecutiveFailures: 0 };
@@ -77,8 +79,9 @@ export class AttentionStore {
   private readonly textDocuments: TextDocumentRepository;
   private readonly workItems: WorkItemRepository;
   private readonly workspaceFeeds: WorkspaceFeedRepository;
+  private readonly runAtomic?: AtomicRunner;
 
-  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; mindContext?: MindContextRepository; mobileCommandReceipts?: MobileCommandReceiptRepository; revisions?: RevisionRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; sources?: SourceRepository; sweeps?: SweepRepository; textDocuments?: TextDocumentRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository } = {}) {
+  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; mindContext?: MindContextRepository; mobileCommandReceipts?: MobileCommandReceiptRepository; revisions?: RevisionRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; sources?: SourceRepository; sweeps?: SweepRepository; textDocuments?: TextDocumentRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository; runAtomic?: AtomicRunner } = {}) {
     this.dataDir = dataDir;
     this.cards = options.cards ?? new FileCardRepository(this.dataDir);
     this.events = options.events ?? new FileFeedEventRepository(this.dataDir);
@@ -92,6 +95,7 @@ export class AttentionStore {
     this.textDocuments = options.textDocuments ?? new FileTextDocumentRepository(this.dataDir);
     this.workItems = options.workItems ?? new FileWorkItemRepository(this.dataDir);
     this.workspaceFeeds = options.workspaceFeeds ?? new FileWorkspaceFeedRepository(this.path("workspace.json"));
+    this.runAtomic = options.runAtomic;
   }
 
   async init(): Promise<void> {
@@ -556,27 +560,13 @@ export class AttentionStore {
   }
 
   async serialize<T>(callback: () => Promise<T>): Promise<T> {
-    const operation = this.tail.then(() => this.withFilesystemLock(callback));
+    const operation = this.tail.then(() => withMutationLock(this.dataDir, callback));
     this.tail = operation.then(() => undefined, () => undefined);
     return operation;
   }
 
-  private async withFilesystemLock<T>(callback: () => Promise<T>): Promise<T> {
-    const lockPath = this.path(".mutation-lock");
-    for (let attempt = 0; attempt < 400; attempt += 1) {
-      try {
-        await mkdir(lockPath);
-        try {
-          return await callback();
-        } finally {
-          await rm(lockPath, { recursive: true, force: true });
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        await new Promise((resolve) => setTimeout(resolve, 15));
-      }
-    }
-    throw new Error("Timed out waiting for the filesystem mutation lock.");
+  async serializeAtomic<T>(callback: () => Promise<T>): Promise<T> {
+    return this.serialize(() => this.runAtomic ? this.runAtomic(callback) : callback());
   }
 
   private async ensureDefaultFeed(feedId: "inbox" | "company-attention"): Promise<void> {

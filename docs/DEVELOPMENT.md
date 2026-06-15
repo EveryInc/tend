@@ -7,6 +7,8 @@ development.
 ## Scripts
 
 ```sh
+corepack enable
+corepack prepare pnpm@9.15.4 --activate
 pnpm install
 pnpm start
 pnpm check
@@ -63,10 +65,13 @@ Domain tests live under `test/`. Add coverage for new invariants before exposing
 Start and validate the local Supabase stack:
 
 ```sh
-npx --yes supabase@latest start
-npx --yes supabase@latest db reset --local
-npx --yes supabase@latest test db
+pnpm exec supabase start
+pnpm exec supabase db reset --local
+pnpm exec supabase test db
 ```
+
+The repository pins the Supabase CLI as a development dependency, so these are the same commands
+used in CI.
 
 Generate the Xcode project and run the `Tend` scheme:
 
@@ -113,6 +118,10 @@ and removes the temporary data directory.
 Use `pnpm attention:package` after the smoke check when preparing a local release archive. It writes
 a platform-specific tarball and checksum under `dist-bin/releases/`. The tarball includes the
 compiled binary, built `dist/` UI assets, license, and release docs.
+
+CI also starts a local Supabase stack, resets and pgTAP-tests the database, runs the real mobile
+bridge integration test, generates the Xcode project, and runs the native `Tend` unit and UI test
+targets on a macOS runner.
 
 ## Releases
 

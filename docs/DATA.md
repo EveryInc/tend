@@ -45,6 +45,7 @@ Attention does not store Gmail, GitHub, Slack, browser, or other connector crede
 ```sh
 attention backup export
 attention backup export ./attention-backup
+attention stop
 attention backup import ./attention-backup
 ```
 
@@ -57,6 +58,11 @@ attention-backup/
   manifest.json
 ```
 
-`attention.db` is the SQLite runtime authority. `data/` contains readable file mirrors and immutable raw evidence snapshots. Importing this backup restores both.
+`attention.db` is a consistent SQLite snapshot of the runtime authority. `data/` contains readable
+file mirrors and immutable raw evidence snapshots. Export writes through a temporary staging
+directory and refuses to overwrite or delete an existing destination.
 
-Older data-directory-only backups are still accepted. When importing a legacy data-only backup, Attention replaces `data/` and removes the existing SQLite files so the next local runtime start rehydrates `attention.db` from the imported file mirrors.
+Import first copies the backup into a temporary staging directory. Attention refuses to import while
+the same runtime home is active, then swaps the staged database and data into place with rollback if
+the swap fails. Older data-directory-only backups are still accepted; the next local runtime start
+rehydrates `attention.db` from those imported file mirrors.

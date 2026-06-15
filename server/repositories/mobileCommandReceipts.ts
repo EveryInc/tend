@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import type { MobileCommandReceipt } from "../../shared/mobile";
 import { readJson, writeJson } from "../util";
+import type { MirrorWriteCoordinator } from "./mirrorWrites";
 
 export interface MobileCommandReceiptRepository {
   init(): Promise<void>;
@@ -36,6 +37,7 @@ export class MirroredMobileCommandReceiptRepository implements MobileCommandRece
   constructor(
     private readonly primary: MobileCommandReceiptRepository,
     private readonly mirror: MobileCommandReceiptRepository,
+    private readonly mirrorWrites?: MirrorWriteCoordinator,
   ) {}
 
   async init(): Promise<void> {
@@ -53,6 +55,7 @@ export class MirroredMobileCommandReceiptRepository implements MobileCommandRece
 
   async write(receipt: MobileCommandReceipt): Promise<void> {
     await this.primary.write(receipt);
-    await this.mirror.write(receipt);
+    if (this.mirrorWrites) await this.mirrorWrites.write(() => this.mirror.write(receipt));
+    else await this.mirror.write(receipt);
   }
 }

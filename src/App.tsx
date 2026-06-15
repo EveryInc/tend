@@ -325,7 +325,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     <>
       <TopBar state={state} onMind={openMind} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
       <div className="workspace-proposals"><RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} /></div>
-      <PromptWorkspace state={state} tab={workspaceTab} onTab={openWorkspace} onBack={closeWorkspace} onInspector={setInspector} onSaved={showToast} onTargetFocus={(target) => { setWorkspaceFocus(target); selectDockTarget(target); }} />
+      <PromptWorkspace state={state} refreshVersion={workspaceQuery.dataUpdatedAt} tab={workspaceTab} onTab={openWorkspace} onBack={closeWorkspace} onInspector={setInspector} onSaved={showToast} onTargetFocus={(target) => { setWorkspaceFocus(target); selectDockTarget(target); }} />
       <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}

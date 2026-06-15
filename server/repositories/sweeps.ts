@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { SweepBatch, SweepFeedbackTrace, SweepState } from "../../shared/types";
 import { readJson, writeJson } from "../util";
+import type { MirrorWriteCoordinator } from "./mirrorWrites";
 
 export interface SweepRepository {
   init(feedIds: string[]): Promise<void>;
@@ -105,7 +106,11 @@ export class FileSweepRepository implements SweepRepository {
 }
 
 export class MirroredSweepRepository implements SweepRepository {
-  constructor(private readonly primary: SweepRepository, private readonly mirror: SweepRepository) {}
+  constructor(
+    private readonly primary: SweepRepository,
+    private readonly mirror: SweepRepository,
+    private readonly mirrorWrites?: MirrorWriteCoordinator,
+  ) {}
 
   async init(feedIds: string[]): Promise<void> {
     await this.mirror.init(feedIds);
@@ -123,7 +128,7 @@ export class MirroredSweepRepository implements SweepRepository {
 
   async writeState(feedId: string, state: SweepState): Promise<void> {
     await this.primary.writeState(feedId, state);
-    await this.mirror.writeState(feedId, state);
+    await this.writeMirror(() => this.mirror.writeState(feedId, state));
   }
 
   listBatches(feedId: string): Promise<SweepBatch[]> {
@@ -136,7 +141,7 @@ export class MirroredSweepRepository implements SweepRepository {
 
   async writeBatch(batch: SweepBatch): Promise<void> {
     await this.primary.writeBatch(batch);
-    await this.mirror.writeBatch(batch);
+    await this.writeMirror(() => this.mirror.writeBatch(batch));
   }
 
   listFeedback(feedId: string): Promise<SweepFeedbackTrace[]> {
@@ -149,13 +154,13 @@ export class MirroredSweepRepository implements SweepRepository {
 
   async writeFeedback(trace: SweepFeedbackTrace): Promise<void> {
     await this.primary.writeFeedback(trace);
-    await this.mirror.writeFeedback(trace);
+    await this.writeMirror(() => this.mirror.writeFeedback(trace));
   }
 
   private async syncFeed(feedId: string): Promise<void> {
     const [primaryHasState, mirrorHasState] = await Promise.all([this.primary.hasState(feedId), this.mirror.hasState(feedId)]);
     if (!primaryHasState && mirrorHasState) await this.primary.writeState(feedId, await this.mirror.readState(feedId));
-    if (primaryHasState && !mirrorHasState) await this.mirror.writeState(feedId, await this.primary.readState(feedId));
+    if (primaryHasState) await this.mirror.writeState(feedId, await this.primary.readState(feedId));
 
     await this.syncBatches(feedId);
     await this.syncFeedback(feedId);
@@ -165,17 +170,20 @@ export class MirroredSweepRepository implements SweepRepository {
     const primary = await this.primary.listBatches(feedId);
     const mirror = await this.mirror.listBatches(feedId);
     const primaryIds = new Set(primary.map((batch) => batch.id));
-    const mirrorIds = new Set(mirror.map((batch) => batch.id));
     for (const batch of mirror.filter((item) => !primaryIds.has(item.id))) await this.primary.writeBatch(batch);
-    for (const batch of primary.filter((item) => !mirrorIds.has(item.id))) await this.mirror.writeBatch(batch);
+    for (const batch of primary) await this.mirror.writeBatch(batch);
   }
 
   private async syncFeedback(feedId: string): Promise<void> {
     const primary = await this.primary.listFeedback(feedId);
     const mirror = await this.mirror.listFeedback(feedId);
     const primaryIds = new Set(primary.map((trace) => trace.id));
-    const mirrorIds = new Set(mirror.map((trace) => trace.id));
     for (const trace of mirror.filter((item) => !primaryIds.has(item.id))) await this.primary.writeFeedback(trace);
-    for (const trace of primary.filter((item) => !mirrorIds.has(item.id))) await this.mirror.writeFeedback(trace);
+    for (const trace of primary) await this.mirror.writeFeedback(trace);
+  }
+
+  private async writeMirror(callback: () => Promise<void>): Promise<void> {
+    if (this.mirrorWrites) await this.mirrorWrites.write(callback);
+    else await callback();
   }
 }

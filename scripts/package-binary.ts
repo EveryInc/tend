@@ -33,9 +33,12 @@ await cp(path.join(root, "CONTRIBUTING.md"), path.join(stageDir, "CONTRIBUTING.m
 await cp(path.join(root, "LICENSE"), path.join(stageDir, "LICENSE"));
 await copyDocs([
   "docs/INSTALL.md",
+  "docs/ARCHITECTURE.md",
   "docs/AGENT_CONTRACT.md",
   "docs/SKILL.md",
   "docs/DATA.md",
+  "docs/DEVELOPMENT.md",
+  "docs/IOS.md",
   "docs/SECURITY.md",
   "docs/RELEASING.md",
   "CHANGELOG.md",

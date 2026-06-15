@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import type { FeedEvent } from "../../shared/types";
+import type { MirrorWriteCoordinator } from "./mirrorWrites";
 
 export interface FeedEventRepository {
   init(feedIds: string[]): Promise<void>;
@@ -35,7 +36,11 @@ export class FileFeedEventRepository implements FeedEventRepository {
 }
 
 export class MirroredFeedEventRepository implements FeedEventRepository {
-  constructor(private readonly primary: FeedEventRepository, private readonly mirror: FeedEventRepository) {}
+  constructor(
+    private readonly primary: FeedEventRepository,
+    private readonly mirror: FeedEventRepository,
+    private readonly mirrorWrites?: MirrorWriteCoordinator,
+  ) {}
 
   async init(feedIds: string[]): Promise<void> {
     await this.mirror.init(feedIds);
@@ -45,7 +50,8 @@ export class MirroredFeedEventRepository implements FeedEventRepository {
 
   async append(event: FeedEvent): Promise<void> {
     await this.primary.append(event);
-    await this.mirror.append(event);
+    if (this.mirrorWrites) await this.mirrorWrites.write(() => this.mirror.append(event));
+    else await this.mirror.append(event);
   }
 
   list(feedId: string): Promise<FeedEvent[]> {

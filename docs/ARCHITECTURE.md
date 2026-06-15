@@ -75,7 +75,7 @@ No patch stream is required for v0.
 
 ## Native Mobile Bridge
 
-The iPhone app is a review client, not a second Tend runtime. One worker inside the canonical
+The iPhone app is a review client, not a second Attention runtime. One worker inside the canonical
 `tend-live` process discovers all active feeds, builds privacy-filtered projections, and replaces the
 user's Supabase snapshot in one database transaction. The phone reads those projections and submits
 commands through authenticated RPCs.

@@ -215,7 +215,7 @@ function visibleCardActions(card: Card): CardAction[] {
     shortcut: "x",
   };
   if (card.actions?.length) {
-    return card.actions.some((action) => action.behavior === "default_cleanup")
+    return card.actions.some((action) => action.behavior === "default_cleanup" || action.label.trim().toLowerCase() === "archive")
       ? card.actions
       : [archive, ...card.actions];
   }

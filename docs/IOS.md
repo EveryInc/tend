@@ -1,19 +1,19 @@
-# Native Tend For iPhone
+# Tend, The Native Attention Companion
 
 The SwiftUI app under `ios/` provides a fast, feed-by-feed review surface for every feed in the
-canonical Tend runtime. The phone never runs Codex or a connector. It reads a private cloud mirror,
+canonical Attention runtime. The phone never runs Codex or a connector. It reads a private cloud mirror,
 records exact commands, and shows the work that the Mac performs later.
 
 ## Data Flow
 
 ```mermaid
 flowchart LR
-  SQLite["Local Tend SQLite authority"] --> Worker["One worker inside tend-live"]
+  SQLite["Local Attention SQLite authority"] --> Worker["One worker inside tend-live"]
   Worker --> Supabase["Private Supabase mirror and command mailbox"]
   Supabase --> Phone["Native SwiftUI app"]
   Phone --> Supabase
   Supabase --> Worker
-  Worker --> Domain["Tend domain validation"]
+  Worker --> Domain["Attention domain validation"]
   Domain --> SQLite
 ```
 
@@ -68,7 +68,7 @@ TEND_MOBILE_USER_ID=THE_AUTH_USER_UUID
 TEND_MOBILE_WORKER_ID=canonical-mac
 ```
 
-Protect the file before starting Tend:
+Protect the file before starting Attention:
 
 ```sh
 chmod 600 ~/.config/tend/mobile.env

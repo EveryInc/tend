@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { WorkItem } from "../../shared/types";
 import { readJson, writeJson } from "../util";
+import type { MirrorWriteCoordinator } from "./mirrorWrites";
 
 export interface WorkItemRepository {
   init(feedIds: string[]): Promise<void>;
@@ -41,7 +42,11 @@ export class FileWorkItemRepository implements WorkItemRepository {
 }
 
 export class MirroredWorkItemRepository implements WorkItemRepository {
-  constructor(private readonly primary: WorkItemRepository, private readonly mirror: WorkItemRepository) {}
+  constructor(
+    private readonly primary: WorkItemRepository,
+    private readonly mirror: WorkItemRepository,
+    private readonly mirrorWrites?: MirrorWriteCoordinator,
+  ) {}
 
   async init(feedIds: string[]): Promise<void> {
     await this.mirror.init(feedIds);
@@ -59,18 +64,18 @@ export class MirroredWorkItemRepository implements WorkItemRepository {
 
   async write(work: WorkItem): Promise<void> {
     await this.primary.write(work);
-    await this.mirror.write(work);
+    if (this.mirrorWrites) await this.mirrorWrites.write(() => this.mirror.write(work));
+    else await this.mirror.write(work);
   }
 
   private async syncFeed(feedId: string): Promise<void> {
     const primary = await this.primary.list(feedId);
     const mirror = await this.mirror.list(feedId);
     const primaryIds = new Set(primary.map((work) => work.id));
-    const mirrorIds = new Set(mirror.map((work) => work.id));
     for (const work of mirror.filter((item) => !primaryIds.has(item.id))) {
       await this.primary.write(work);
     }
-    for (const work of primary.filter((item) => !mirrorIds.has(item.id))) {
+    for (const work of primary) {
       await this.mirror.write(work);
     }
   }

@@ -6,6 +6,7 @@ import { FileCardRepository, MirroredCardRepository } from "./repositories/cards
 import { FileFeedEventRepository, MirroredFeedEventRepository } from "./repositories/feedEvents";
 import { FileMindContextRepository, MirroredMindContextRepository } from "./repositories/mindContext";
 import { FileMobileCommandReceiptRepository, MirroredMobileCommandReceiptRepository } from "./repositories/mobileCommandReceipts";
+import { MirrorWriteCoordinator } from "./repositories/mirrorWrites";
 import { FileRevisionRepository, MirroredRevisionRepository } from "./repositories/revisions";
 import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import { FileSourceRunRepository, MirroredSourceRunRepository } from "./repositories/sourceRuns";
@@ -42,6 +43,7 @@ export async function createLocalRuntime(
   await mkdir(dataDir, { recursive: true });
   const sqlite = new LocalSqliteStore(dbPath);
   await sqlite.init();
+  const mirrorWrites = new MirrorWriteCoordinator();
   const workspaceFeeds = new MirroredWorkspaceFeedRepository(
     sqlite.workspaceFeeds(),
     new FileWorkspaceFeedRepository(path.join(dataDir, "workspace.json")),
@@ -49,6 +51,7 @@ export async function createLocalRuntime(
   const events = new MirroredFeedEventRepository(
     sqlite.feedEvents(),
     new FileFeedEventRepository(dataDir),
+    mirrorWrites,
   );
   const mindContext = new MirroredMindContextRepository(
     sqlite.mindContext(),
@@ -57,6 +60,7 @@ export async function createLocalRuntime(
   const mobileCommandReceipts = new MirroredMobileCommandReceiptRepository(
     sqlite.mobileCommandReceipts(),
     new FileMobileCommandReceiptRepository(dataDir),
+    mirrorWrites,
   );
   const revisions = new MirroredRevisionRepository(
     sqlite.revisions(),
@@ -65,14 +69,17 @@ export async function createLocalRuntime(
   const workItems = new MirroredWorkItemRepository(
     sqlite.workItems(),
     new FileWorkItemRepository(dataDir),
+    mirrorWrites,
   );
   const cards = new MirroredCardRepository(
     sqlite.cards(),
     new FileCardRepository(dataDir),
+    mirrorWrites,
   );
   const routineActionGroups = new MirroredRoutineActionGroupRepository(
     sqlite.routineActionGroups(),
     new FileRoutineActionGroupRepository(dataDir),
+    mirrorWrites,
   );
   const sourceRuns = new MirroredSourceRunRepository(
     sqlite.sourceRuns(),
@@ -85,12 +92,27 @@ export async function createLocalRuntime(
   const sweeps = new MirroredSweepRepository(
     sqlite.sweeps(),
     new FileSweepRepository(dataDir),
+    mirrorWrites,
   );
   const textDocuments = new MirroredTextDocumentRepository(
     sqlite.textDocuments(),
     new FileTextDocumentRepository(dataDir),
   );
-  const store = new AttentionStore(dataDir, { cards, events, mindContext, mobileCommandReceipts, revisions, routineActionGroups, sourceRuns, sources, sweeps, textDocuments, workItems, workspaceFeeds });
+  const store = new AttentionStore(dataDir, {
+    cards,
+    events,
+    mindContext,
+    mobileCommandReceipts,
+    revisions,
+    routineActionGroups,
+    runAtomic: (callback) => mirrorWrites.transaction(() => sqlite.transaction(callback)),
+    sourceRuns,
+    sources,
+    sweeps,
+    textDocuments,
+    workItems,
+    workspaceFeeds,
+  });
   await store.init();
   return { dataDir, sqlite, store };
 }

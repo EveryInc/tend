@@ -17,7 +17,7 @@ import type { TextDocumentRepository, TextDocumentSeed } from "./repositories/te
 import type { WorkItemRepository } from "./repositories/workItems";
 import type { WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
-export const SQLITE_SCHEMA_VERSION = 13;
+export const SQLITE_SCHEMA_VERSION = 14;
 
 export type LocalRuntimeStatus = {
   dbPath: string;
@@ -69,6 +69,7 @@ export class LocalSqliteStore {
         created_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS feed_events (
+        event_order INTEGER NOT NULL DEFAULT 0,
         id TEXT PRIMARY KEY,
         feed_id TEXT NOT NULL,
         type TEXT NOT NULL,
@@ -188,6 +189,7 @@ export class LocalSqliteStore {
       CREATE INDEX IF NOT EXISTS idx_work_items_feed_status ON work_items (feed_id, status);
     `);
     this.migrateFeedScopedPrimaryKeys();
+    this.migrateFeedEventOrdering();
     const now = new Date().toISOString();
     this.setMeta("schema_version", String(SQLITE_SCHEMA_VERSION));
     if (!this.getMeta("created_at")) this.setMeta("created_at", now);
@@ -209,6 +211,28 @@ export class LocalSqliteStore {
     this.db?.exec("PRAGMA wal_checkpoint(TRUNCATE);");
     this.db?.close();
     this.db = null;
+  }
+
+  async backupTo(targetPath: string): Promise<void> {
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    this.database().exec(`VACUUM INTO '${targetPath.replaceAll("'", "''")}';`);
+  }
+
+  async transaction<T>(callback: () => Promise<T>): Promise<T> {
+    const db = this.database();
+    db.exec("BEGIN IMMEDIATE;");
+    try {
+      const result = await callback();
+      db.exec("COMMIT;");
+      return result;
+    } catch (error) {
+      try {
+        db.exec("ROLLBACK;");
+      } catch {
+        // Preserve the mutation error if SQLite already ended the transaction.
+      }
+      throw error;
+    }
   }
 
   workspaceFeeds(): WorkspaceFeedRepository {
@@ -366,6 +390,16 @@ export class LocalSqliteStore {
         db.exec(migration.recreateIndex);
       })();
     }
+  }
+
+  private migrateFeedEventOrdering(): void {
+    const db = this.database();
+    const columns = db.query("PRAGMA table_info(feed_events)").all() as Array<{ name: string }>;
+    if (!columns.some((column) => column.name === "event_order")) {
+      db.exec("ALTER TABLE feed_events ADD COLUMN event_order INTEGER NOT NULL DEFAULT 0;");
+      db.exec("UPDATE feed_events SET event_order = rowid;");
+    }
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_feed_events_order ON feed_events (event_order);");
   }
 }
 
@@ -933,7 +967,11 @@ class SqliteFeedEventRepository implements FeedEventRepository {
 
   async append(event: FeedEvent): Promise<void> {
     this.database()
-      .query("INSERT INTO feed_events (id, feed_id, type, at, card_id, work_id, detail_json) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO NOTHING")
+      .query(`
+        INSERT INTO feed_events (event_order, id, feed_id, type, at, card_id, work_id, detail_json)
+        VALUES ((SELECT COALESCE(MAX(event_order), 0) + 1 FROM feed_events), ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO NOTHING
+      `)
       .run(
         event.id,
         event.feedId,
@@ -947,7 +985,7 @@ class SqliteFeedEventRepository implements FeedEventRepository {
 
   async list(feedId: string): Promise<FeedEvent[]> {
     const rows = this.database()
-      .query("SELECT id, feed_id, type, at, card_id, work_id, detail_json FROM feed_events WHERE feed_id = ? ORDER BY at ASC, id ASC")
+      .query("SELECT id, feed_id, type, at, card_id, work_id, detail_json FROM feed_events WHERE feed_id = ? ORDER BY event_order ASC")
       .all(feedId) as Array<{ id: string; feed_id: string; type: string; at: string; card_id: string | null; work_id: string | null; detail_json: string | null }>;
     return rows.map((row) => ({
       id: row.id,

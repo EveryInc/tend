@@ -6,16 +6,17 @@ export function setupCodexCommand(): void {
   print(setupCodexPrompt());
 }
 
-export function setupCodexPrompt(options: { binaryPath?: string; skillPath?: string; attentionHome?: string } = {}): string {
-  const binaryPath = options.binaryPath ?? resolveAttentionBinaryPath();
-  const skillPath = options.skillPath ?? resolveSkillPath(binaryPath);
-  const cliPrefix = commandPrefix(binaryPath, options.attentionHome ?? process.env.ATTENTION_HOME);
+export function setupCodexPrompt(options: { binaryPath?: string; command?: string[]; skillPath?: string; attentionHome?: string } = {}): string {
+  const command = options.command ?? (options.binaryPath ? [options.binaryPath] : resolveAttentionCommand());
+  const entryPath = command.at(-1) ?? path.resolve("attention");
+  const skillPath = options.skillPath ?? resolveSkillPath(entryPath);
+  const cliPrefix = commandPrefix(command, options.attentionHome ?? process.env.ATTENTION_HOME);
   return `Start one fresh Codex thread per feed and use this prompt:
 
 Connect this Codex Desktop thread to local Attention.
 
 Feed: inbox
-Local Attention binary: ${binaryPath}
+Local Attention entry point: ${entryPath}
 Skill/reference: ${skillPath}
 CLI prefix: ${cliPrefix}
 
@@ -23,24 +24,32 @@ Read the skill/reference file if available. Use the local Attention CLI contract
 `;
 }
 
-function resolveAttentionBinaryPath(): string {
-  for (const candidate of [process.argv[1], process.argv[0], process.execPath]) {
-    if (candidate && !candidate.startsWith("/$bunfs/") && existsSync(candidate)) return path.resolve(candidate);
+function resolveAttentionCommand(): string[] {
+  const sourceEntry = process.argv[1];
+  if (
+    sourceEntry
+    && !sourceEntry.startsWith("/$bunfs/")
+    && /\.(?:[cm]?[jt]s|tsx)$/.test(sourceEntry)
+    && existsSync(sourceEntry)
+  ) {
+    return [path.resolve(process.execPath), path.resolve(sourceEntry)];
   }
-  if (process.execPath && existsSync(process.execPath)) return path.resolve(process.execPath);
-  return path.resolve(process.argv[1] ?? "attention");
+  for (const candidate of [process.argv[0], process.execPath]) {
+    if (candidate && !candidate.startsWith("/$bunfs/") && existsSync(candidate)) return [path.resolve(candidate)];
+  }
+  return [path.resolve(sourceEntry ?? "attention")];
 }
 
-function resolveSkillPath(binaryPath: string): string {
-  const packaged = path.join(path.dirname(binaryPath), "docs", "SKILL.md");
+function resolveSkillPath(entryPath: string): string {
+  const packaged = path.join(path.dirname(entryPath), "docs", "SKILL.md");
   if (existsSync(packaged)) return packaged;
   const source = path.resolve("docs", "SKILL.md");
   if (existsSync(source)) return source;
   return packaged;
 }
 
-function commandPrefix(binaryPath: string, attentionHome?: string): string {
-  const executable = shellQuote(binaryPath);
+function commandPrefix(command: string[], attentionHome?: string): string {
+  const executable = command.map(shellQuote).join(" ");
   return attentionHome ? `ATTENTION_HOME=${shellQuote(attentionHome)} ${executable}` : executable;
 }
 

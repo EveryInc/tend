@@ -10,6 +10,7 @@ import { createLocalRuntime, resolveArtifactsDir, resolveDataDir, resolveDbPath,
 import { DrainDispatcher } from "./server/dispatcher";
 import { mobileCloudConfigFromEnv, SupabaseMobileCloudClient } from "./server/mobile/client";
 import { MobileSyncWorker } from "./server/mobile/sync";
+import { makeToken } from "./server/util";
 
 declare const Bun: {
   serve(options: { port: number; hostname: string; idleTimeout: number; fetch: (...args: any[]) => any }): { stop(force?: boolean): void };
@@ -23,6 +24,7 @@ const artifactsDir = resolveArtifactsDir(root);
 const dataDir = resolveDataDir(root);
 const { sqlite, store } = await createLocalRuntime(dataDir, resolveDbPath(root));
 const domain = new AttentionDomain(store);
+const mutationToken = process.env.ATTENTION_MUTATION_TOKEN ?? makeToken();
 const realtime = createRealtimeHub();
 const feedEventBridge = createFeedEventBridge(store, realtime.notify);
 await feedEventBridge.start();
@@ -40,6 +42,7 @@ app.route("/", apiRoutes({
   dataDir,
   domain,
   mobileStatus: () => mobileSync?.currentStatus() ?? { enabled: false },
+  mutationToken,
   notify: realtime.notify,
   port,
   root,

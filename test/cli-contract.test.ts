@@ -55,7 +55,7 @@ describe("CLI contract", () => {
       attentionHome: "/tmp/attention home",
     });
 
-    expect(prompt).toContain("Local Attention binary: /tmp/attention install/attention");
+    expect(prompt).toContain("Local Attention entry point: /tmp/attention install/attention");
     expect(prompt).toContain("Skill/reference: /tmp/attention install/docs/SKILL.md");
     expect(prompt).toContain("CLI prefix: ATTENTION_HOME='/tmp/attention home' '/tmp/attention install/attention'");
     expect(prompt).toContain("Use the local Attention CLI contract, not a hosted Attention or MCP setup.");
