@@ -299,9 +299,6 @@ private struct ReviewActionTray: View {
         .padding(.top, 12)
         .padding(.bottom, 6)
         .background(.ultraThinMaterial)
-        .overlay(alignment: .top) {
-            Divider()
-        }
     }
 
     private var archiveButton: some View {
