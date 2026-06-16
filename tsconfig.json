@@ -11,5 +11,5 @@
     "noEmit": true,
     "types": ["node", "bun"]
   },
-  "include": ["src", "server", "scripts", "shared", "server.ts", "web.ts", "cli.ts", "attention.ts", "vite.config.ts"]
+  "include": ["src", "server", "scripts", "shared", "server.ts", "web.ts", "tend.ts", "vite.config.ts"]
 }

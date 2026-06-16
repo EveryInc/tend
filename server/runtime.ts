@@ -1,4 +1,3 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDataDir, attentionDbPath, attentionHome } from "./paths";
@@ -18,9 +17,7 @@ import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "./
 import { LocalSqliteStore } from "./sqlite";
 import { AttentionStore } from "./store";
 
-export function resolveRuntimeRoot(appRoot?: string): string {
-  if (process.env.ATTENTION_HOME) return attentionHome();
-  if (appRoot && isCanonicalSourceCheckout(appRoot)) return path.resolve(appRoot, "..", ".attention-workbench");
+export function resolveRuntimeRoot(_appRoot?: string): string {
   return attentionHome();
 }
 
@@ -115,16 +112,4 @@ export async function createLocalRuntime(
   });
   await store.init();
   return { dataDir, sqlite, store };
-}
-
-function isCanonicalSourceCheckout(appRoot: string): boolean {
-  try {
-    const gitDir = path.join(appRoot, ".git");
-    return path.basename(appRoot) === "attention"
-      && existsSync(path.join(appRoot, "bin", "tend-live"))
-      && statSync(gitDir).isDirectory()
-      && readFileSync(path.join(gitDir, "HEAD"), "utf8").trim() === "ref: refs/heads/main";
-  } catch {
-    return false;
-  }
 }

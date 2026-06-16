@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
+import { runTendCli } from "../server/cli";
 import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS, cliCommandName } from "../server/cli/contract";
 import { MissingFlagError, formatCliError } from "../server/cli/errors";
 import { assertCliRuntimeMatchesLive } from "../server/cli/runtimeGuard";
-import { setupCodexPrompt } from "../server/cli/setup";
+import { setupChroniclePrompt, setupCodexPrompt } from "../server/cli/setup";
 
 describe("CLI contract", () => {
   test("keeps public help focused on the v0 agent surface", () => {
@@ -67,7 +68,30 @@ describe("CLI contract", () => {
     expect(prompt).toContain('says "go deal with the feed"');
   });
 
-  test("refuses an implicit CLI runtime that differs from healthy tend-live", async () => {
+  test("prints a self-contained Chronicle Pulse setup prompt", () => {
+    const prompt = setupChroniclePrompt({
+      binaryPath: "/tmp/tend install/tend",
+      skillPath: "/tmp/tend install/docs/SKILL.md",
+      attentionHome: "/tmp/tend home",
+    });
+
+    expect(prompt).toContain("one dedicated Chronicle Pulse thread for the entire Tend workspace");
+    expect(prompt).toContain("Tend does not capture the screen itself.");
+    expect(prompt).toContain("Agent contract: /tmp/tend install/docs/AGENT_CONTRACT.md");
+    expect(prompt).toContain("Security reference: /tmp/tend install/docs/SECURITY.md");
+    expect(prompt).toContain("ATTENTION_HOME='/tmp/tend home' '/tmp/tend install/tend' cli context:bind --thread <current-codex-thread-id>");
+    expect(prompt).toContain("refreshes the pulse every two hours");
+    expect(prompt).toContain("one coherent window of ten minutes or less");
+    expect(prompt).toContain("cli context:publish --thread <current-codex-thread-id> --context-file <local-json-file>");
+    expect(prompt).toContain('says "refresh the pulse"');
+  });
+
+  test("keeps agent commands under the explicit cli namespace", async () => {
+    await expect(runTendCli(["work:list", "--feed", "inbox", "--thread", "thread"]))
+      .rejects.toThrow('Unknown Tend command "work:list". Run tend help.');
+  });
+
+  test("refuses an implicit CLI runtime that differs from the running service", async () => {
     const mismatch = assertCliRuntimeMatchesLive("card:upsert", "/tmp/quiet-runtime", {
       fetchStatus: async () => ({ dataDir: "/tmp/live-runtime/data" }),
     });

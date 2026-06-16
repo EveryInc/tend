@@ -93,6 +93,7 @@ invalidations predictable.
 Update docs when changing behavior:
 
 - `README.md` for the first-run story and high-level product contract
+- `MANUAL.md` for user-facing operation, steering, safety, learning, and troubleshooting
 - `docs/ARCHITECTURE.md` for ownership boundaries
 - `docs/AGENT_CONTRACT.md` for Codex/CLI workflow changes
 - `docs/DATA.md` for persistence and backup changes

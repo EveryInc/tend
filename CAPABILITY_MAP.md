@@ -2,7 +2,7 @@
 
 | User outcome | Browser path | Codex path |
 | --- | --- | --- |
-| Review a feed | Scroll the active feed | `pnpm cli -- state --feed <id>` |
+| Review a feed | Scroll the active feed | `tend cli state --feed <id>` |
 | Configure local dictation | Hold the detected Monologue shortcut and speak | `setup:detect-monologue` discovers the installed app and records its local shortcut without a setup form |
 | Submit scoped intent | Use the persistent dock and its labeled `Broader` / `Narrower` controls, or press plain arrows while its empty input is focused | `work:list`, `work:claim`, interpret the attached `target`, then `work:complete` |
 | Correct or cancel accidental dictated text | Edit `Your note to Codex` on the queued card, use its persistent `Move back to review` control, or use the brief Undo toast | `work:edit --feed ... --work ...` corrects unclaimed text; `card:return-to-review --feed ... --card ...` cancels unstarted local work and restores the card |

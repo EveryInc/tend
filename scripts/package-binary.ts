@@ -6,7 +6,7 @@ import { CLI_CONTRACT_VERSION } from "../server/version";
 
 const root = process.cwd();
 const packageJson = JSON.parse(await readFile(path.join(root, "package.json"), "utf8")) as { name: string; version: string };
-const binaryPath = path.resolve(process.env.TEND_BINARY ?? process.env.ATTENTION_BINARY ?? path.join("dist-bin", "tend"));
+const binaryPath = path.resolve(process.env.TEND_BINARY ?? path.join("dist-bin", "tend"));
 const clientDir = path.resolve(process.env.ATTENTION_CLIENT_DIR ?? "dist");
 const platform = process.env.ATTENTION_PACKAGE_PLATFORM ?? process.platform;
 const arch = process.env.ATTENTION_PACKAGE_ARCH ?? process.arch;
@@ -27,12 +27,12 @@ if (!existsSync(path.join(clientDir, "index.html"))) {
 await rm(stageRoot, { recursive: true, force: true });
 await mkdir(stageDir, { recursive: true });
 await cp(binaryPath, path.join(stageDir, "tend"));
-await cp(binaryPath, path.join(stageDir, "attention"));
 await cp(clientDir, path.join(stageDir, "dist"), { recursive: true });
 await cp(path.join(root, "README.md"), path.join(stageDir, "README.md"));
 await cp(path.join(root, "CONTRIBUTING.md"), path.join(stageDir, "CONTRIBUTING.md"));
 await cp(path.join(root, "LICENSE"), path.join(stageDir, "LICENSE"));
 await copyDocs([
+  "MANUAL.md",
   "docs/INSTALL.md",
   "docs/ARCHITECTURE.md",
   "docs/AGENT_CONTRACT.md",
@@ -53,7 +53,6 @@ await writeFile(path.join(stageDir, "manifest.json"), JSON.stringify({
   platform,
   arch,
   binary: "tend",
-  compatibilityBinaries: ["attention"],
   uiAssets: "dist",
   createdAt: new Date().toISOString(),
 }, null, 2));
@@ -69,7 +68,9 @@ console.log(JSON.stringify({ ok: true, archivePath, checksumPath, checksum }, nu
 async function copyDocs(files: string[]): Promise<void> {
   for (const relative of files) {
     const source = path.join(root, relative);
-    if (!existsSync(source)) continue;
+    if (!existsSync(source)) {
+      throw new Error(`Required package document not found: ${relative}`);
+    }
     const target = path.join(stageDir, relative);
     await mkdir(path.dirname(target), { recursive: true });
     await cp(source, target);

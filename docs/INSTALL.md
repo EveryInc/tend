@@ -63,9 +63,9 @@ pnpm tend:package
 ```
 
 The package command writes `dist-bin/releases/tend-<version>-<platform>-<arch>.tar.gz` plus a
-`.sha256` checksum. The archive contains the `tend` executable, an `attention` compatibility alias,
-built `dist/` UI assets, README, license, contributor notes, all public
-install/architecture/agent/data/development/iPhone/security/releasing docs, changelog, and the
+`.sha256` checksum. The archive contains the `tend` executable, the Tend manual, built `dist/` UI
+assets, README, license, contributor notes, all public
+install/architecture/agent/data/development/iPhone/security/releasing docs, the changelog, and
 operator/capability references.
 The packaged executable resolves UI assets from the sibling `dist/` directory, so it can be launched
 from inside the extracted folder or by absolute path from another working directory.
@@ -125,3 +125,9 @@ Backups include a consistent SQLite snapshot, the readable `data/` mirrors, and 
 requires a destination that does not already exist. Import stages and validates the backup before
 swapping data, preserves the previous runtime until the swap succeeds, and refuses to run while the
 same Tend home is active. Legacy data-directory-only backups can still be imported.
+
+## iPhone Companion
+
+The optional native client requires a private Supabase project plus local Xcode configuration. See
+[`docs/IOS.md`](./IOS.md) for the complete magic-link, worker, signing, installation, and validation
+guide.

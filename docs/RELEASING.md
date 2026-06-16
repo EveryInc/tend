@@ -69,9 +69,9 @@ tend-<version>-<platform>-<arch>.tar.gz.sha256
 Each archive contains:
 
 - `tend` executable
-- `attention` compatibility executable
 - bundled `dist/` UI assets
 - `README.md`
+- `MANUAL.md`
 - `CONTRIBUTING.md`
 - `LICENSE`
 - install, agent, data, security, and releasing docs

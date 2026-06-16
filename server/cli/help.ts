@@ -11,11 +11,10 @@ export function helpCommand(): void {
       "tend logs",
       "tend status",
       "tend doctor",
-      "tend setup codex [--feed <id>]",
+      "tend setup codex [--feed <id> | --chronicle]",
       "tend backup export [path]",
       "tend backup import <path>",
       "tend cli <existing-low-level-command> [...args]",
     ],
-    compatibility: "The legacy attention command remains an alias for Tend.",
   });
 }

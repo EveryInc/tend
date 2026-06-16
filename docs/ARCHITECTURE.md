@@ -34,8 +34,8 @@ feed sources remain the evidence boundary.
 The installed `tend` executable is the canonical runtime entrypoint. `tend start`
 re-launches the same executable in the background with the current `PATH`, `ATTENTION_HOME`, and
 port settings. `tend start --foreground` keeps the server attached to the current terminal.
-The packaged `attention` executable is a compatibility alias. There is no separate runner or second
-CLI.
+Source development uses the same command tree through `pnpm tend --`. Runtime commands live at the
+top level, and agent operations live under `tend cli`. There is no separate runner or second CLI.
 
 ## Boundaries
 
@@ -49,9 +49,9 @@ CLI.
 - `server/routes/api.ts` owns browser-facing Hono API routes.
 - `server/routes/realtime.ts` owns the SSE event stream.
 - `server/routes/assets.ts` owns built UI asset serving.
-- `attention.ts` is the tiny human-facing CLI executable shim.
-- `server/cli/` owns human-facing CLI commands for start, status, doctor, setup, backup, and legacy operator delegation.
-- `cli.ts` remains the low-level operator command surface.
+- `tend.ts` is the sole executable shim.
+- `server/cli/` owns runtime, setup, backup, and agent command dispatch.
+- `server/cli/operator.ts` owns the JSON agent command surface exposed through `tend cli`.
 - `src/router.tsx` owns UI routes such as `/feed/:feedId`, prompt workspaces, and learning review.
 - TanStack Query owns workspace fetching and invalidation.
 - `src/state/realtime.tsx` hides SSE details behind a provider.
@@ -79,9 +79,9 @@ No patch stream is required for v0.
 
 ## Native Mobile Bridge
 
-The iPhone app is a review client, not a second Tend runtime. One worker inside the canonical
-`tend-live` process discovers all active feeds, builds privacy-filtered projections, and replaces the
-user's Supabase snapshot in one database transaction. The phone reads those projections and submits
+The iPhone app is a review client, not a second Tend runtime. One worker inside the canonical Tend
+process discovers all active feeds, builds privacy-filtered projections, and replaces the user's
+Supabase snapshot in one database transaction. The phone reads those projections and submits
 commands through authenticated RPCs.
 
 Each command includes the feed id, feed lifecycle/pass generation, card digest, and action or work

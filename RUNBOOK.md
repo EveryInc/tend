@@ -2,17 +2,12 @@
 
 Operate Tend through the canonical `tend` executable on `PATH`. The CLI and server share
 runtime state under `~/.attention/` by default, including the SQLite authority database, readable
-data mirrors, logs, and exports. A checkout may run the source scripts for development, but feed
-threads should prefer the installed executable once it exists.
+data mirrors, logs, and exports. Source development uses the same command tree through
+`pnpm tend --`; it also defaults to `~/.attention/`, so a future packaged binary reuses the same
+data. Worktree or branch validation must set `ATTENTION_HOME=<tmp>` explicitly.
 
-In the canonical source checkout, `pnpm cli` and `./bin/tend-live` both resolve
-`../.attention-workbench` automatically. A worktree or branch validation must set
-`ATTENTION_HOME=<tmp>` explicitly; otherwise the CLI refuses to operate while a healthy live Tend
-service owns a different runtime.
-
-`./bin/tend-live start` and `./bin/tend-live restart` build the production UI from the current
-canonical checkout before launching it. A restart builds before stopping the healthy service, so a
-failed build cannot replace the live app with stale or broken assets.
+When UI code changed in a source checkout, run `pnpm build` before restarting the canonical service.
+The packaged binary already ships its matching built assets.
 
 The live local app is owned by one CLI:
 

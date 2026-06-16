@@ -14,19 +14,11 @@
     "lint": "oxlint .",
     "check": "pnpm typecheck && pnpm lint && pnpm test",
     "test": "bun test",
-    "live": "./bin/tend-live",
-    "cli": "bun run cli.ts",
-    "seed:demo": "bun run cli.ts demo:seed",
-    "tend": "bun attention.ts",
-    "tend:doctor": "bun attention.ts doctor",
-    "tend:build": "bun build ./attention.ts --compile --outfile dist-bin/tend",
+    "seed:demo": "bun tend.ts cli demo:seed",
+    "tend": "bun tend.ts",
+    "tend:build": "bun scripts/clean-legacy-cli-artifacts.ts && bun build ./tend.ts --compile --outfile dist-bin/tend",
     "tend:smoke": "bun scripts/smoke-binary.ts",
-    "tend:package": "bun scripts/package-binary.ts",
-    "attention": "bun attention.ts",
-    "attention:doctor": "bun attention.ts doctor",
-    "attention:build": "bun build ./attention.ts --compile --outfile dist-bin/tend",
-    "attention:smoke": "bun scripts/smoke-binary.ts",
-    "attention:package": "bun scripts/package-binary.ts"
+    "tend:package": "bun scripts/clean-legacy-cli-artifacts.ts && bun scripts/package-binary.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.0",
@@ -58,7 +50,6 @@
     }
   },
   "bin": {
-    "tend": "./attention.ts",
-    "attention": "./attention.ts"
+    "tend": "./tend.ts"
   }
 }

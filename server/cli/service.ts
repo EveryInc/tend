@@ -12,7 +12,7 @@ export async function startBackgroundCommand(): Promise<void> {
     }
     const staleRecord = await readPidRecord();
     if (staleRecord && processAlive(staleRecord.pid)) {
-      if (await ownsAttentionProcess(staleRecord)) {
+      if (await ownsTendProcess(staleRecord)) {
         throw new Error(`Tend pid ${staleRecord.pid} exists but is not healthy. Run: tend restart`);
       }
     }
@@ -41,7 +41,7 @@ export async function stopCommand(): Promise<void> {
       print("Tend is not running as a background service.");
       return;
     }
-    if (!await ownsAttentionProcess(record)) {
+    if (!await ownsTendProcess(record)) {
       throw new Error(`Refusing to stop pid ${record.pid}: it is not the Tend process recorded by this runtime.`);
     }
     await terminate(record.pid);
@@ -107,7 +107,7 @@ function backgroundCommand(command: string[]): string[] {
     "/bin/sh",
     "-c",
     'log="$1"; shift; exec "$@" >> "$log" 2>&1',
-    "attention-bg",
+    "tend-bg",
     logFile(),
     ...command,
   ];
@@ -218,7 +218,7 @@ function processAlive(pid: number): boolean {
   }
 }
 
-async function ownsAttentionProcess(record: ServicePidRecord): Promise<boolean> {
+async function ownsTendProcess(record: ServicePidRecord): Promise<boolean> {
   if (path.resolve(record.home) !== path.resolve(attentionHome()) || record.apiPort !== apiPort()) return false;
   const commandLine = await readProcessCommandLine(record.pid);
   if (!commandLine) return false;
