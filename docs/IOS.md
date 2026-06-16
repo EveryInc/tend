@@ -23,13 +23,27 @@ flowchart LR
 The worker discovers feeds dynamically. Creating, renaming, reordering, or archiving a feed does not
 require a new iPhone build. Supabase is disposable transport and can be rebuilt from the Mac.
 
-## Prerequisites
+## Requirements
 
-- A private Supabase project
-- Xcode with an Apple development team configured
+- A Mac with a healthy Tend runtime using the same default `~/.attention` home as future packaged
+  binaries
+- A source checkout with the [core development requirements](./INSTALL.md#source-and-binary-builds):
+  Bun 1.3.11 or newer, Node.js 22 or newer, and pnpm 9.15.4
+- A private [Supabase project](https://supabase.com/docs/guides/getting-started) with access to its
+  Auth settings and API keys
+- Xcode capable of building the iOS 17 target
 - [XcodeGen](https://github.com/yonaskolb/XcodeGen)
+- An [Apple Account added to Xcode](https://developer.apple.com/support/compare-memberships/) for
+  code signing
 - A physical iPhone running iOS 17 or later, or an iOS simulator
-- A healthy Tend runtime using the same default `~/.attention` home as future packaged binaries
+
+A free Xcode Personal Team can install Tend on your own device for personal testing. Join the
+[Apple Developer Program](https://developer.apple.com/programs/) when you need TestFlight, App
+Store, or other shared distribution.
+
+[Docker](https://docs.docker.com/get-started/get-docker/) is required only for the local Supabase
+stack and bridge integration tests under [Validation Commands](#validation-commands). It is not
+required when the Mac worker and iPhone app use a hosted Supabase project.
 
 Install repository dependencies and XcodeGen:
 

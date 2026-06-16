@@ -1,8 +1,22 @@
 # Install
 
-## Prerequisites
+## Requirements
 
-Source development requires Bun 1.3.11 or newer, Node.js 22 or newer, and pnpm 9.15.4.
+### Packaged Release
+
+- Codex Desktop for the intended in-app-browser and feed-thread workflow
+- A Tend archive matching your platform
+- Any Codex connectors used by your feeds
+
+The packaged `tend` executable is self-contained and includes the Bun runtime. Bun, Node.js, and
+pnpm are not required to run a downloaded release.
+
+### Source And Binary Builds
+
+- Git
+- Bun 1.3.11 or newer
+- Node.js 22 or newer
+- pnpm 9.15.4
 
 ```sh
 bun --version
@@ -128,6 +142,8 @@ same Tend home is active. Legacy data-directory-only backups can still be import
 
 ## iPhone Companion
 
-The optional native client requires a private Supabase project plus local Xcode configuration. See
-[`docs/IOS.md`](./IOS.md) for the complete magic-link, worker, signing, installation, and validation
-guide.
+The optional native client additionally requires a Mac, a private Supabase project, Xcode,
+XcodeGen, an Apple Account configured in Xcode, and an iOS 17 device or simulator. A paid Apple
+Developer Program membership is needed only for TestFlight or App Store distribution. See
+[`docs/IOS.md`](./IOS.md) for the complete requirements, magic-link, worker, signing, installation,
+and validation guide.

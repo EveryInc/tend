@@ -57,6 +57,36 @@ flowchart LR
   Pulse["Optional Chronicle Pulse thread"] --> Local
 ```
 
+## Requirements
+
+### Packaged Tend
+
+- Codex Desktop with access to its in-app browser and threads
+- A Tend release archive matching your platform
+- Any Codex connectors required by the feeds you configure
+
+The compiled `tend` executable is self-contained and bundles the Bun runtime. You do not need Bun,
+Node.js, or pnpm to use a packaged release.
+
+### Run From Source
+
+- Git
+- Bun 1.3.11 or newer
+- Node.js 22 or newer
+- pnpm 9.15.4
+
+### Optional iPhone Companion
+
+- A Mac running the canonical Tend process
+- A private Supabase project
+- Xcode and XcodeGen
+- An Apple Account added to Xcode for code signing
+- A physical iPhone running iOS 17 or later, or an iOS simulator
+
+A free Xcode Personal Team is sufficient for testing on your own device. Apple Developer Program
+membership is required when you want to distribute through TestFlight or the App Store. Docker is
+needed only for the full local Supabase integration tests, not for the hosted mobile setup.
+
 ## Quick Start
 
 ### 1. Start Tend
@@ -160,11 +190,7 @@ configuration, Xcode signing, physical-device installation, and validation.
 
 ## Run From Source
 
-Prerequisites:
-
-- Bun 1.3.11 or newer
-- Node.js 22 or newer
-- pnpm 9.15.4
+Install the source requirements above, then:
 
 ```sh
 git clone https://github.com/EveryInc/tend.git

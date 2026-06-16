@@ -4,6 +4,20 @@ For contribution workflow, architecture expectations, and PR gates, start with
 [`CONTRIBUTING.md`](../CONTRIBUTING.md). This page is the shorter command reference for local
 development.
 
+## Requirements
+
+Core development requires:
+
+- Git
+- Bun 1.3.11 or newer
+- Node.js 22 or newer
+- pnpm 9.15.4
+
+Additional requirements apply only to their respective test paths:
+
+- A Docker-compatible daemon for the local Supabase migration and bridge tests
+- macOS with Xcode and XcodeGen for native iPhone unit and UI tests
+
 ## Scripts
 
 ```sh
