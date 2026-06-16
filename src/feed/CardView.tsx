@@ -94,7 +94,14 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
     return (
       <section className="block block-editor">
         {block.label && <h3>{block.label}</h3>}
-        <textarea data-block-id={block.id} value={value} onChange={(event) => setValue(event.target.value)} onBlur={() => void save()} rows={Math.max(4, value.split("\n").length + 1)} />
+        <textarea
+          aria-label={block.label ?? "Editable card content"}
+          data-block-id={block.id}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onBlur={() => void save()}
+          rows={Math.max(4, value.split("\n").length + 1)}
+        />
       </section>
     );
   }
@@ -228,7 +235,7 @@ function QueuedNoteEditor({ work, onChanged }: { work: WorkItem; onChanged: () =
   return (
     <section className="queued-note">
       <span className="action-label">Queued note</span>
-      <textarea value={value} onChange={(event) => setValue(event.target.value)} onBlur={() => void save()} rows={Math.max(2, value.split("\n").length)} />
+      <textarea aria-label="Queued note" value={value} onChange={(event) => setValue(event.target.value)} onBlur={() => void save()} rows={Math.max(2, value.split("\n").length)} />
       <small>{saving ? "Saving..." : "Edit before Codex claims it."}</small>
     </section>
   );
@@ -313,12 +320,14 @@ export function CardView({
           <div className="action-buttons">
             {actions.map((action) => (
               <button
+                aria-keyshortcuts={action.shortcut}
+                aria-label={action.label}
                 className={`button ${action.variant === "primary" ? "primary" : "ghost"}`}
                 key={action.id}
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={(event) => { event.stopPropagation(); onAction(action); }}
               >
-                {action.label}{action.shortcut && <kbd>{action.shortcut.toUpperCase()}</kbd>}
+                {action.label}{action.shortcut && <kbd aria-hidden="true">{action.shortcut.toUpperCase()}</kbd>}
               </button>
             ))}
           </div>

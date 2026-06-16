@@ -5,7 +5,7 @@ import { api, post } from "./app/api";
 import type { AttentionScreen, Inspector, Tab, WorkspaceTab } from "./app/types";
 import { CardView } from "./feed/CardView";
 import { RoutineActionGroupView } from "./feed/RoutineActionGroupView";
-import { countFor, visibleCardActions, visibleCards, visibleRoutineActions } from "./feed/selectors";
+import { countFor, visibleCardActions, visibleCards, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
 import { Dock } from "./shell/Dock";
 import { InspectorPanel } from "./shell/InspectorPanel";
 import { TopBar } from "./shell/TopBar";
@@ -13,6 +13,7 @@ import { useActiveCard } from "./state/activeCard";
 import { RealtimeProvider } from "./state/realtime";
 import { preferredTarget, sameTarget } from "./state/voiceTarget";
 import type { Card, CardAction, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkItem, WorkspaceRevision, WorkspaceView } from "./types";
+import { FormattedText } from "./ui/FormattedText";
 import { LearningReview, RevisionProposals } from "./workspace/LearningReview";
 import { PromptWorkspace } from "./workspace/PromptWorkspace";
 
@@ -344,7 +345,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
 
   const updated = cards.filter((card) => card.status === "to_review_updated");
   const fresh = cards.filter((card) => card.status !== "to_review_updated");
-  const feedWork = feed.work.filter((work) => work.cardId === "__feed__" && work.status === tab);
+  const feedWork = visibleFeedWork(feed, tab);
   return withRealtime(
     <>
       <TopBar state={state} onMind={openMind} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
@@ -374,7 +375,43 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
               <span className="kind-dot proposal" />
               <div><div className="eyebrow">Feed instruction · {work.status}</div><h2>{work.instruction}</h2></div>
             </header>
-            <p className="why">{work.status === "queued" ? "Ready for the home Codex thread to drain." : "The home Codex thread is working through this feed-level instruction."}</p>
+            <p className="why">
+              {work.status === "queued"
+                ? "Ready for the home Codex thread to drain."
+                : work.status === "working"
+                  ? "The home Codex thread is working through this feed-level instruction."
+                  : "The home Codex thread completed this feed-level instruction."}
+            </p>
+            {work.status === "completed" && work.response && (
+              <div className="blocks">
+                <section className="block block-rich_text">
+                  <h3>Codex response</h3>
+                  <p><FormattedText text={work.response} /></p>
+                </section>
+              </div>
+            )}
+            {work.status === "queued" && (
+              <footer className="card-action">
+                <div>
+                  <span className="action-label">Queued for Codex</span>
+                  <b>Waiting for the feed thread</b>
+                </div>
+                <div className="action-buttons">
+                  <button className="button ghost" onClick={() => void withRefresh(
+                    () => post(`/api/feeds/${work.feedId}/work/${work.id}/cancel`),
+                    "Instruction cancelled",
+                  )}>Cancel instruction</button>
+                </div>
+              </footer>
+            )}
+            {work.status === "completed" && (
+              <footer className="card-action">
+                <div>
+                  <span className="action-label">Done</span>
+                  <b>Completed</b>
+                </div>
+              </footer>
+            )}
           </article>
         ))}
         {!cards.length && !routineActions.length && !feedWork.length && <div className="empty"><h2>Nothing here right now.</h2><p>{tab === "review" ? "A quiet feed is allowed. Wake the feed thread when you want Codex to collect or drain pending work." : "Move back to To review when you are ready for the next pass."}</p></div>}

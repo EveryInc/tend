@@ -26,7 +26,7 @@ function WorkspaceEditor({
       <div className="workspace-editor-head">
         <h3>{label}</h3>
         <div className="workspace-editor-actions">
-          {undoRevision && <button className="button text" onClick={() => void (async () => {
+          {undoRevision && <button aria-label={`Undo last save for ${label}`} className="button text" onClick={() => void (async () => {
             setSaving(true);
             try {
               await onUndo(undoRevision);
@@ -37,7 +37,7 @@ function WorkspaceEditor({
               setSaving(false);
             }
           })()}>Undo last save</button>}
-          <button className="button ghost" disabled={!changed || saving} onClick={() => void (async () => {
+          <button aria-label={`Save ${label}`} className="button ghost" disabled={!changed || saving} onClick={() => void (async () => {
             setSaving(true);
             try {
               const revision = await onSave(value);
@@ -50,7 +50,7 @@ function WorkspaceEditor({
           })()}>{saving ? "Saving…" : "Save"}</button>
         </div>
       </div>
-      <textarea value={value} onFocus={onFocus} onClick={onFocus} onChange={(event) => setValue(event.target.value)} rows={Math.max(7, Math.min(20, value.split("\n").length + 2))} />
+      <textarea aria-label={label} value={value} onFocus={onFocus} onClick={onFocus} onChange={(event) => setValue(event.target.value)} rows={Math.max(7, Math.min(20, value.split("\n").length + 2))} />
     </section>
   );
 }

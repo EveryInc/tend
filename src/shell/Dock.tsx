@@ -79,8 +79,8 @@ export function Dock({
           </div>
         </div>
         <div className="dock-row">
-          <textarea ref={inputRef} value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={onDockKeyDown} rows={1} placeholder="Tell Codex what to notice, change, or do…" />
-          <button className="button primary" type="submit">Send</button>
+          <textarea aria-label="Instruction for Codex" ref={inputRef} value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={onDockKeyDown} rows={1} placeholder="Tell Codex what to notice, change, or do…" />
+          <button className="button primary" type="submit" disabled={!value.trim()}>Send</button>
         </div>
         <div className="dock-footer">
           <div className="dock-hints"><kbd>↑</kbd>/<kbd>↓</kbd> change scope when empty · hold <kbd>{state.dictation.activationLabel}</kbd> to dictate · <kbd>Enter</kbd> send</div>

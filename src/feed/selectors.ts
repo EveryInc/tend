@@ -1,5 +1,5 @@
 import type { Tab } from "../app/types";
-import type { Card, CardAction, FeedView, RoutineActionGroup } from "../types";
+import type { Card, CardAction, FeedView, RoutineActionGroup, WorkItem } from "../types";
 
 export function visibleCards(feed: FeedView, tab: Tab): Card[] {
   const pass = feed.config.currentPass;
@@ -22,11 +22,14 @@ export function visibleRoutineActions(feed: FeedView, tab: Tab): RoutineActionGr
   return feed.routineActions.filter((group) => group.status === status);
 }
 
+export function visibleFeedWork(feed: FeedView, tab: Tab): WorkItem[] {
+  if (tab === "review") return [];
+  const status = tab === "done" ? "completed" : tab;
+  return feed.work.filter((work) => work.cardId === "__feed__" && work.status === status);
+}
+
 export function countFor(feed: FeedView, tab: Tab): number {
-  const feedWork = tab === "queued" || tab === "working"
-    ? feed.work.filter((work) => work.cardId === "__feed__" && work.status === tab).length
-    : 0;
-  return visibleCards(feed, tab).length + visibleRoutineActions(feed, tab).length + feedWork;
+  return visibleCards(feed, tab).length + visibleRoutineActions(feed, tab).length + visibleFeedWork(feed, tab).length;
 }
 
 export function visibleCardActions(card: Card): CardAction[] {

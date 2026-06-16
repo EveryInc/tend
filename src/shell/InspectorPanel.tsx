@@ -27,12 +27,19 @@ export function InspectorPanel({ value, state, onClose, onChanged }: { value: In
   return (
     <div className="overlay" onMouseDown={onClose}>
       <section className="inspector setup-panel" onMouseDown={(event) => event.stopPropagation()}>
-        <button className="close" onClick={onClose}>×</button>
+        <button aria-label="Close setup panel" className="close" onClick={onClose}>×</button>
         <div className="panel-kicker">{create ? "New feed" : "New source"}</div>
         <h2>{create ? "What should this feed notice?" : "What else should this feed pay attention to?"}</h2>
         <p>Describe it naturally. Codex can refine the recipe with you in the feed thread.</p>
-        <textarea autoFocus rows={8} value={text} onChange={(event) => setText(event.target.value)} placeholder={create ? "Track the models I am actually using and show me meaningful changes in where each one is winning…" : "Also look at the product planning Slack channel and pull in decisions or unresolved questions that affect Q3…"} />
-        <button className="button primary large" onClick={() => void submit()}>{create ? "Create feed" : "Add source"}</button>
+        <textarea
+          aria-label={create ? "Feed brief" : "Source brief"}
+          autoFocus
+          rows={8}
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          placeholder={create ? "Track the models I am actually using and show me meaningful changes in where each one is winning…" : "Also look at the product planning Slack channel and pull in decisions or unresolved questions that affect Q3…"}
+        />
+        <button className="button primary large" disabled={!text.trim()} onClick={() => void submit()}>{create ? "Create feed" : "Add source"}</button>
       </section>
     </div>
   );
