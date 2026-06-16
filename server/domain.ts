@@ -1701,11 +1701,13 @@ export class AttentionDomain {
     await this.assertThread(feedId, threadId, explicitCrossFeed);
     return this.store.serialize(async () => {
       const feed = await this.store.readFeed(feedId);
-      const existing = feed.work.find((work) => work.status === "working");
-      if (existing && !(await this.quarantineLegacyMutationWork(feed, existing))) return existing;
-      let work = feed.work.find((item) => item.status === "queued");
-      while (work && await this.quarantineLegacyMutationWork(feed, work)) {
-        work = feed.work.find((item) => item.status === "queued");
+      for (const existing of feed.work.filter((work) => work.status === "working")) {
+        if (!(await this.quarantineLegacyMutationWork(feed, existing))) return existing;
+      }
+      let work: WorkItem | undefined;
+      for (const candidate of feed.work.filter((item) => item.status === "queued")) {
+        if (await this.quarantineLegacyMutationWork(feed, candidate)) continue;
+        work ??= candidate;
       }
       if (!work) return null;
       work.status = "working";
