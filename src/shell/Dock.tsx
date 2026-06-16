@@ -4,7 +4,7 @@ import { sameTarget } from "../state/voiceTarget";
 import type { FeedView, VoiceTarget, WorkspaceView } from "../types";
 
 function targetLabel(target: VoiceTarget, state: WorkspaceView): string {
-  if (target.kind === "attention") return "Attention";
+  if (target.kind === "attention") return "Tend";
   if (target.kind === "feed") return state.feeds.find((feed) => feed.id === target.feedId)?.name ?? target.feedId;
   if (target.kind === "sweep") return "This sweep";
   if (target.kind === "card") return state.active.cards.find((card) => card.id === target.cardId)?.title ?? "Active card";

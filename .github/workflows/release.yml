@@ -55,18 +55,18 @@ jobs:
         run: pnpm build
 
       - name: Compile local binary
-        run: pnpm attention:build
+        run: pnpm tend:build
 
       - name: Smoke test local binary
-        run: pnpm attention:smoke
+        run: pnpm tend:smoke
 
       - name: Package local binary
-        run: pnpm attention:package
+        run: pnpm tend:package
 
       - name: Upload release archive
         uses: actions/upload-artifact@v4
         with:
-          name: attention-${{ matrix.label }}
+          name: tend-${{ matrix.label }}
           path: |
             dist-bin/releases/*.tar.gz
             dist-bin/releases/*.sha256

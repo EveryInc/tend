@@ -88,7 +88,7 @@ function revisionLabel(target: VoiceTarget): string {
   if (target.kind === "source_recipe") return `Source recipe · ${target.sourceId}`;
   if (target.kind === "prompt_layer") return `Feed prompt · ${target.promptId}`;
   if (target.kind === "global_prompt") return `Global prompt · ${target.promptId}`;
-  return "Attention policy";
+  return "Tend policy";
 }
 
 const CARD_BLOCK_TYPES = new Set<CardBlock["type"]>([
@@ -2119,11 +2119,12 @@ export class AttentionDomain {
       kind: "feed_improvement",
       status: "to_review_new",
       eyebrow: "Feed setup",
-      title: `Teach ${config.name} where to look.`,
-      why: "The feed exists. Codex should now propose the smallest useful source recipe and a heartbeat cadence for review.",
+      title: `Connect ${config.name} to Codex.`,
+      why: "Tend created the feed locally. Give it one dedicated Codex thread before asking that thread to propose sources or collect anything.",
       blocks: [
         { id: "brief", type: "memo", label: "Your brief", text: normalizedBrief },
-        { id: "clarify", type: "clarification", label: "Next step", text: "Wake this feed's Codex thread or use the dock. Codex will propose sources in plain English before collecting." },
+        { id: "connect", type: "checklist", label: "Connect the operator", items: [`Keep Tend open in Codex Desktop's in-app browser`, `Create one fresh Codex thread just for ${config.name}`, `Run tend setup codex --feed ${config.id} and paste the prompt into that thread`, "Open or wake that thread and say “go deal with the feed” for the first run"] },
+        { id: "clarify", type: "clarification", label: "Then teach it where to look", text: "Once connected, the feed thread will propose the smallest useful source recipe and heartbeat cadence in plain English before collecting." },
       ],
       proposedAction: { label: "Propose source recipe", instruction: "Based on this feed brief, propose the smallest useful real source recipe and a heartbeat cadence. Return the proposal for review before collecting." },
       actions: [{ id: "propose-source-recipe", label: "Propose source recipe", behavior: "queue_instruction", instruction: "Based on this feed brief, propose the smallest useful real source recipe and a heartbeat cadence. Return the proposal for review before collecting.", variant: "primary", shortcut: "p" }],

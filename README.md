@@ -1,88 +1,116 @@
-# Attention
+# Tend
 
-Attention is an open-source, local-first feed workspace for Codex Desktop. It gives each feed a
-durable local home, a calm review UI, and a JSON CLI that Codex can use to refresh sources, claim
-queued work, record results, and safely perform approved actions.
+Tend is an open-source, local-first feed workspace built for Codex Desktop. It is intended to run
+inside Codex's in-app browser: the browser UI is where you review and steer a feed, while one
+dedicated Codex thread operates that feed through Tend's local CLI.
 
-Attention is not a hosted service. The app stores state on your machine. Codex Desktop remains the
-agent runtime and owns access to Gmail, GitHub, Slack, browser automation, and other local
-connectors.
+Tend is not a hosted agent or connector service. Its state stays on your machine. Gmail, GitHub,
+Slack, browser automation, and other connector credentials remain in Codex Desktop.
 
-## Naming
+## The Core Model
 
-**Attention** is the open-source project, local runtime, web app, and CLI. **Tend** is the optional
-native iPhone companion and the name retained by the maintainer launcher, `bin/tend-live`. The
-repository URL remains `EveryInc/tend`, while user-facing runtime commands use `attention`.
+Every feed has two parts:
 
-## Mental Model
+1. **A Tend view in Codex's in-app browser** for reviewing cards, approving actions, editing prompts,
+   and giving feedback.
+2. **One dedicated Codex thread** that collects sources, drains queued work, records results, and
+   runs the feed's heartbeat.
+
+Do not reuse one Codex thread across several feeds. The thread is the feed's operator and durable
+working context.
 
 ```mermaid
 flowchart LR
-  User["User reviews feed UI"] --> UI["Attention UI"]
-  UI --> API["Local HTTP API"]
+  User["User reviews a feed"] --> UI["Tend in Codex's in-app browser"]
+  UI --> API["Local Tend API"]
   API --> Domain["Domain rules"]
-  Domain --> DB["SQLite authority"]
-  DB --> Mirrors["Readable file mirrors"]
-  Domain --> Events["SSE changes"]
-  Events --> UI
-
-  Thread["Codex feed thread"] --> CLI["attention cli"]
+  Domain --> DB["Local SQLite authority"]
+  Domain --> Events["Realtime UI updates"]
+  Thread["One Codex thread for this feed"] --> CLI["tend cli"]
   CLI --> Domain
   Thread --> Connectors["Codex Desktop connectors"]
   Connectors --> Thread
 ```
 
-The UI and CLI share the same domain rules. Source credentials never live in Attention; they stay in
-Codex Desktop.
+## Quick Start
 
-## Get Started
-
-There are two supported ways to run Attention.
-
-### Use The Binary
+### 1. Start Tend
 
 Download the latest archive from [GitHub Releases](https://github.com/EveryInc/tend/releases), then
 unpack and start it:
 
 ```sh
-tar -xzf attention-<version>-<platform>-<arch>.tar.gz
-cd attention-<version>-<platform>-<arch>
-./attention start
+tar -xzf tend-<version>-<platform>-<arch>.tar.gz
+cd tend-<version>-<platform>-<arch>
+./tend start
 ```
 
-The binary starts the local server in the background and serves both UI and API from:
+Confirm the local runtime is healthy:
+
+```sh
+./tend health
+./tend doctor
+```
+
+Tend serves the UI and API from:
 
 ```text
 http://127.0.0.1:4332
 ```
 
-Useful runtime commands:
-
-```sh
-./attention health
-./attention doctor
-./attention logs
-./attention restart
-./attention stop
-```
-
-Use foreground mode while debugging:
-
-```sh
-./attention start --foreground
-```
+Open that URL in **Codex Desktop's in-app browser**. A normal browser is useful for development, but
+the intended product flow keeps Tend beside the Codex threads that operate its feeds.
 
 macOS release binaries are not Apple Developer ID signed or notarized yet. If Gatekeeper warns on
 first launch, open the binary explicitly from Finder or remove the quarantine attribute:
 
 ```sh
-xattr -d com.apple.quarantine ./attention
-./attention start
+xattr -d com.apple.quarantine ./tend
+./tend start
 ```
 
-### Clone And Extend
+### 2. Choose Or Create A Feed
 
-Use the source path when you want to inspect, modify, or extend the app:
+Inbox is ready to configure on first launch. To make another feed, open the feed menu, choose
+**Create a feed**, and describe what it should notice in plain English.
+
+Tend creates the local feed immediately. It does not create or activate a Codex thread for you.
+
+### 3. Connect One Codex Thread
+
+Create a fresh Codex Desktop thread specifically for the feed. Then print that feed's setup prompt:
+
+```sh
+./tend setup codex --feed inbox
+```
+
+Paste the complete output into the new thread. The prompt tells Codex to bind that thread to the
+feed, install or update one heartbeat, use Tend's local CLI contract, and process queued work before
+refreshing sources.
+
+Repeat this step for every feed, changing the feed id:
+
+```sh
+./tend setup codex --feed ai-research
+```
+
+### 4. Activate The Feed
+
+The setup prompt asks the thread to handle the feed once immediately. After that, the heartbeat can
+wake it automatically.
+
+Manually open or wake the same feed thread and say:
+
+```text
+go deal with the feed
+```
+
+Use that manual activation for the first run, after a paused or missing heartbeat, or whenever you
+want an immediate sweep. Keep one thread per feed so the command always has an unambiguous target.
+
+## Run From Source
+
+Use the source path when you want to inspect, modify, or extend Tend.
 
 Prerequisites:
 
@@ -98,45 +126,39 @@ pnpm install
 pnpm start
 ```
 
-Open:
+Open `http://127.0.0.1:4321` in Codex Desktop's in-app browser. Vite serves the UI on `4321` and
+proxies `/api` to the local API on `4332`.
 
-```text
-http://127.0.0.1:4321
-```
-
-In development, Vite serves the UI on `4321` and proxies `/api` to the local API on `4332`.
-
-## Set Up Codex
-
-Print the setup prompt:
+The source equivalent of the setup command is:
 
 ```sh
-./attention setup codex
+pnpm tend -- setup codex --feed inbox
 ```
 
-When running from source:
+## Runtime Commands
 
 ```sh
-pnpm attention -- setup codex
+./tend version
+./tend status
+./tend health
+./tend doctor
+./tend logs
+./tend restart
+./tend stop
 ```
 
-Paste the prompt into a fresh Codex Desktop thread. Use one Codex thread per feed. That feed thread
-binds itself with `attention cli feed:bind`, installs or updates one heartbeat automation, drains
-queued work before using connectors, and refreshes sources through the local Codex connector
-runtime.
+Use foreground mode while debugging:
 
-Normal manual fallback: wake the feed's home thread and say:
-
-```text
-go deal with the feed
+```sh
+./tend start --foreground
 ```
 
-The thread should list work, claim work, act through local connectors only after a claim, and record
-the result through `attention cli`.
+The pre-release `attention` command remains as a compatibility alias. New documentation and release
+artifacts use the fixed product name, Tend.
 
 ## Local Data
 
-Runtime data lives under `~/.attention/` by default:
+Runtime data remains under `~/.attention/` by default for compatibility:
 
 ```text
 ~/.attention/
@@ -149,7 +171,7 @@ Runtime data lives under `~/.attention/` by default:
 Set `ATTENTION_HOME` to use another runtime root:
 
 ```sh
-ATTENTION_HOME=.local-attention ./attention start
+ATTENTION_HOME=.local-tend ./tend start
 ```
 
 SQLite is the runtime authority. The `data/` directory keeps readable mirrors and immutable raw
@@ -158,49 +180,38 @@ evidence snapshots for backup compatibility and local debugging.
 Back up and restore:
 
 ```sh
-attention backup export ./attention-backup
-attention stop
-attention backup import ./attention-backup
+tend backup export ./tend-backup
+tend stop
+tend backup import ./tend-backup
 ```
 
 Exports require a new destination and never delete an existing path. Imports are staged before the
-current data is swapped, and Attention refuses to import while the same runtime is active.
+current data is swapped, and Tend refuses to import while the same runtime is active.
 
 See [docs/DATA.md](./docs/DATA.md) for the full storage map.
 
 ## iPhone App
 
-The optional native iPhone app mirrors every configured feed through a private Supabase project.
-The Mac remains authoritative: the phone reviews cached projections and records commands, while the
-canonical Attention runtime validates and imports those commands through the same domain rules used by
-the web app and CLI.
+Tend includes an optional native iPhone review client. It mirrors configured feeds through a private
+Supabase project. The Mac remains authoritative: the phone reviews cached projections and records
+commands, while the local Tend runtime validates and imports those commands through the same domain
+rules used by the web app and CLI.
 
 The SwiftUI project, database migration, and production setup are documented in
 [docs/IOS.md](./docs/IOS.md).
 
 ## CLI Contract
 
-The human-facing CLI is:
-
-```sh
-attention version
-attention start
-attention status
-attention doctor
-attention setup codex
-attention backup export
-```
-
 Codex operates feeds through the low-level JSON CLI:
 
 ```sh
-attention cli state --feed inbox
-attention cli work:list --feed inbox --thread <current-codex-thread-id>
-attention cli work:claim --feed inbox --thread <current-codex-thread-id>
+tend cli state --feed inbox
+tend cli work:list --feed inbox --thread <current-codex-thread-id>
+tend cli work:claim --feed inbox --thread <current-codex-thread-id>
 ```
 
-The JSON CLI is the single v0 agent contract for feed setup, work claiming, card/source/sweep
-recording, policy revisions, feedback, and runtime inspection. See
+The JSON CLI is the v0 agent contract for feed setup, work claiming, card and source recording,
+policy revisions, feedback, and runtime inspection. See
 [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md) and [docs/SKILL.md](./docs/SKILL.md).
 
 ## Development
@@ -210,21 +221,13 @@ Core checks:
 ```sh
 pnpm check
 pnpm build
-pnpm attention:build
-pnpm attention:smoke
-pnpm attention:package
+pnpm tend:build
+pnpm tend:smoke
+pnpm tend:package
 ```
 
-`pnpm check` runs typecheck, Oxlint, and Bun tests. `pnpm attention:smoke` validates the compiled
-binary against a temporary runtime home.
-
-Build and package a local binary:
-
-```sh
-pnpm attention:build
-pnpm attention:smoke
-pnpm attention:package
-```
+`pnpm check` runs typecheck, Oxlint, and Bun tests. `pnpm tend:smoke` validates the compiled binary
+against a temporary runtime home.
 
 Seed a scrubbed demo feed:
 

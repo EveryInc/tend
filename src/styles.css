@@ -286,6 +286,9 @@ body.is-pushing-to-talk .attention-card.is-active { border-color: var(--blue); b
 .close { position: absolute; top: 13px; right: 14px; border: 0; background: transparent; color: var(--ink-2); font-size: 28px; }
 .setup-panel textarea { width: 100%; margin: 10px 0 13px; padding: 13px; border: 1px solid var(--line-2); border-radius: 7px; outline: none; line-height: 1.55; }
 .setup-panel textarea:focus { border-color: #aab8dc; box-shadow: 0 0 0 3px var(--blue-soft); }
+.setup-expectation { display: grid; gap: 3px; margin: 15px 0 4px; padding: 13px 14px; border: 1px solid #d9d5c8; border-radius: 8px; background: #f7f4ec; }
+.setup-expectation strong { color: var(--ink-2); font-size: 13px; }
+.setup-expectation span { color: var(--ink-3); font-size: 12px; line-height: 1.5; }
 pre { overflow: auto; padding: 12px; background: #f4f2eb; color: var(--ink-2); white-space: pre-wrap; font: 12px/1.5 var(--mono); }
 .workspace-page { max-width: 1040px; margin: 0 auto; padding: 31px 34px 190px; }
 .workspace-proposals { max-width: 1040px; margin: 22px auto -8px; padding: 0 34px; }
@@ -306,6 +309,17 @@ pre { overflow: auto; padding: 12px; background: #f4f2eb; color: var(--ink-2); w
 .workspace-editor h3 { margin: 0; font-size: 15px; }
 .workspace-editor textarea { width: 100%; margin-top: 11px; resize: vertical; padding: 12px 13px; border: 1px solid var(--line); border-radius: 6px; outline: 0; background: #fff; color: var(--ink-2); font: 12px/1.55 var(--mono); }
 .workspace-editor textarea:focus { border-color: #aab8dc; box-shadow: 0 0 0 3px var(--blue-soft); }
+.thread-onboarding { padding: 18px 19px; border: 1px solid #d7d2c3; border-radius: 9px; background: #faf7ee; }
+.thread-onboarding.is-partial { border-color: #d0d9cb; background: var(--sage-soft); }
+.thread-onboarding h3 { margin: 5px 0 7px; font: 500 22px/1.18 var(--serif); letter-spacing: -.015em; }
+.thread-onboarding > p { max-width: 760px; margin: 0; color: var(--ink-2); font-size: 13px; }
+.thread-onboarding ol { display: grid; gap: 5px; margin: 13px 0; padding-left: 21px; color: var(--ink-2); font-size: 13px; }
+.thread-setup-command { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 11px; border: 1px solid var(--line); border-radius: 7px; background: rgba(255,255,255,.72); }
+.thread-setup-command code { overflow-wrap: anywhere; color: var(--ink-2); font: 12px/1.5 var(--mono); }
+.thread-setup-command .button { flex: 0 0 auto; }
+.thread-onboarding .thread-command-note { margin-top: 8px; color: var(--ink-4); font-size: 11px; }
+.thread-onboarding .thread-manual-wake { margin-top: 12px; color: var(--ink-3); }
+.thread-command-note code, .thread-manual-wake code { padding: 1px 4px; border-radius: 4px; background: #ebe8de; color: var(--ink-2); font: 12px/1.4 var(--mono); }
 .thread-status { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); overflow: hidden; border: 1px solid var(--line); border-radius: 9px; background: rgba(255,254,250,.72); }
 .thread-status div { display: grid; gap: 4px; padding: 14px 16px; border-bottom: 1px solid var(--line); }
 .thread-status div:nth-child(odd) { border-right: 1px solid var(--line); }
@@ -356,5 +370,6 @@ pre { overflow: auto; padding: 12px; background: #f4f2eb; color: var(--ink-2); w
   .routine-group-head { align-items: flex-start; flex-direction: column; }
   .workspace-page { padding: 24px 14px 180px; }
   .workspace-proposals { padding: 0 14px; }
+  .thread-setup-command { align-items: stretch; flex-direction: column; }
   .learning-page { padding: 24px 14px 180px; }
 }

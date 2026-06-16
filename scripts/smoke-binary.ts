@@ -5,14 +5,14 @@ import path from "node:path";
 import { SQLITE_SCHEMA_VERSION } from "../server/sqlite";
 import { APP_VERSION, CLI_CONTRACT_VERSION } from "../server/version";
 
-const binaryPath = path.resolve(process.env.ATTENTION_BINARY ?? path.join("dist-bin", "attention"));
+const binaryPath = path.resolve(process.env.TEND_BINARY ?? process.env.ATTENTION_BINARY ?? path.join("dist-bin", "tend"));
 const cwd = path.resolve(process.env.ATTENTION_SMOKE_CWD ?? process.cwd());
 const port = process.env.ATTENTION_API_PORT ?? "4599";
-const home = await mkdtemp(path.join(os.tmpdir(), "attention-smoke-"));
+const home = await mkdtemp(path.join(os.tmpdir(), "tend-smoke-"));
 const statusUrl = `http://127.0.0.1:${port}/api/status`;
 
 if (!existsSync(binaryPath)) {
-  throw new Error(`Compiled binary not found: ${binaryPath}. Run pnpm attention:build first.`);
+  throw new Error(`Compiled binary not found: ${binaryPath}. Run pnpm tend:build first.`);
 }
 
 const binaryVersion = await cliJson(["version"]);
@@ -96,7 +96,7 @@ async function cliJson(args: string[]): Promise<any> {
     new Response(subprocess.stderr).text(),
     subprocess.exited,
   ]);
-  if (exitCode !== 0) throw new Error(`attention ${args.join(" ")} failed with exit code ${exitCode}: ${stderr}`);
+  if (exitCode !== 0) throw new Error(`tend ${args.join(" ")} failed with exit code ${exitCode}: ${stderr}`);
   return JSON.parse(stdout);
 }
 
@@ -123,6 +123,6 @@ async function fetchUi(): Promise<{ url: string; title: string }> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`UI returned HTTP ${response.status}.`);
   const html = await response.text();
-  if (!html.includes("<title>Attention</title>")) throw new Error("UI did not serve the built Attention document.");
-  return { url, title: "Attention" };
+  if (!html.includes("<title>Tend</title>")) throw new Error("UI did not serve the built Tend document.");
+  return { url, title: "Tend" };
 }

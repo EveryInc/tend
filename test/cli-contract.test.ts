@@ -30,7 +30,7 @@ describe("CLI contract", () => {
 
   test("documents only implemented public commands", async () => {
     const contract = await readFile("docs/AGENT_CONTRACT.md", "utf8");
-    const documented = [...contract.matchAll(/`attention cli ([^`\s]+)/g)].map((match) => match[1]);
+    const documented = [...contract.matchAll(/`tend cli ([^`\s]+)/g)].map((match) => match[1]);
     const commandNames = new Set(CLI_COMMANDS.map(cliCommandName));
 
     expect(documented.length).toBeGreaterThan(10);
@@ -44,23 +44,27 @@ describe("CLI contract", () => {
       ok: false,
       error: "Missing --thread",
       code: "missing_flag",
-      hint: "Usage: attention cli work:claim --feed <id> --thread <id> [--cross-feed]",
+      hint: "Usage: tend cli work:claim --feed <id> --thread <id> [--cross-feed]",
     });
   });
 
   test("prints a self-contained Codex setup prompt for binary installs", () => {
     const prompt = setupCodexPrompt({
-      binaryPath: "/tmp/attention install/attention",
-      skillPath: "/tmp/attention install/docs/SKILL.md",
-      attentionHome: "/tmp/attention home",
+      binaryPath: "/tmp/tend install/tend",
+      skillPath: "/tmp/tend install/docs/SKILL.md",
+      attentionHome: "/tmp/tend home",
+      feedId: "model-watch",
     });
 
-    expect(prompt).toContain("Local Attention entry point: /tmp/attention install/attention");
-    expect(prompt).toContain("Skill/reference: /tmp/attention install/docs/SKILL.md");
-    expect(prompt).toContain("CLI prefix: ATTENTION_HOME='/tmp/attention home' '/tmp/attention install/attention'");
-    expect(prompt).toContain("Use the local Attention CLI contract, not a hosted Attention or MCP setup.");
+    expect(prompt).toContain("Tend is Codex-native.");
+    expect(prompt).toContain('This prompt connects the current thread to "model-watch"');
+    expect(prompt).toContain("Local Tend entry point: /tmp/tend install/tend");
+    expect(prompt).toContain("Skill/reference: /tmp/tend install/docs/SKILL.md");
+    expect(prompt).toContain("CLI prefix: ATTENTION_HOME='/tmp/tend home' '/tmp/tend install/tend'");
+    expect(prompt).toContain("Use the local Tend CLI contract, not a hosted Tend or MCP setup.");
     expect(prompt).toContain("Do setup sequentially: bind first and wait for it to finish, then propose/install the heartbeat.");
-    expect(prompt).toContain("ATTENTION_HOME='/tmp/attention home' '/tmp/attention install/attention' cli feed:bind --feed inbox --thread <current-codex-thread-id>");
+    expect(prompt).toContain("ATTENTION_HOME='/tmp/tend home' '/tmp/tend install/tend' cli feed:bind --feed model-watch --thread <current-codex-thread-id>");
+    expect(prompt).toContain('says "go deal with the feed"');
   });
 
   test("refuses an implicit CLI runtime that differs from healthy tend-live", async () => {

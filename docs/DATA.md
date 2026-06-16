@@ -1,6 +1,6 @@
 # Data
 
-Attention is local-first. By default, user data lives under:
+Tend is local-first. By default, user data lives under:
 
 ```text
 ~/.attention/
@@ -13,7 +13,7 @@ Attention is local-first. By default, user data lives under:
 Override the runtime root with:
 
 ```sh
-ATTENTION_HOME=/path/to/attention attention start
+ATTENTION_HOME=/path/to/attention tend start
 ```
 
 ## Current Storage
@@ -38,21 +38,21 @@ ATTENTION_HOME=/path/to/attention attention start
 
 ## Connector Credentials
 
-Attention does not store Gmail, GitHub, Slack, browser, or other connector credentials. Those live in the local Codex Desktop runtime.
+Tend does not store Gmail, GitHub, Slack, browser, or other connector credentials. Those live in the local Codex Desktop runtime.
 
 ## Backup
 
 ```sh
-attention backup export
-attention backup export ./attention-backup
-attention stop
-attention backup import ./attention-backup
+tend backup export
+tend backup export ./tend-backup
+tend stop
+tend backup import ./tend-backup
 ```
 
 The export command writes a backup directory with:
 
 ```text
-attention-backup/
+tend-backup/
   attention.db
   data/
   manifest.json
@@ -62,7 +62,7 @@ attention-backup/
 file mirrors and immutable raw evidence snapshots. Export writes through a temporary staging
 directory and refuses to overwrite or delete an existing destination.
 
-Import first copies the backup into a temporary staging directory. Attention refuses to import while
+Import first copies the backup into a temporary staging directory. Tend refuses to import while
 the same runtime home is active, then swaps the staged database and data into place with rollback if
 the swap fails. Older data-directory-only backups are still accepted; the next local runtime start
 rehydrates `attention.db` from those imported file mirrors.

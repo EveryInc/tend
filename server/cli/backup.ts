@@ -14,7 +14,7 @@ export async function backupExportCommand(targetPath: string): Promise<void> {
     throw new Error(`Backup target already exists: ${target}. Choose a new empty path.`);
   }
   if (isWithin(attentionDataDir(), target)) {
-    throw new Error("Backup target cannot be inside Attention's data directory.");
+    throw new Error("Backup target cannot be inside Tend's data directory.");
   }
 
   await mkdir(path.dirname(target), { recursive: true });
@@ -27,7 +27,7 @@ export async function backupExportCommand(targetPath: string): Promise<void> {
         await cp(attentionDataDir(), path.join(stage, "data"), { recursive: true });
         await rm(path.join(stage, "data", ".mutation-lock"), { recursive: true, force: true });
         await writeFile(path.join(stage, "manifest.json"), JSON.stringify({
-          name: "attention-backup",
+          name: "tend-backup",
           format: 2,
           exportedAt: new Date().toISOString(),
           dataDir: attentionDataDir(),
@@ -121,14 +121,14 @@ function validateSqliteBackup(dbPath: string): void {
     try {
       schemaRow = db.query("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string } | null;
     } catch {
-      throw new Error("Backup SQLite database is not an Attention runtime.");
+      throw new Error("Backup SQLite database is not a Tend runtime.");
     }
     const schemaVersion = Number(schemaRow?.value);
     if (!Number.isInteger(schemaVersion) || schemaVersion < 1) {
-      throw new Error("Backup SQLite database is missing a valid Attention schema version.");
+      throw new Error("Backup SQLite database is missing a valid Tend schema version.");
     }
     if (schemaVersion > SQLITE_SCHEMA_VERSION) {
-      throw new Error(`Backup schema ${schemaVersion} is newer than this Attention build supports (${SQLITE_SCHEMA_VERSION}).`);
+      throw new Error(`Backup schema ${schemaVersion} is newer than this Tend build supports (${SQLITE_SCHEMA_VERSION}).`);
     }
   } finally {
     db.close();
@@ -141,10 +141,10 @@ async function assertRuntimeStopped(): Promise<void> {
     if (!response.ok) return;
     const status = await response.json() as { dataDir?: string };
     if (status.dataDir && path.resolve(status.dataDir, "..") === path.resolve(attentionHome())) {
-      throw new Error("Stop Attention before importing a backup into its active runtime.");
+      throw new Error("Stop Tend before importing a backup into its active runtime.");
     }
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith("Stop Attention")) throw error;
+    if (error instanceof Error && error.message.startsWith("Stop Tend")) throw error;
   }
 }
 

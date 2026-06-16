@@ -51,13 +51,13 @@ jobs:
         run: pnpm build
 
       - name: Compile local binary
-        run: pnpm attention:build
+        run: pnpm tend:build
 
       - name: Smoke test local binary
-        run: pnpm attention:smoke
+        run: pnpm tend:smoke
 
       - name: Package local binary
-        run: pnpm attention:package
+        run: pnpm tend:package
 
   mobile-database:
     name: Supabase migration and bridge

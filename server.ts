@@ -59,7 +59,7 @@ const server = Bun.serve({
   fetch: app.fetch,
 });
 
-console.log(`attention api listening on http://127.0.0.1:${port}`);
+console.log(`Tend API listening on http://127.0.0.1:${port}`);
 
 export function closeServer() {
   mobileSync?.stop();

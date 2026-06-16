@@ -1,8 +1,8 @@
-# Attention Architecture
+# Tend Architecture
 
 ## Product Shape
 
-Attention is a Codex-native browser shell, not a traditional integration server. The app renders
+Tend is a Codex-native browser shell, not a traditional integration server. The app renders
 cards and records durable state. The Codex thread bound to each feed does the flexible work:
 collecting authorized sources, judging what deserves attention, composing cards, interpreting
 instructions, performing approved actions, and distilling learnings.
@@ -18,9 +18,9 @@ All runtime state is local and git-ignored under `~/.attention/` by default. SQL
 authority, while `data/` keeps readable mirrors and immutable evidence artifacts. Use
 `ATTENTION_HOME` to isolate development or validation state.
 
-The installed `attention` executable is the canonical entrypoint. `attention start` re-launches
+The installed `tend` executable is the canonical entrypoint. `tend start` re-launches
 that same executable in the background with the current `PATH`, `ATTENTION_HOME`, and port settings.
-`attention start --foreground` keeps the server attached to the current terminal. There is no
+`tend start --foreground` keeps the server attached to the current terminal. There is no
 separate live runner.
 
 ```text
@@ -52,7 +52,7 @@ During first local setup, Codex checks whether Monologue is installed and record
 recording shortcut in `integrations/dictation.json`. The browser consumes only that small local
 capability record. It does not inspect macOS applications or Monologue settings directly.
 
-## Attention Loop
+## Tend Loop
 
 1. The feed thread reads its authorized source recipes and checkpoints.
 2. Codex collects new material with the appropriate connector, local tool, browser workflow, or
@@ -78,7 +78,7 @@ There are three learning surfaces:
   so policies can be reevaluated later.
 
 Small corrections can become reversible policy revisions. The persistent dock keeps its target
-explicit: active card, current sweep, feed, source recipe, prompt layer, global prompt, or Attention.
+explicit: active card, current sweep, feed, source recipe, prompt layer, global prompt, or Tend.
 Every dock instruction enters the same scoped work queue. Sweep feedback records a trace and asks
 Codex to rejudge the visible batch; the browser does not interpret the prose or hide cards on its own.
 Codex can write back reranked cards, source changes, or visible revision proposals with explicit

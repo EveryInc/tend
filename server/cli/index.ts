@@ -42,13 +42,13 @@ export async function runAttentionCli(rawArgs: string[]): Promise<void> {
       await doctorCommand();
       break;
     case "setup":
-      if (subcommand !== "codex") throw new Error("Expected: attention setup codex");
-      setupCodexCommand();
+      if (subcommand !== "codex") throw new Error("Expected: tend setup codex [--feed <id>]");
+      setupCodexCommand(rest);
       break;
     case "backup":
       if (subcommand === "export") await backupExportCommand(rest[0] ?? path.join(attentionHome(), "exports", `attention-${Date.now()}`));
       else if (subcommand === "import") await backupImportCommand(rest[0] ?? "");
-      else throw new Error("Expected: attention backup export [path] or attention backup import <path>");
+      else throw new Error("Expected: tend backup export [path] or tend backup import <path>");
       break;
     case "help":
       helpCommand();

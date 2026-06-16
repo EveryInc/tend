@@ -13,11 +13,11 @@ pnpm install
 pnpm start
 pnpm check
 pnpm build
-pnpm attention -- version
-pnpm attention -- doctor
-pnpm attention:build
-pnpm attention:smoke
-pnpm attention:package
+pnpm tend -- version
+pnpm tend -- doctor
+pnpm tend:build
+pnpm tend:smoke
+pnpm tend:package
 ```
 
 ## Local Runtime
@@ -25,13 +25,13 @@ pnpm attention:package
 Use `ATTENTION_HOME` to keep development data separate:
 
 ```sh
-ATTENTION_HOME=.local-attention pnpm attention -- start --foreground
+ATTENTION_HOME=.local-tend pnpm tend -- start --foreground
 ```
 
 In another terminal, verify the runtime:
 
 ```sh
-ATTENTION_HOME=.local-attention pnpm attention -- doctor
+ATTENTION_HOME=.local-tend pnpm tend -- doctor
 ```
 
 The doctor output is fully green only while the local API is running.
@@ -39,9 +39,9 @@ The doctor output is fully green only while the local API is running.
 For the background runner, use:
 
 ```sh
-ATTENTION_HOME=.local-attention pnpm attention -- start
-ATTENTION_HOME=.local-attention pnpm attention -- health
-ATTENTION_HOME=.local-attention pnpm attention -- stop
+ATTENTION_HOME=.local-tend pnpm tend -- start
+ATTENTION_HOME=.local-tend pnpm tend -- health
+ATTENTION_HOME=.local-tend pnpm tend -- stop
 ```
 
 ## Adding Capabilities
@@ -104,18 +104,18 @@ Pull requests run the same core gates expected locally:
 pnpm install --frozen-lockfile
 pnpm check
 pnpm build
-pnpm attention:build
-pnpm attention:smoke
-pnpm attention:package
+pnpm tend:build
+pnpm tend:smoke
+pnpm tend:package
 ```
 
-`pnpm check` runs TypeScript, Oxlint, and Bun tests. `pnpm attention:smoke` starts the compiled
-`dist-bin/attention` binary in foreground mode against a temporary `ATTENTION_HOME`, checks
-`attention version`, checks `/api/status`, validates the app version, CLI contract version and schema
+`pnpm check` runs TypeScript, Oxlint, and Bun tests. `pnpm tend:smoke` starts the compiled
+`dist-bin/tend` binary in foreground mode against a temporary `ATTENTION_HOME`, checks
+`tend version`, checks `/api/status`, validates the app version, CLI contract version and schema
 version, verifies the built UI is served, confirms core JSON CLI commands work, stops the server,
 and removes the temporary data directory.
 
-Use `pnpm attention:package` after the smoke check when preparing a local release archive. It writes
+Use `pnpm tend:package` after the smoke check when preparing a local release archive. It writes
 a platform-specific tarball and checksum under `dist-bin/releases/`. The tarball includes the
 compiled binary, built `dist/` UI assets, license, and release docs.
 

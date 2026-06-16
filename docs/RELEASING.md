@@ -1,6 +1,6 @@
 # Releasing
 
-Attention releases are tagged local-first snapshots. They make builds reproducible and bug reports
+Tend releases are tagged local-first snapshots. They make builds reproducible and bug reports
 specific; they do not imply a hosted service, auto-update channel, or support SLA.
 
 ## Versioning
@@ -19,8 +19,8 @@ The app version, SQLite schema version, and CLI contract version are separate.
 - SQLite schema version: local database shape. Forward-only migrations are expected.
 - CLI contract version: agent-facing command compatibility.
 
-`attention version`, `attention status`, `attention doctor`, and `/api/status` report the app version
-and CLI contract version. `attention doctor` also reports the SQLite schema version.
+`tend version`, `tend status`, `tend doctor`, and `/api/status` report the app version
+and CLI contract version. `tend doctor` also reports the SQLite schema version.
 
 Compatibility rules:
 
@@ -40,12 +40,12 @@ Compatibility rules:
    pnpm install --frozen-lockfile
    pnpm check
    pnpm build
-   pnpm attention:build
-   pnpm attention:smoke
-   pnpm attention:package
+   pnpm tend:build
+   pnpm tend:smoke
+   pnpm tend:package
    ```
 
-4. Confirm `attention version` reports the new version.
+4. Confirm `tend version` reports the new version.
 5. Commit the version and changelog changes.
 6. Tag and push:
 
@@ -62,13 +62,14 @@ Compatibility rules:
 Release archives are named:
 
 ```text
-attention-<version>-<platform>-<arch>.tar.gz
-attention-<version>-<platform>-<arch>.tar.gz.sha256
+tend-<version>-<platform>-<arch>.tar.gz
+tend-<version>-<platform>-<arch>.tar.gz.sha256
 ```
 
 Each archive contains:
 
-- `attention` executable
+- `tend` executable
+- `attention` compatibility executable
 - bundled `dist/` UI assets
 - `README.md`
 - `CONTRIBUTING.md`

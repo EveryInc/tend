@@ -1,6 +1,6 @@
 # Feed Thread Runbook
 
-Operate Attention through the canonical `attention` executable on `PATH`. The CLI and server share
+Operate Tend through the canonical `tend` executable on `PATH`. The CLI and server share
 runtime state under `~/.attention/` by default, including the SQLite authority database, readable
 data mirrors, logs, and exports. A checkout may run the source scripts for development, but feed
 threads should prefer the installed executable once it exists.
@@ -17,24 +17,24 @@ failed build cannot replace the live app with stale or broken assets.
 The live local app is owned by one CLI:
 
 ```bash
-attention start
-attention health
-attention restart
-attention stop
-attention logs
+tend start
+tend health
+tend restart
+tend stop
+tend logs
 ```
 
 It owns API/UI port `4332`, the live PID lock, and the live health check. Feed threads run
-`attention health` before operating through the API or CLI. They never start servers, kill ports, or
-choose worktrees themselves. Use `attention doctor` for diagnostics. Use `ATTENTION_HOME=<tmp>`
-with `attention start --foreground` when validating a branch against isolated runtime state.
+`tend health` before operating through the API or CLI. They never start servers, kill ports, or
+choose worktrees themselves. Use `tend doctor` for diagnostics. Use `ATTENTION_HOME=<tmp>`
+with `tend start --foreground` when validating a branch against isolated runtime state.
 
 Feed threads own their feed work end to end through the canonical API or CLI. When a feed pass
 reveals a cross-app UX or code problem, record it without editing Tend product code from the feed
 lane:
 
 ```bash
-attention cli feedback:record \
+tend cli feedback:record \
   --feed <feed-id> \
   --title "<short pain point>" \
   --detail "<what happened, expected behavior, and useful card or sweep context>" \
@@ -42,8 +42,8 @@ attention cli feedback:record \
 ```
 
 Then hand the same concise packet to the `Improve Tend workflow` thread. The improvement lane can
-review the durable inbox with `attention cli feedback:list` and close landed fixes with
-`attention cli feedback:resolve --feedback <id> --resolution "<what changed>"`.
+review the durable inbox with `tend cli feedback:list` and close landed fixes with
+`tend cli feedback:resolve --feedback <id> --resolution "<what changed>"`.
 
 ## First Local Setup
 
@@ -51,7 +51,7 @@ When Codex starts this app on a Mac, check for Monologue before asking the user 
 dictation:
 
 ```bash
-attention cli setup:detect-monologue
+tend cli setup:detect-monologue
 ```
 
 If Monologue is installed, the command reads its local recording shortcut and persists the
@@ -65,14 +65,14 @@ Right Option fallback.
 When the user says `go deal with the feed`, use the exact feed and current thread ID:
 
 ```bash
-attention cli work:list --feed <feed-id> --thread <thread-id>
-attention cli work:claim --feed <feed-id> --thread <thread-id>
+tend cli work:list --feed <feed-id> --thread <thread-id>
+tend cli work:claim --feed <feed-id> --thread <thread-id>
 ```
 
 Process the claimed item from current state. When it is complete:
 
 ```bash
-attention cli work:complete \
+tend cli work:complete \
   --feed <feed-id> \
   --work <work-id> \
   --token <capability-token> \
@@ -88,7 +88,7 @@ Before an external mutation, verify the exact current approved action or default
 before acting:
 
 ```bash
-attention cli action:verify --feed <feed-id> --work <work-id> --token <capability-token>
+tend cli action:verify --feed <feed-id> --work <work-id> --token <capability-token>
 ```
 
 Repeat claim until it returns the idle handshake. An active claimed item is replayed so restart
@@ -108,7 +108,7 @@ After a meaningful sweep or refresh reaches the idle handshake, always ask:
 `Compound` means:
 
 1. Review this sweep's cards, feedback, outcomes, and prior policy.
-2. After the user agrees, queue `attention cli learning:request --feed <feed-id>`.
+2. After the user agrees, queue `tend cli learning:request --feed <feed-id>`.
 3. Drain the resulting `compound_learnings` job and return an editable policy proposal.
 4. Never apply the proposal without user approval.
 
@@ -127,7 +127,7 @@ treat broad natural-language dock input as a literal prompt edit.
 Read the effective recipe with:
 
 ```bash
-attention cli inspect --feed <feed-id>
+tend cli inspect --feed <feed-id>
 ```
 
 The inspection includes the current prompt-safe `mindContext`. If it is fresh:
@@ -142,7 +142,7 @@ Use the connector, browser, computer-use workflow, local file, or source thread 
 recipe. Preserve immutable retrieved evidence and record the completed run:
 
 ```bash
-attention cli source:record-run \
+tend cli source:record-run \
   --feed <feed-id> \
   --source <source-id> \
   --snapshots '<json-array>' \
@@ -163,7 +163,7 @@ interpolation:
 ```
 
 ```bash
-attention cli source:record-run \
+tend cli source:record-run \
   --feed <feed-id> \
   --source <source-id> \
   --snapshots '<json-array>' \
@@ -180,7 +180,7 @@ After the relevant sources have completed, record one judged sweep batch separat
 refer to multiple source runs:
 
 ```bash
-attention cli sweep:record-batch \
+tend cli sweep:record-batch \
   --feed <feed-id> \
   --runs '["<run-id>"]' \
   --context <mind-update-id>
@@ -193,7 +193,7 @@ For claimed scoped sweep-feedback work, rejudge the visible card IDs from its tr
 the explicit kept order and removed IDs. Only this claimed-work write-back may reorder or hide cards:
 
 ```bash
-attention cli sweep:rejudge \
+tend cli sweep:rejudge \
   --feed <feed-id> \
   --feedback <feedback-id> \
   --ordered-cards '["<kept-card-id>"]' \
@@ -211,7 +211,7 @@ For an existing local JSON artifact, import it without passing private payload t
 shell:
 
 ```bash
-attention cli source:import-json-file --feed <feed-id> --source <source-id> --path <local-file>
+tend cli source:import-json-file --feed <feed-id> --source <source-id> --path <local-file>
 ```
 
 Use `source:import-file` for local text or JSONL artifacts.
@@ -221,7 +221,7 @@ structured card JSON into the shell: card prose can contain backticks, dollar si
 shell-significant text.
 
 ```bash
-attention cli card:upsert --feed <feed-id> --card-file <local-json-file>
+tend cli card:upsert --feed <feed-id> --card-file <local-json-file>
 ```
 
 Card block payloads are validated before Tend writes them. Use `text` for `memo` and `receipt`
@@ -280,25 +280,25 @@ For conservative batched cleanup, write one current routine group instead of sev
 approval groups:
 
 ```bash
-attention cli routine:upsert --feed <feed-id> --group '<json-object>'
+tend cli routine:upsert --feed <feed-id> --group '<json-object>'
 ```
 
 Recording a newer sweep batch or a newer proposed routine group automatically marks older unapproved
 routine groups `stale` and releases any old-only cards back to review. Carry forward only still-valid
 items in the new group payload; do not hand-edit routine group JSON to hide stale approvals.
 
-During migration only, an explicitly selected provenance-bearing card from the old Attention
+During migration only, an explicitly selected provenance-bearing card from the old Tend
 Workbench can be converted into the new block format:
 
 ```bash
-attention cli legacy:import-attention-card --feed company-attention --path <batch-json> --card-id <id>
+tend cli legacy:import-attention-card --feed company-attention --path <batch-json> --card-id <id>
 ```
 
 For parallel Inbox migration, explicitly selected current Inbox Sweep cards can be converted while
 Inbox Sweep remains authoritative:
 
 ```bash
-attention cli legacy:import-inbox-card --feed inbox --path <current-brief-json> --card-id <id>
+tend cli legacy:import-inbox-card --feed inbox --path <current-brief-json> --card-id <id>
 ```
 
 ## Learn
@@ -308,14 +308,14 @@ compact. Structural changes, new permissions, prompt edits, source changes, and 
 become explicit proposal cards:
 
 ```bash
-attention cli proposal:create --feed <feed-id> --title "..." --brief "..." --instruction "..."
+tend cli proposal:create --feed <feed-id> --title "..." --brief "..." --instruction "..."
 ```
 
 For a prompt, recipe, feed-policy, or global-policy diff that should appear in the browser approval
 stack, write the actual proposed content rather than appending the user's raw instruction:
 
 ```bash
-attention cli revision:propose \
+tend cli revision:propose \
   --feed <anchor-feed-id> \
   --target '{"kind":"prompt_layer","feedId":"<feed-id>","promptId":"judge.md"}' \
   --instruction "Why this change is proposed" \

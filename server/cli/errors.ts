@@ -22,7 +22,7 @@ export class MissingFlagError extends CliError {
     const usage = cliCommandUsage(command);
     super(`Missing --${flag}`, {
       code: "missing_flag",
-      hint: usage ? `Usage: attention cli ${usage}` : `Run attention cli help and retry ${command} with --${flag}.`,
+      hint: usage ? `Usage: tend cli ${usage}` : `Run tend cli help and retry ${command} with --${flag}.`,
     });
   }
 }
@@ -39,8 +39,8 @@ export function formatCliError(error: unknown): { ok: false; error: string; code
 function hintForDomainError(message: string): string {
   if (message.includes("does not own the feed")) return "Use the feed's bound home thread id, or pass --cross-feed only for explicit cross-feed operation.";
   if (message.includes("Invalid scoped work capability token")) return "Use the capabilityToken returned by the latest successful work:claim for this work item.";
-  if (message.includes("Approved action must pass action:verify")) return "Call attention cli action:verify immediately before the external mutation, then complete with the same token.";
+  if (message.includes("Approved action must pass action:verify")) return "Call tend cli action:verify immediately before the external mutation, then complete with the same token.";
   if (message.includes("Approval stale")) return "Reread the current card or routine group, then return it to review or ask the user to approve the current snapshot.";
-  if (message.includes("Source recipe not found")) return "Inspect the feed sources with attention cli inspect --feed <id>, then use a configured source id.";
-  return "Run attention cli help for the command contract and retry with current feed/work state.";
+  if (message.includes("Source recipe not found")) return "Inspect the feed sources with tend cli inspect --feed <id>, then use a configured source id.";
+  return "Run tend cli help for the command contract and retry with current feed/work state.";
 }

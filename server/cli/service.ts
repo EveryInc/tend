@@ -7,25 +7,25 @@ import { apiPort, apiUrl, print } from "./shared";
 export async function startBackgroundCommand(): Promise<void> {
   await withServiceLock(async () => {
     if (await serviceHealthy()) {
-      print(`Attention is already healthy (pid ${(await readPidRecord())?.pid ?? "unknown"}, url ${apiUrl()}, home ${attentionHome()}).`);
+      print(`Tend is already healthy (pid ${(await readPidRecord())?.pid ?? "unknown"}, url ${apiUrl()}, home ${attentionHome()}).`);
       return;
     }
     const staleRecord = await readPidRecord();
     if (staleRecord && processAlive(staleRecord.pid)) {
       if (await ownsAttentionProcess(staleRecord)) {
-        throw new Error(`Attention pid ${staleRecord.pid} exists but is not healthy. Run: attention restart`);
+        throw new Error(`Tend pid ${staleRecord.pid} exists but is not healthy. Run: tend restart`);
       }
     }
     await rm(pidFile(), { force: true });
     await launchDetached();
     for (let index = 0; index < 60; index += 1) {
       if (await serviceHealthy()) {
-        print(`Attention is healthy (pid ${(await readPidRecord())?.pid ?? "unknown"}, url ${apiUrl()}, home ${attentionHome()}).`);
+        print(`Tend is healthy (pid ${(await readPidRecord())?.pid ?? "unknown"}, url ${apiUrl()}, home ${attentionHome()}).`);
         return;
       }
       await Bun.sleep(250);
     }
-    throw new Error(`Attention failed to become healthy. Recent log output:\n${await recentLogs()}`);
+    throw new Error(`Tend failed to become healthy. Recent log output:\n${await recentLogs()}`);
   });
 }
 
@@ -33,27 +33,27 @@ export async function stopCommand(): Promise<void> {
   await withServiceLock(async () => {
     const record = await readPidRecord();
     if (!record) {
-      print("Attention is not running as a background service.");
+      print("Tend is not running as a background service.");
       return;
     }
     if (!processAlive(record.pid)) {
       await rm(pidFile(), { force: true });
-      print("Attention is not running as a background service.");
+      print("Tend is not running as a background service.");
       return;
     }
     if (!await ownsAttentionProcess(record)) {
-      throw new Error(`Refusing to stop pid ${record.pid}: it is not the Attention process recorded by this runtime.`);
+      throw new Error(`Refusing to stop pid ${record.pid}: it is not the Tend process recorded by this runtime.`);
     }
     await terminate(record.pid);
     for (let index = 0; index < 40; index += 1) {
       if (!processAlive(record.pid) && !await serviceHealthy()) {
         await rm(pidFile(), { force: true });
-        print(`Stopped Attention pid ${record.pid}.`);
+        print(`Stopped Tend pid ${record.pid}.`);
         return;
       }
       await Bun.sleep(250);
     }
-    throw new Error(`Attention pid ${record.pid} did not stop cleanly; the pid record was preserved.`);
+    throw new Error(`Tend pid ${record.pid} did not stop cleanly; the pid record was preserved.`);
   });
 }
 
@@ -64,8 +64,8 @@ export async function restartCommand(): Promise<void> {
 
 export async function healthCommand(): Promise<void> {
   const record = await readPidRecord();
-  if (!await serviceHealthy()) throw new Error(`Attention${record ? ` pid ${record.pid}` : ""} is not healthy at ${apiUrl()}.`);
-  print(`Attention is healthy (pid ${record?.pid ?? "unknown"}, url ${apiUrl()}, home ${attentionHome()}).`);
+  if (!await serviceHealthy()) throw new Error(`Tend${record ? ` pid ${record.pid}` : ""} is not healthy at ${apiUrl()}.`);
+  print(`Tend is healthy (pid ${record?.pid ?? "unknown"}, url ${apiUrl()}, home ${attentionHome()}).`);
 }
 
 export async function logsCommand(): Promise<void> {
@@ -159,7 +159,7 @@ async function withServiceLock(callback: () => Promise<void>): Promise<void> {
   try {
     await mkdir(lockDir());
   } catch {
-    throw new Error("Another attention service command is already running.");
+    throw new Error("Another Tend service command is already running.");
   }
   try {
     await callback();
@@ -195,7 +195,7 @@ async function readPidRecord(): Promise<ServicePidRecord | null> {
       !Array.isArray(record.command) ||
       record.command.some((item) => typeof item !== "string")
     ) {
-      throw new Error("Invalid Attention pid record.");
+      throw new Error("Invalid Tend pid record.");
     }
     return {
       pid: record.pid,
@@ -260,7 +260,7 @@ async function terminate(numericPid: number): Promise<void> {
       subprocess.exited,
     ]);
     if (exitCode !== 0 && processAlive(numericPid)) {
-      throw new Error(`Failed to stop Attention pid ${numericPid}: ${output.trim() || `taskkill exited with code ${exitCode}`}`);
+      throw new Error(`Failed to stop Tend pid ${numericPid}: ${output.trim() || `taskkill exited with code ${exitCode}`}`);
     }
     return;
   }
@@ -276,9 +276,9 @@ async function terminate(numericPid: number): Promise<void> {
 }
 
 async function recentLogs(): Promise<string> {
-  if (!existsSync(logFile())) return "No Attention background log exists yet.";
+  if (!existsSync(logFile())) return "No Tend background log exists yet.";
   const contents = await readFile(logFile(), "utf8");
-  return contents.trim().split("\n").slice(-100).join("\n") || "Attention background log is empty.";
+  return contents.trim().split("\n").slice(-100).join("\n") || "Tend background log is empty.";
 }
 
 function quoteWindowsCommand(command: string[]): string {

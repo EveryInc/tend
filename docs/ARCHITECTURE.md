@@ -1,12 +1,15 @@
 # Architecture
 
-Attention is a local-first Codex-native app. The local executable owns the UI, HTTP API, realtime event stream, JSON CLI, and local state. Codex Desktop remains the agent runtime and uses the local CLI to inspect feeds, claim work, use local connectors, and write results back.
+Tend is a local-first Codex-native app. The local executable owns the UI, HTTP API, realtime event stream, JSON CLI, and local state. Codex Desktop remains the agent runtime and uses the local CLI to inspect feeds, claim work, use local connectors, and write results back.
+
+The intended UI surface is Codex Desktop's in-app browser. Each feed has exactly one home Codex
+thread beside that UI; the browser is the review surface and the thread is the feed operator.
 
 ## Runtime
 
 ```mermaid
 flowchart LR
-  Thread["Codex feed thread"] --> CLI["attention cli"]
+  Thread["Codex feed thread"] --> CLI["tend cli"]
   CLI --> Domain["Domain invariants"]
   UI["React UI"] --> API["Hono HTTP API"]
   API --> Domain
@@ -28,10 +31,11 @@ collection; the dedicated `/mind` workspace can read the complete filtered obser
 Context may focus source work or originate a bounded research question, but independently collected
 feed sources remain the evidence boundary.
 
-The installed `attention` executable is the canonical runtime entrypoint. `attention start`
+The installed `tend` executable is the canonical runtime entrypoint. `tend start`
 re-launches the same executable in the background with the current `PATH`, `ATTENTION_HOME`, and
-port settings. `attention start --foreground` keeps the server attached to the current terminal.
-There is no separate runner or second CLI.
+port settings. `tend start --foreground` keeps the server attached to the current terminal.
+The packaged `attention` executable is a compatibility alias. There is no separate runner or second
+CLI.
 
 ## Boundaries
 
@@ -58,7 +62,7 @@ There is no separate runner or second CLI.
 
 ## Agent Model
 
-Each feed has one home Codex thread. The home thread claims work through `attention cli` before using Gmail, GitHub, Slack, browser, files, or other local connectors. The local app stores recipes and workflow state; connector credentials stay in Codex Desktop.
+Each feed has one home Codex thread. The home thread claims work through `tend cli` before using Gmail, GitHub, Slack, browser, files, or other local connectors. The local app stores recipes and workflow state; connector credentials stay in Codex Desktop.
 
 ## Realtime
 
@@ -75,7 +79,7 @@ No patch stream is required for v0.
 
 ## Native Mobile Bridge
 
-The iPhone app is a review client, not a second Attention runtime. One worker inside the canonical
+The iPhone app is a review client, not a second Tend runtime. One worker inside the canonical
 `tend-live` process discovers all active feeds, builds privacy-filtered projections, and replaces the
 user's Supabase snapshot in one database transaction. The phone reads those projections and submits
 commands through authenticated RPCs.

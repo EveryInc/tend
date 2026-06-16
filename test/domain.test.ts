@@ -388,7 +388,7 @@ describe("filesystem workspace", () => {
     const feed = await domain.createFeedFromBrief("Model Vibe Check\nNotice meaningful changes in which models are winning for different kinds of work.", "thread-models");
     expect(feed.id).toBe("model-vibe-check");
     expect((await store.readThread(feed.id)).homeThreadId).toBe("thread-models");
-    expect((await store.readCard(feed.id, "guided-source-setup")).title).toContain("Teach Model Vibe Check");
+    expect((await store.readCard(feed.id, "guided-source-setup")).title).toContain("Connect Model Vibe Check to Codex");
     const source = await domain.addSourceFromBrief(feed.id, "Read my recent Chronicle notes about model usage.");
     expect(source.id).toBe("read-my-recent-chronicle-notes-about-model-usage");
     expect(await readFile(path.join(root, "feeds", feed.id, "sources", source.filename), "utf8")).toContain("content hashes");

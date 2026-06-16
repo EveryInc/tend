@@ -1,5 +1,5 @@
 {
-  "name": "attention",
+  "name": "tend",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",
@@ -17,9 +17,14 @@
     "live": "./bin/tend-live",
     "cli": "bun run cli.ts",
     "seed:demo": "bun run cli.ts demo:seed",
+    "tend": "bun attention.ts",
+    "tend:doctor": "bun attention.ts doctor",
+    "tend:build": "bun build ./attention.ts --compile --outfile dist-bin/tend",
+    "tend:smoke": "bun scripts/smoke-binary.ts",
+    "tend:package": "bun scripts/package-binary.ts",
     "attention": "bun attention.ts",
     "attention:doctor": "bun attention.ts doctor",
-    "attention:build": "bun build ./attention.ts --compile --outfile dist-bin/attention",
+    "attention:build": "bun build ./attention.ts --compile --outfile dist-bin/tend",
     "attention:smoke": "bun scripts/smoke-binary.ts",
     "attention:package": "bun scripts/package-binary.ts"
   },
@@ -53,6 +58,7 @@
     }
   },
   "bin": {
+    "tend": "./attention.ts",
     "attention": "./attention.ts"
   }
 }

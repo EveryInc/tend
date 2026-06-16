@@ -203,7 +203,7 @@ export function idleWorkHandshake(feedId: string): IdleWorkHandshake {
     message: 'If you completed or refreshed this feed during this turn, ask the user: "Want me to compound what I learned from this sweep?" If this wake began idle, stop quietly rather than repeating the question.',
     compound: {
       meaning: "Review this sweep's cards, feedback, outcomes, and prior policy. Distill an editable feed-policy proposal. Never apply it without user approval.",
-      ifApproved: `Run \`attention cli learning:request --feed ${feedId}\`, drain the resulting compound_learnings job, and return the editable proposal for review.`,
+      ifApproved: `Run \`tend cli learning:request --feed ${feedId}\`, drain the resulting compound_learnings job, and return the editable proposal for review.`,
       ifApprovedWithSearch: "Compound first. Recollect only after the reviewed policy proposal is applied, or after the user explicitly says to continue without applying it.",
     },
   };
@@ -232,7 +232,7 @@ export function formatWorkClaimOutput(feedId: string, work: WorkItem | null, con
   }
 
   if (work.intent === "sweep_rejudge") {
-    operatorGuidance.requiredWriteBack = "Run `attention cli sweep:rejudge --feed <feed> --feedback <feedbackId> --ordered-cards <json-array-of-original-visible-card-ids> --removed-cards <json-array-of-original-visible-card-ids>` before `work:complete`.";
+    operatorGuidance.requiredWriteBack = "Run `tend cli sweep:rejudge --feed <feed> --feedback <feedbackId> --ordered-cards <json-array-of-original-visible-card-ids> --removed-cards <json-array-of-original-visible-card-ids>` before `work:complete`.";
     operatorGuidance.completionPrerequisite = "The rejudge must account for the feedback trace's original visibleCardIds exactly once. Do not include cards created while handling this work unless they were already in visibleCardIds.";
     operatorGuidance.visibleCardIds = context.sweepFeedback?.visibleCardIds;
   }
