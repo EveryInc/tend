@@ -135,6 +135,9 @@ jobs:
             -project ios/Tend.xcodeproj \
             -scheme Tend \
             -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -retry-tests-on-failure \
+            -test-iterations 2 \
+            -test-repetition-relaunch-enabled YES \
             -resultBundlePath "$RUNNER_TEMP/TendTests.xcresult" \
             CODE_SIGNING_ALLOWED=NO \
             DEVELOPMENT_TEAM=

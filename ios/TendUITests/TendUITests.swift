@@ -95,11 +95,27 @@ final class TendUITests: XCTestCase {
             .textClipped,
             .trait,
         ]
-        try app.performAccessibilityAudit(for: auditTypes)
+        try performAccessibilityAuditWithTimeoutRetry(in: app, for: auditTypes)
 
         app.buttons["feed-inbox"].tap()
         XCTAssertTrue(app.buttons["Talk or type"].waitForExistence(timeout: 5))
-        try app.performAccessibilityAudit(for: auditTypes)
+        try performAccessibilityAuditWithTimeoutRetry(in: app, for: auditTypes)
+    }
+
+    @MainActor
+    private func performAccessibilityAuditWithTimeoutRetry(
+        in app: XCUIApplication,
+        for auditTypes: XCUIAccessibilityAuditType
+    ) throws {
+        do {
+            try app.performAccessibilityAudit(for: auditTypes)
+        } catch let error as NSError
+            where error.domain == "com.apple.xcode.xctest.accessibilityAudit" && error.code == -56 {
+            // Retry only XCTest's infrastructure timeout; audit findings still fail normally.
+            app.activate()
+            XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
+            try app.performAccessibilityAudit(for: auditTypes)
+        }
     }
 
     @MainActor
