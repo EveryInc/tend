@@ -8,7 +8,7 @@ import { createRealtimeHub } from "./server/routes/realtime";
 import { createFeedEventBridge } from "./server/realtime/feedEventBridge";
 import { createLocalRuntime, resolveArtifactsDir, resolveDataDir, resolveDbPath, resolveRuntimeRoot } from "./server/runtime";
 import { DrainDispatcher } from "./server/dispatcher";
-import { mobileCloudConfigFromEnv, SupabaseMobileCloudClient } from "./server/mobile/client";
+import { loadMobileCloudEnvFile, mobileCloudConfigFromEnv, SupabaseMobileCloudClient } from "./server/mobile/client";
 import { MobileSyncWorker } from "./server/mobile/sync";
 import { makeToken } from "./server/util";
 
@@ -17,6 +17,7 @@ declare const Bun: {
 };
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+loadMobileCloudEnvFile();
 const port = Number(process.env.ATTENTION_API_PORT ?? 4332);
 const clientDir = process.env.ATTENTION_CLIENT_DIR ?? path.join(root, "dist");
 const runtimeRoot = resolveRuntimeRoot(root);

@@ -11,7 +11,7 @@ struct RootView: View {
                 ProgressView("Opening Tend")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(TendTheme.paper)
-            case .signedOut, .codeSent:
+            case .signedOut, .linkSent:
                 SignInView(model: model)
             case .authenticated:
                 TendTabView(model: model)
@@ -46,6 +46,9 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, model.authState == .authenticated else { return }
             Task { await model.refresh() }
+        }
+        .onOpenURL { url in
+            Task { await model.handleAuthCallback(url) }
         }
     }
 }

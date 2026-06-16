@@ -18,8 +18,8 @@ port = 54323
 
 [auth]
 enabled = true
-site_url = "tend://auth-callback"
-additional_redirect_urls = ["tend://auth-callback"]
+site_url = "to.every.tend://auth-callback"
+additional_redirect_urls = ["to.every.tend://auth-callback"]
 enable_signup = false
 
 [auth.email]

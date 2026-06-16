@@ -5,16 +5,19 @@ a promise of ongoing maintenance.
 
 ## Unreleased
 
-- Fix the public product name as Tend, ship `tend` release artifacts while retaining the
-  pre-release `attention` command as an alias, and clarify Codex in-app-browser onboarding.
-- Make `tend setup codex --feed <id>` generate a feed-specific prompt and document manual feed
-  activation through the dedicated Codex thread.
+- Fix the public product name as Tend, consolidate runtime and agent operations under one `tend`
+  command tree, remove the pre-release aliases and launchd runner, and clarify Codex
+  in-app-browser onboarding.
+- Split the concise product model and first-run path into `README.md`, with day-to-day operation,
+  steering, approval, learning, Chronicle Pulse, and troubleshooting in `MANUAL.md`.
+- Make `tend setup codex --feed <id>` and `tend setup codex --chronicle` generate dedicated
+  feed-operator and Chronicle Pulse prompts, including their manual activation paths.
 - Add the local On Your Mind workspace, Chronicle publication contract, privacy-filtered source
   trails, and source-backed feed influence receipts.
 - Advance the CLI contract to `0.2` with context binding, publication, health, and feed-safe read
   commands.
 - Add the native Tend iPhone companion, private Supabase projection, and idempotent mobile command
-  bridge.
+  bridge, with a complete magic-link and physical-device setup guide.
 - Advance the SQLite schema to `14` for mirrored mobile command receipts and deterministic audit
   event ordering.
 - Harden local mutations, identifiers, backup/restore, background-process ownership, and

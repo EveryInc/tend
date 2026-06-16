@@ -144,8 +144,8 @@ private actor CapturingRepository: TendRepository {
     private(set) var lastSubmission: MobileCommandSubmission?
 
     func hasSession() async -> Bool { true }
-    func requestEmailCode(email: String) async throws {}
-    func verifyEmailCode(email: String, code: String) async throws {}
+    func requestSignInLink(email: String) async throws {}
+    func handleAuthCallback(_ url: URL) async throws {}
     func signOut() async throws {}
     func loadSnapshot() async throws -> MobileSnapshot { FixtureData.snapshot }
 

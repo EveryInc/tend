@@ -7,8 +7,8 @@ actor FixtureTendRepository: TendRepository {
     private var archivedCards: [UUID: MobileCard] = [:]
 
     func hasSession() async -> Bool { true }
-    func requestEmailCode(email: String) async throws {}
-    func verifyEmailCode(email: String, code: String) async throws {}
+    func requestSignInLink(email: String) async throws {}
+    func handleAuthCallback(_ url: URL) async throws {}
     func signOut() async throws {}
     func loadSnapshot() async throws -> MobileSnapshot { snapshot }
     func startObserving(_ onChange: @escaping @Sendable () async -> Void) async throws {}

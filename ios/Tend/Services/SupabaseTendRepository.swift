@@ -4,6 +4,8 @@ import Supabase
 actor SupabaseTendRepository: TendRepository {
     nonisolated let usesFixtures = false
 
+    private static let authCallbackURL = URL(string: "to.every.tend://auth-callback")!
+
     private let client: SupabaseClient
     private var channel: RealtimeChannelV2?
     private var observationTasks: [Task<Void, Never>] = []
@@ -25,19 +27,20 @@ actor SupabaseTendRepository: TendRepository {
         (try? await client.auth.session) != nil
     }
 
-    func requestEmailCode(email: String) async throws {
+    func requestSignInLink(email: String) async throws {
         try await client.auth.signInWithOTP(
             email: email,
+            redirectTo: Self.authCallbackURL,
             shouldCreateUser: false
         )
     }
 
-    func verifyEmailCode(email: String, code: String) async throws {
-        _ = try await client.auth.verifyOTP(
-            email: email,
-            token: code,
-            type: .magiclink
-        )
+    func handleAuthCallback(_ url: URL) async throws {
+        guard url.scheme?.lowercased() == Self.authCallbackURL.scheme,
+              url.host?.lowercased() == Self.authCallbackURL.host else {
+            throw TendRepositoryError.invalidAuthCallback
+        }
+        _ = try await client.auth.session(from: url)
     }
 
     func signOut() async throws {

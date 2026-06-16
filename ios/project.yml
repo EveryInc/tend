@@ -45,6 +45,10 @@ targets:
       path: Tend/Info.plist
       properties:
         CFBundleDisplayName: Tend
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLSchemes:
+              - to.every.tend
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
