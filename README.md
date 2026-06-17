@@ -1,4 +1,4 @@
-# Tend
+<h1 align="center">Tend</h1>
 
 <p align="center">
   <strong>Local, reviewable feeds for recurring Codex work.</strong><br />
@@ -18,8 +18,8 @@
 > **Tend is experimental software.** It is being released to explore a new way of working with
 > Codex in public. It comes with no support and no guarantees of stability, compatibility,
 > correctness, data retention, or continued development. Expect breaking changes, keep backups, and
-> do not rely on Tend for critical or irreversible workflows. The software is provided [as-is under
-> the MIT License](./LICENSE).
+> do not rely on Tend for critical or irreversible workflows. The software is provided "as is"
+> under the [MIT License](./LICENSE).
 
 ## What Tend Is
 
