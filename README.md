@@ -1,9 +1,8 @@
 <h1 align="center">Tend</h1>
 
 <p align="center">
-  <strong>Local, reviewable feeds for recurring Codex work.</strong><br />
-  A Codex-native experiment for turning ongoing agent work into something you can inspect, steer,
-  and learn from.
+  <strong>Give Codex ongoing responsibility. Keep judgment in your hands.</strong><br />
+  Tend turns intent into local, reviewable feeds that you can inspect, steer, and teach over time.
 </p>
 
 <p align="center">
@@ -23,9 +22,31 @@
 
 ## What Tend Is
 
-Tend is a local-first review and steering surface for recurring work performed by Codex Desktop.
-It runs inside **Codex Desktop's in-app browser** and turns useful results into source-backed,
-interactive cards instead of leaving ongoing work scattered across chat history.
+Most agent work begins and ends with a prompt. Tend starts with an ongoing intent: keep me on top of
+important mail, show me whether a project is getting healthier, or surface conversations that need
+my attention.
+
+You describe what deserves attention and what good judgment looks like. One dedicated Codex thread
+tends that feed over time: it checks relevant sources and brings back meaningful changes. Tend is
+where you review those changes, decide what happens next, and teach the feed how to improve.
+
+**The unit of work is not a prompt. It is a responsibility.**
+
+1. **Define the intent**: describe what you want to stay on top of in plain language.
+2. **Delegate attention**: give one dedicated Codex thread durable responsibility for the feed.
+3. **Review meaningful change**: receive source-backed cards when something deserves judgment or
+   action.
+4. **Steer the judgment**: correct, refine, approve, or redirect the work instead of supervising
+   every step.
+5. **Learn deliberately**: let Codex propose better policy, then review it before anything changes.
+
+Tend lets you delegate ongoing attention without delegating away your judgment.
+
+### What Runs Where
+
+Tend is the local-first review and steering surface. It runs inside **Codex Desktop's in-app
+browser** and turns ongoing work into interactive cards instead of leaving it scattered across chat
+history.
 
 Codex Desktop remains the agent runtime. Tend does not run a separate model and does not store your
 Gmail, GitHub, Slack, browser, or other connector credentials.
@@ -127,14 +148,13 @@ xattr -d com.apple.quarantine ./tend
 
 ### Observe, Review, Steer, Learn
 
-Every feed follows the same loop:
+The intent becomes a working relationship that follows the same loop:
 
-1. **Observe**: its Codex thread checks configured sources on demand or through a heartbeat.
-2. **Review**: Tend turns useful results into calm, source-backed cards.
-3. **Steer**: approve an action, edit a draft, or talk to the active card, sweep, feed, or all of
-   Tend through the scoped Dock.
-4. **Learn**: Codex can propose an editable policy improvement after meaningful work. Nothing
-   changes until you review and apply it.
+1. **Observe**: the dedicated thread interprets the feed's intent and checks relevant sources.
+2. **Review**: Tend surfaces meaningful results as calm, source-backed cards.
+3. **Steer**: approve an action, edit a draft, or explain how the feed's judgment should change.
+4. **Learn**: Codex can propose an editable policy improvement after meaningful work. You decide
+   whether to apply it.
 
 ```mermaid
 flowchart LR
