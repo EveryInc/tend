@@ -93,4 +93,44 @@ describe("API routing and mutation hardening", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ work: { assignee: "claude" } });
   });
+
+  test("redacts capability tokens from browser work reassignment responses", async () => {
+    const { app, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await domain.bindAgentFeed("inbox", "claude");
+    const queued = await domain.queueFeedInstruction("inbox", "Route this through the browser.");
+
+    const response = await app.request(`/api/feeds/inbox/work/${queued.id}/assignee`, jsonPost({ agent: "claude" }));
+    const bytes = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(bytes).not.toContain("capabilityToken");
+    expect(bytes).not.toContain(queued.capabilityToken);
+  });
+
+  test("redacts capability tokens from browser approved-action retry responses", async () => {
+    const { app, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await domain.upsertCard("inbox", {
+      id: "api-retry-redaction",
+      title: "Retry this approved action.",
+      why: "The connector may need another attempt.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [
+        { id: "send", label: "Send", behavior: "approve_action", instruction: "Send the exact draft.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" },
+      ],
+    });
+    const approved = await domain.runCardAction("inbox", "api-retry-redaction", "send");
+    const claimed = await domain.claimWork("inbox", "thread-codex");
+    if (!claimed || "claim" in claimed) throw new Error("Expected claimed work item");
+    await domain.blockApprovedWork("inbox", approved.id, claimed.capabilityToken, "Connector refused.");
+
+    const response = await app.request(`/api/feeds/inbox/work/${approved.id}/retry`, jsonPost({}));
+    const bytes = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(bytes).not.toContain("capabilityToken");
+    expect(bytes).not.toContain(claimed.capabilityToken);
+  });
 });

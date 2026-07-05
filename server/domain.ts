@@ -92,6 +92,11 @@ function claimedByReport(work: WorkItem, claimedBy: WorkClaimant): WorkClaimedBy
   };
 }
 
+function workItemView(work: WorkItem): WorkItemView {
+  const { capabilityToken: _capabilityToken, ...view } = work;
+  return view;
+}
+
 function orderedWorkItems(work: WorkItem[]): WorkItem[] {
   return [...work].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 }
@@ -344,10 +349,22 @@ const MIND_CONTEXT_MAX_OBSERVATION_MS = 10 * 60 * 1_000;
 const MIND_CONTEXT_MAX_TOTAL_FULL_TEXT = 200_000;
 const MIND_CONTEXT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 const AGENT_LABEL_MAX_LENGTH = 64;
+const AGENT_SESSION_ID_MAX_LENGTH = 64;
 
 function requiredMindText(value: unknown, label: string, maxLength: number): string {
   if (!hasText(value)) throw new Error(`${label} is required.`);
   const normalized = value.replaceAll(String.fromCharCode(0), "").trim();
+  if (normalized.length > maxLength) throw new Error(`${label} must be ${maxLength} characters or fewer.`);
+  return normalized;
+}
+
+function requiredAgentPresenceText(value: unknown, label: string, maxLength: number): string {
+  if (!hasText(value)) throw new Error(`${label} is required.`);
+  const normalized = Array.from(value).filter((character) => {
+    const code = character.charCodeAt(0);
+    return code >= 0x20 && code !== 0x7F;
+  }).join("").trim();
+  if (!normalized) throw new Error(`${label} is required.`);
   if (normalized.length > maxLength) throw new Error(`${label} must be ${maxLength} characters or fewer.`);
   return normalized;
 }
@@ -659,12 +676,11 @@ export class AttentionDomain {
     input: { sessionId: string; label?: string },
   ): Promise<{ presence: AgentPresence; replayed: number }> {
     if (agent !== "claude") throw new Error(`Unsupported agent presence: ${agent}`);
-    const sessionId = input.sessionId.trim();
-    if (!sessionId) throw new Error("Agent presence sessionId is required.");
-    const label = input.label ? requiredMindText(input.label, "Agent presence label", AGENT_LABEL_MAX_LENGTH) : undefined;
+    const sessionId = requiredAgentPresenceText(input.sessionId, "Agent presence sessionId", AGENT_SESSION_ID_MAX_LENGTH);
+    const label = input.label ? requiredAgentPresenceText(input.label, "Agent presence label", AGENT_LABEL_MAX_LENGTH) : undefined;
     return this.store.serialize(async () => {
       const previous = await this.store.readAgentPresence(agent);
-      const shouldReplay = !previous || agentPresenceLiveness(previous) !== "live" || previous.sessionId !== sessionId;
+      const shouldReplay = !previous || agentPresenceLiveness(previous) !== "live";
       const presence: AgentPresence = {
         agent,
         sessionId,
@@ -1669,7 +1685,7 @@ export class AttentionDomain {
     });
   }
 
-  async reassignQueuedWork(feedId: string, workId: string, agent: WorkAgent): Promise<WorkItem> {
+  async reassignQueuedWork(feedId: string, workId: string, agent: WorkAgent): Promise<WorkItemView> {
     if (agent !== "codex" && agent !== "claude") throw new Error(`Unsupported work assignee: ${agent}`);
     await this.assertClaudeRoutingAllowed(feedId, agent === "claude" ? agent : undefined);
     return this.store.serialize(async () => {
@@ -1683,7 +1699,7 @@ export class AttentionDomain {
       await this.store.writeWork(work);
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.assignee_set", detail: { agent } });
       await this.maybeEmitClaudeWake(feedId, work);
-      return work;
+      return workItemView(work);
     });
   }
 
@@ -1897,8 +1913,8 @@ export class AttentionDomain {
     const thread = await this.store.readThread(feedId);
     const work = orderedWorkItems(await this.store.readWorkItems(feedId));
     return work
-      .filter((item) => item.status === "queued" && callerCanSeeWork(caller, item, thread))
-      .map(({ capabilityToken: _capabilityToken, ...view }) => view);
+      .filter((item) => (item.status === "queued" || item.status === "working") && callerCanSeeWork(caller, item, thread))
+      .map(workItemView);
   }
 
   async claimWork(feedId: string, threadId: string, explicitCrossFeed = false, sessionId?: string): Promise<WorkClaimResult> {
@@ -1932,6 +1948,7 @@ export class AttentionDomain {
       }
       if (!work) return null;
       work.status = "working";
+      work.capabilityToken = makeToken();
       work.claimedBy = claimantForWork(caller, work, thread);
       work.claimedAt = isoNow();
       await this.store.writeWork(work);
@@ -1957,7 +1974,7 @@ export class AttentionDomain {
     });
   }
 
-  async releaseWork(feedId: string, workId: string, token: string, sessionId?: string): Promise<WorkItem> {
+  async releaseWork(feedId: string, workId: string, token: string, sessionId?: string): Promise<WorkItemView> {
     return this.store.serialize(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "working") throw new Error("Only working work can be released.");
@@ -1981,7 +1998,7 @@ export class AttentionDomain {
         detail: { threadId: releasedBy.threadId, agent: releasedBy.agent, ...(sessionId ? { sessionId } : {}) },
       });
       await this.maybeEmitClaudeWake(feedId, work);
-      return work;
+      return workItemView(work);
     });
   }
 
@@ -2326,7 +2343,7 @@ export class AttentionDomain {
     }
   }
 
-  async retryApprovedWork(feedId: string, workId: string): Promise<WorkItem> {
+  async retryApprovedWork(feedId: string, workId: string): Promise<WorkItemView> {
     return this.store.serialize(async () => {
       const work = await this.store.readWork(feedId, workId);
       if ((work.status !== "approved_blocked" && work.status !== "failed") || work.kind !== "execute_approved_action" || !work.approvalDigest) {
@@ -2363,7 +2380,7 @@ export class AttentionDomain {
       await this.store.writeCard(card);
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.approved_action_retry_queued" });
       await this.maybeEmitClaudeWake(feedId, work);
-      return work;
+      return workItemView(work);
     });
   }
 

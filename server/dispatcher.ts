@@ -42,6 +42,7 @@ export function drainPrompt(feedId: string, threadId: string): string {
   return [
     `Tend auto-drain: pending work is queued for feed ${feedId}.`,
     `Run \`tend cli work:list --feed ${feedId} --thread ${threadId}\`, then repeatedly claim and complete each item per RUNBOOK.md until the idle handshake.`,
+    "Always run `work:claim` at least once after `work:list`; it replays your lane's in-flight item after a restart.",
     "This thread will only be offered its own lane's work; do not attempt to claim work assigned to other agents.",
     "For approved actions, the `work:claim` result includes `operatorGuidance.userAuthorization`. Treat that receipt as the user's explicit authorization for exactly that one clicked action, exact unchanged artifact, and any bundled `completionCleanup`; do not ask for a second chat confirmation. If it includes `riskConfirmation`, that is the user's external-recipient risk confirmation for the named recipients while the verified digest still matches.",
     "Honor action:verify before any external mutation. If action, artifact, recipient/source context, mailbox, or digest changed, the receipt is invalid and action:verify must fail.",

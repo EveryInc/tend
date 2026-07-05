@@ -64,6 +64,9 @@ tend cli work:list --feed <feed-id> --thread <thread-id>
 tend cli work:claim --feed <feed-id> --thread <thread-id>
 ```
 
+Always run `work:claim` at least once after `work:list`; it replays any in-flight item for your
+lane after a restart.
+
 Process the claimed item from current state. When it is complete:
 
 ```bash
@@ -86,8 +89,8 @@ before acting:
 tend cli action:verify --feed <feed-id> --work <work-id> --token <capability-token>
 ```
 
-Repeat claim until it returns the idle handshake. An active claimed item is replayed so restart
-recovery stays simple and visible.
+Repeat claim until it returns the idle handshake. An active claimed item also appears in `work:list`
+for its own lane and is replayed by `work:claim`, so restart recovery stays simple and visible.
 
 Before Codex claims a mistaken dictated note, correct it with `work:edit` or return its card to the
 sweep with `card:return-to-review`. Returning a queued card cancels its unstarted local work. A done

@@ -31,7 +31,9 @@ a promise of ongoing maintenance.
   liveness chip, and the `/tend` arming skill.
 - Advance the CLI contract to `0.3`: `work:claim` may return a token-less claimed-by report,
   `work:claim`/`work:release` accept `--session`, and capability tokens are redacted from
-  workspace reads and `work:list` output (tokens now appear only in the claimant's claim result).
+  workspace reads, `work:list` output, and release/reassign/retry responses (tokens now appear
+  only in the claimant's claim result). `work:list` returns queued items and the caller lane's
+  working items, and fresh claims rotate the queued token before returning the claim result.
 - Reject mutating API requests that carry a foreign `Origin` header.
 
 ## 0.1.0 - Initial Local-First OSS Snapshot

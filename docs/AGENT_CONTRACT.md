@@ -25,15 +25,18 @@ the user wants an immediate sweep.
 
 - Always pass your own thread identity: the local Codex `threadId` for the Codex lane, or the
   feed's server-minted Claude lane id (`thread.agents.claude.threadId`) for the Claude lane.
-- Treat `homeThreadId` as the Codex owner of the feed. Work is lane-scoped: `work:list` and
-  `work:claim` only offer items whose effective lane (item `assignee`, else the feed's
-  `drainAgent`, else codex) matches your lane. Never attempt to claim another agent's work.
+- Treat `homeThreadId` as the Codex owner of the feed. Work is lane-scoped: `work:list` returns
+  queued items plus working items for your effective lane (item `assignee`, else the feed's
+  `drainAgent`, else codex), and `work:claim` only offers that lane's items. Never attempt to
+  claim another agent's work.
 - Claims record the claimant. An in-flight item (and its capability token) is replayed only to
-  its recorded claimant; other callers receive a token-less claimed-by report. Capability tokens
-  appear only in the claim result — never in workspace reads, `work:list` output, or events.
+  its recorded claimant; other callers receive a token-less claimed-by report. Fresh claims rotate
+  the capability token, and capability tokens appear only in the claim result — never in workspace
+  reads, `work:list` output, release/reassign/retry responses, or events.
 - Return a claimed item you cannot finish with `tend cli work:release --feed <feed> --work <work> --token <token>`
   (re-queues without card churn and rotates the token), or use `work:fail` / `work:block`.
-- List queued work before using connectors.
+- List queued/working lane work before using connectors, then run `work:claim` at least once so
+  restarted runners replay any in-flight item.
 - Claim work before connector-backed execution.
 - Upsert cards only after holding the relevant claim.
 - Call `action:verify` immediately before approved external mutations. When `work:claim` returns `operatorGuidance.userAuthorization.riskConfirmation`, treat that app click as the user's risk confirmation for the named recipients while the verified digest still matches.
