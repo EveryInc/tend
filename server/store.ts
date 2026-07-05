@@ -71,11 +71,7 @@ function defaultDrainState(): DrainState {
   return { status: "idle", consecutiveFailures: 0 };
 }
 
-function hasOwn(object: object, key: PropertyKey): boolean {
-  return Object.prototype.hasOwnProperty.call(object, key);
-}
-
-function workItemView(work: WorkItem): WorkItemView {
+export function workItemView(work: WorkItem): WorkItemView {
   const { capabilityToken: _capabilityToken, ...view } = work;
   return view;
 }
@@ -106,6 +102,7 @@ export class AttentionStore {
   private readonly workItems: WorkItemRepository;
   private readonly workspaceFeeds: WorkspaceFeedRepository;
   private readonly runAtomic?: AtomicRunner;
+  private readonly agentWakeSeq = new Map<AgentPresence["agent"], number>();
 
   constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; mindContext?: MindContextRepository; mobileCommandReceipts?: MobileCommandReceiptRepository; revisions?: RevisionRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; sources?: SourceRepository; sweeps?: SweepRepository; textDocuments?: TextDocumentRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository; runAtomic?: AtomicRunner } = {}) {
     this.dataDir = dataDir;
@@ -414,6 +411,7 @@ export class AttentionStore {
     if (presence.agent !== agent) throw new Error(`Presence agent mismatch: ${presence.agent}`);
     await mkdir(this.agentPath(agent), { recursive: true });
     await writeJson(this.agentPath(agent, "presence.json"), presence);
+    // The monitor fails closed until the ledger exists; presence arms that readable path.
     await appendFile(this.agentPath(agent, "wake.jsonl"), "", "utf8");
   }
 
@@ -421,12 +419,13 @@ export class AttentionStore {
     return this.withAgentWakeLock(async () => {
       await mkdir(this.agentPath(agent), { recursive: true });
       await this.rotateAgentWakeIfNeeded(agent);
-      const nextSeq = await this.readAgentWakeSeq(agent) + 1;
+      const nextSeq = (this.agentWakeSeq.get(agent) ?? await this.scanAgentWakeSeq(agent)) + 1;
+      this.agentWakeSeq.set(agent, nextSeq);
       const full: AgentWakeLine = { seq: nextSeq, ...line };
       const serialized = JSON.stringify(full);
+      // JSON escaping should already guarantee this; keep the guard because monitors consume physical lines.
       if (serialized.includes("\n") || serialized.includes("\r")) throw new Error("Agent wake lines must serialize to one physical line.");
       await appendFile(this.agentPath(agent, "wake.jsonl"), `${serialized}\n`, "utf8");
-      await writeJson(this.agentPath(agent, "wake-state.json"), { seq: nextSeq });
       return full;
     });
   }
@@ -511,8 +510,9 @@ export class AttentionStore {
     const next: ThreadBinding = { ...thread };
     try {
       const previous = await this.readThread(feedId);
-      if (!hasOwn(thread, "agents") && previous.agents) next.agents = previous.agents;
-      if (!hasOwn(thread, "drainAgent") && previous.drainAgent) next.drainAgent = previous.drainAgent;
+      // Thread updates predate agent lanes; merge omitted lane fields so old callers cannot erase bindings.
+      if (!Object.hasOwn(thread, "agents") && previous.agents) next.agents = previous.agents;
+      if (!Object.hasOwn(thread, "drainAgent") && previous.drainAgent) next.drainAgent = previous.drainAgent;
     } catch {
       // New feeds do not have a prior thread file.
     }
@@ -633,6 +633,7 @@ export class AttentionStore {
   }
 
   private async withAgentWakeLock<T>(callback: () => Promise<T>): Promise<T> {
+    // The domain currently serializes wake-producing mutations; keep this file lock for future non-serialized callers.
     const lockPath = this.path(".agent-wake-lock");
     for (let attempt = 0; attempt < 400; attempt += 1) {
       try {
@@ -661,6 +662,7 @@ export class AttentionStore {
         liveness: agentPresenceLiveness(claude),
         lastSeenAt: claude?.lastSeenAt ?? null,
         ...(claude?.label ? { label: claude.label } : {}),
+        // Deliberately exposed agent-facing state, not an authorization boundary.
         ...(claude?.sessionId ? { sessionId: claude.sessionId } : {}),
       },
     };
@@ -675,12 +677,6 @@ export class AttentionStore {
     }
   }
 
-  private async readAgentWakeSeq(agent: AgentPresence["agent"]): Promise<number> {
-    const state = this.agentPath(agent, "wake-state.json");
-    if (existsSync(state)) return (await readJson<{ seq: number }>(state)).seq;
-    return this.scanAgentWakeSeq(agent);
-  }
-
   private async scanAgentWakeSeq(agent: AgentPresence["agent"]): Promise<number> {
     const files = [this.agentPath(agent, "wake.jsonl"), `${this.agentPath(agent, "wake.jsonl")}.1`];
     let max = 0;
@@ -692,7 +688,7 @@ export class AttentionStore {
           const parsed = JSON.parse(line) as Partial<AgentWakeLine>;
           if (typeof parsed.seq === "number" && parsed.seq > max) max = parsed.seq;
         } catch {
-          // Rotated logs may contain legacy or partially written data; the state file is authoritative when present.
+          // Rotated logs may contain legacy or partially written data.
         }
       }
     }

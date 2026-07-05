@@ -74,7 +74,7 @@ export interface AgentWakeLine {
   at: string;
   feedId: string;
   workId: string;
-  kind: string;
+  kind: WorkItem["kind"];
   queued: number;
   threadId: string;
 }
@@ -86,6 +86,7 @@ export interface WorkspaceAgentSummary {
     liveness: AgentPresenceLiveness;
     lastSeenAt: string | null;
     label?: string;
+    // Agent-facing state so operators can see which Claude session last presented.
     sessionId?: string;
   };
 }
@@ -343,6 +344,12 @@ export interface RoutineActionGroup {
   error?: string;
 }
 
+export interface WorkClaimant {
+  agent: WorkAgent;
+  threadId: string;
+  sessionId?: string;
+}
+
 export interface WorkItem {
   id: string;
   feedId: FeedId;
@@ -350,11 +357,7 @@ export interface WorkItem {
   kind: "instruction" | "scoped_instruction" | "execute_approved_action" | "default_cleanup" | "routine_action_batch" | "compound_learnings";
   instruction: string;
   assignee?: WorkAgent;
-  claimedBy?: {
-    agent: WorkAgent;
-    threadId: string;
-    sessionId?: string;
-  };
+  claimedBy?: WorkClaimant;
   target?: VoiceTarget;
   intent?: "voice_instruction" | "sweep_rejudge" | "recollect_sources";
   feedbackId?: string;
@@ -379,7 +382,6 @@ export interface WorkItem {
   sourceMobileCommandId?: string;
 }
 
-export type WorkClaimant = NonNullable<WorkItem["claimedBy"]>;
 export type WorkItemView = Omit<WorkItem, "capabilityToken">;
 
 export interface WorkClaimedByReport {

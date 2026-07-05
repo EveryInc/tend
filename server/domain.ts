@@ -39,7 +39,8 @@ import type {
 } from "../shared/types";
 import type { MobileActionProjection, MobileCommand, MobileCommandResult, MobileCommandReceipt } from "../shared/mobile";
 import { containsFullEmail } from "../shared/emailThread";
-import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES } from "./store";
+import { agentLabel, effectiveWorkLane } from "../shared/lanes";
+import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, workItemView } from "./store";
 import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
 import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./util";
@@ -54,10 +55,6 @@ function appendHistory(card: Card, type: string, detail?: string): void {
 type WorkCaller =
   | { kind: "agent"; agent: WorkAgent; threadId: string; sessionId?: string }
   | { kind: "guest"; threadId: string; sessionId?: string };
-
-function effectiveWorkLane(work: Pick<WorkItem, "assignee">, thread: ThreadBinding): WorkAgent {
-  return work.assignee ?? thread.drainAgent ?? "codex";
-}
 
 function callerCanSeeWork(caller: WorkCaller, work: Pick<WorkItem, "assignee">, thread: ThreadBinding): boolean {
   const lane = effectiveWorkLane(work, thread);
@@ -74,6 +71,8 @@ function claimantForWork(caller: WorkCaller, work: Pick<WorkItem, "assignee">, t
 }
 
 function sameClaimant(left: WorkClaimant | undefined, right: WorkClaimant): boolean {
+  // Session ids are advisory handoff state; authorization follows the stable lane thread id.
+  if (!left) return false;
   return left?.agent === right.agent && left.threadId === right.threadId;
 }
 
@@ -92,11 +91,6 @@ function claimedByReport(work: WorkItem, claimedBy: WorkClaimant): WorkClaimedBy
   };
 }
 
-function workItemView(work: WorkItem): WorkItemView {
-  const { capabilityToken: _capabilityToken, ...view } = work;
-  return view;
-}
-
 function orderedWorkItems(work: WorkItem[]): WorkItem[] {
   return [...work].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
 }
@@ -106,6 +100,7 @@ function queuedClaudeWorkCount(work: WorkItem[], thread: ThreadBinding): number 
 }
 
 export function isClaimedWorkItem(result: WorkClaimResult): result is WorkItem {
+  // Structural guard by protocol: WorkItem must not grow a top-level `claim` field.
   return Boolean(result && !("claim" in result));
 }
 
@@ -650,12 +645,17 @@ function verifyMobileRiskConfirmation(
 export class AttentionDomain {
   constructor(readonly store: AttentionStore) {}
 
-  private async maybeEmitClaudeWake(feedId: string, work: WorkItem, thread?: ThreadBinding, options: { includeDropped?: boolean } = {}): Promise<AgentWakeLine | null> {
+  private async maybeEmitClaudeWake(
+    feedId: string,
+    work: WorkItem,
+    thread?: ThreadBinding,
+    options: { includeDropped?: boolean; workItems?: WorkItem[]; queuedCount?: number } = {},
+  ): Promise<AgentWakeLine | null> {
     if (work.status !== "queued" && !options.includeDropped) return null;
     const binding = thread ?? await this.store.readThread(feedId);
     const claude = binding.agents?.claude;
     if (!claude || effectiveWorkLane(work, binding) !== "claude") return null;
-    const queued = queuedClaudeWorkCount(await this.store.readWorkItems(feedId), binding);
+    const queued = options.queuedCount ?? queuedClaudeWorkCount(options.workItems ?? await this.store.readWorkItems(feedId), binding);
     try {
       return await this.store.appendAgentWake("claude", {
         at: isoNow(),
@@ -669,6 +669,32 @@ export class AttentionDomain {
       console.error("[claude-wake] Failed to append Claude wake line", { feedId, workId: work.id, error });
       return null;
     }
+  }
+
+  private async persistQueuedWork(
+    feedId: string,
+    work: WorkItem,
+    options: {
+      afterWrite?: () => Promise<unknown>;
+      thread?: ThreadBinding;
+      wake?: { includeDropped?: boolean; workItems?: WorkItem[]; queuedCount?: number };
+    } = {},
+  ): Promise<void> {
+    if (work.status !== "queued") throw new Error(`Cannot persist non-queued work through queued wake helper: ${work.status}`);
+    await this.store.writeWork(work);
+    await options.afterWrite?.();
+    await this.maybeEmitClaudeWake(feedId, work, options.thread, options.wake);
+  }
+
+  private requeueWorkItem(work: WorkItem): void {
+    work.status = "queued";
+    work.capabilityToken = makeToken();
+    work.claimedAt = undefined;
+    work.claimedBy = undefined;
+    work.error = undefined;
+    work.verifiedAt = undefined;
+    work.verifiedApprovalDigest = undefined;
+    work.verifiedMailbox = undefined;
   }
 
   async registerAgentPresence(
@@ -693,15 +719,14 @@ export class AttentionDomain {
 
       let replayed = 0;
       if (shouldReplay) {
-        const seenWorkIds = new Set<string>();
         for (const feedId of await this.store.listFeedIds()) {
           const thread = await this.store.readThread(feedId);
-          const parked = orderedWorkItems(await this.store.readWorkItems(feedId))
+          const workItems = orderedWorkItems(await this.store.readWorkItems(feedId));
+          const queuedCount = queuedClaudeWorkCount(workItems, thread);
+          const parked = workItems
             .filter((work) => work.status === "queued" && effectiveWorkLane(work, thread) === "claude");
           for (const work of parked) {
-            if (seenWorkIds.has(work.id)) continue;
-            seenWorkIds.add(work.id);
-            if (await this.maybeEmitClaudeWake(feedId, work, thread)) replayed += 1;
+            if (await this.maybeEmitClaudeWake(feedId, work, thread, { workItems, queuedCount })) replayed += 1;
           }
         }
       }
@@ -710,18 +735,18 @@ export class AttentionDomain {
   }
 
   async setFeedDrainAgent(feedId: string, agent: WorkAgent): Promise<ThreadBinding> {
-    if (agent !== "codex" && agent !== "claude") throw new Error(`Unsupported drain agent: ${agent}`);
+    await this.assertClaudeRoutingAllowed(feedId, agent);
     return this.store.serialize(async () => {
       const thread = await this.store.readThread(feedId);
-      if (agent === "claude" && !thread.agents?.claude) throw new Error("Cannot set drainAgent to claude without a Claude binding.");
       const previous = thread.drainAgent ?? "codex";
       thread.drainAgent = agent;
       await this.store.writeThread(feedId, thread);
       await this.store.appendEvent({ feedId, type: "thread.drain_agent_set", detail: { agent } });
       if (previous !== "claude" && agent === "claude") {
-        const queuedUnassigned = orderedWorkItems(await this.store.readWorkItems(feedId))
-          .filter((work) => work.status === "queued" && !work.assignee);
-        for (const work of queuedUnassigned) await this.maybeEmitClaudeWake(feedId, work, thread);
+        const workItems = orderedWorkItems(await this.store.readWorkItems(feedId));
+        const queuedCount = queuedClaudeWorkCount(workItems, thread);
+        const queuedUnassigned = workItems.filter((work) => work.status === "queued" && !work.assignee);
+        for (const work of queuedUnassigned) await this.maybeEmitClaudeWake(feedId, work, thread, { workItems, queuedCount });
       }
       return thread;
     });
@@ -733,6 +758,14 @@ export class AttentionDomain {
     if (assignee !== "claude") return;
     const thread = await this.store.readThread(feedId);
     if (!thread.agents?.claude) throw new Error(`Feed ${feedId} has no Claude binding. Bind Claude before routing work to Claude.`);
+  }
+
+  private async claudeExternalMutationWarning(feedId: string, work: WorkItem, agent: WorkAgent): Promise<string | undefined> {
+    if (agent !== "claude" || work.kind !== "execute_approved_action") return undefined;
+    const card = await this.store.readCard(feedId, work.cardId);
+    const action = configuredApprovalAction(card, work.cardActionId);
+    if (!action.externalMutation) return undefined;
+    return "This approved action performs an external mutation. Claude can claim it, but Tend has not verified Claude's connector capability; use work:block or work:release if Claude cannot execute it.";
   }
 
   async bindMindContextPublisher(threadId: string, replace = false): Promise<MindContextBinding> {
@@ -1045,18 +1078,22 @@ export class AttentionDomain {
           previousSweepState: feed.sweep,
           ...(options.assignee ? { assignee: options.assignee } : {}),
         });
+        const thread = await this.store.readThread(target.feedId);
         await this.store.writeSweepFeedback(trace);
-        await this.store.writeWork(work);
-        await this.store.writeSweepState(target.feedId, {
-          ...feed.sweep,
-          lastFeedbackId: trace.id,
-          recollectionOffered: false,
-          statusMessage: `Feedback queued for ${effectiveWorkLane(work, await this.store.readThread(target.feedId)) === "claude" ? "Claude" : "Codex"}`,
+        await this.persistQueuedWork(target.feedId, work, {
+          thread,
+          afterWrite: async () => {
+            await this.store.writeSweepState(target.feedId, {
+              ...feed.sweep,
+              lastFeedbackId: trace.id,
+              recollectionOffered: false,
+              statusMessage: `Feedback queued for ${agentLabel(effectiveWorkLane(work, thread))}`,
+            });
+            await this.store.appendEvent({ feedId: target.feedId, workId: work.id, type: "sweep.feedback_recorded", detail: { feedbackId: trace.id, batchId: trace.batchId, instruction: trace.instruction } });
+            await this.store.appendEvent({ feedId: target.feedId, workId: work.id, type: "voice.intent_queued", detail: { target, intent: work.intent } });
+            await this.store.appendEvent({ feedId: anchorFeedId, workId: work.id, type: "voice.instruction_submitted", detail: { target, instruction: instruction.trim() } });
+          },
         });
-        await this.store.appendEvent({ feedId: target.feedId, workId: work.id, type: "sweep.feedback_recorded", detail: { feedbackId: trace.id, batchId: trace.batchId, instruction: trace.instruction } });
-        await this.store.appendEvent({ feedId: target.feedId, workId: work.id, type: "voice.intent_queued", detail: { target, intent: work.intent } });
-        await this.store.appendEvent({ feedId: anchorFeedId, workId: work.id, type: "voice.instruction_submitted", detail: { target, instruction: instruction.trim() } });
-        await this.maybeEmitClaudeWake(target.feedId, work);
         return { kind: "scoped_work" as const, target, work, trace };
       }
 
@@ -1075,10 +1112,12 @@ export class AttentionDomain {
         appendHistory(card, "user.scoped_instruction", instruction.trim());
         await this.store.writeCard(card);
       }
-      await this.store.writeWork(work);
-      await this.store.appendEvent({ feedId, cardId, workId: work.id, type: "voice.intent_queued", detail: { target, intent: work.intent } });
-      await this.store.appendEvent({ feedId: anchorFeedId, cardId: target.kind === "card" ? target.cardId : undefined, workId: work.id, type: "voice.instruction_submitted", detail: { target, instruction: instruction.trim() } });
-      await this.maybeEmitClaudeWake(feedId, work);
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: async () => {
+          await this.store.appendEvent({ feedId, cardId, workId: work.id, type: "voice.intent_queued", detail: { target, intent: work.intent } });
+          await this.store.appendEvent({ feedId: anchorFeedId, cardId: target.kind === "card" ? target.cardId : undefined, workId: work.id, type: "voice.instruction_submitted", detail: { target, instruction: instruction.trim() } });
+        },
+      });
       return { kind: "scoped_work" as const, target, work };
     });
   }
@@ -1143,10 +1182,12 @@ export class AttentionDomain {
         ...(sweep.lastFeedbackId ? { feedbackId: sweep.lastFeedbackId } : {}),
         startingBatchId: sweep.currentBatchId,
       });
-      await this.store.writeWork(work);
-      await this.store.writeSweepState(feedId, { ...sweep, recollectionOffered: false, statusMessage: "Source search queued" });
-      await this.store.appendEvent({ feedId, workId: work.id, type: "sweep.recollection_requested", detail: { feedbackId: sweep.lastFeedbackId } });
-      await this.maybeEmitClaudeWake(feedId, work);
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: async () => {
+          await this.store.writeSweepState(feedId, { ...sweep, recollectionOffered: false, statusMessage: "Source search queued" });
+          await this.store.appendEvent({ feedId, workId: work.id, type: "sweep.recollection_requested", detail: { feedbackId: sweep.lastFeedbackId } });
+        },
+      });
       return work;
     });
   }
@@ -1294,16 +1335,18 @@ export class AttentionDomain {
     });
     card.status = "queued";
     appendHistory(card, "user.instruction", instruction.trim());
-    await this.store.writeWork(work);
-    await this.store.writeCard(card);
-    await this.store.appendEvent({
-      feedId,
-      cardId,
-      workId: work.id,
-      type: "work.queued",
-      detail: { instruction: work.instruction, sourceMobileCommandId },
+    await this.persistQueuedWork(feedId, work, {
+      afterWrite: async () => {
+        await this.store.writeCard(card);
+        await this.store.appendEvent({
+          feedId,
+          cardId,
+          workId: work.id,
+          type: "work.queued",
+          detail: { instruction: work.instruction, sourceMobileCommandId },
+        });
+      },
     });
-    await this.maybeEmitClaudeWake(feedId, work);
     return work;
   }
 
@@ -1320,7 +1363,6 @@ export class AttentionDomain {
     await this.assertCardSourceCurrent(card);
     const action = configuredApprovalAction(card, cardActionId);
     requiredSourceMailbox(feedId, card, action);
-    const now = isoNow();
     const approvalDigest = actionDigest(card, cardActionId);
     const feed = await this.store.readFeed(feedId);
     const active = (await this.store.readWorkItems(feedId)).filter((work) =>
@@ -1354,33 +1396,27 @@ export class AttentionDomain {
         detail: { reason: work.error },
       });
     }
-    const work: WorkItem = {
-      id: makeId("work"),
-      feedId,
-      cardId,
+    const work = queuedWork(feedId, cardId, action.instruction, {
       kind: "execute_approved_action",
-      instruction: action.instruction,
-      status: "queued",
-      capabilityToken: makeToken(),
       approvalDigest,
       completionCleanup: feed.config.defaultCleanup,
       ...(cardActionId ? { cardActionId } : {}),
       ...(sourceMobileCommandId ? { sourceMobileCommandId } : {}),
-      createdAt: now,
-      updatedAt: now,
-    };
+    });
     card.status = "queued";
     appendHistory(card, "user.approved_action", approvalDigest);
-    await this.store.writeWork(work);
-    await this.store.writeCard(card);
-    await this.store.appendEvent({
-      feedId,
-      cardId,
-      workId: work.id,
-      type: "action.approved",
-      detail: { approvalDigest, sourceMobileCommandId },
+    await this.persistQueuedWork(feedId, work, {
+      afterWrite: async () => {
+        await this.store.writeCard(card);
+        await this.store.appendEvent({
+          feedId,
+          cardId,
+          workId: work.id,
+          type: "action.approved",
+          detail: { approvalDigest, sourceMobileCommandId },
+        });
+      },
     });
-    await this.maybeEmitClaudeWake(feedId, work);
     return work;
   }
 
@@ -1401,7 +1437,6 @@ export class AttentionDomain {
       )
     );
     if (card.status === "done" && completedCleanup) throw new Error("This card's default cleanup is already complete.");
-    const now = isoNow();
     const approvalDigest = cleanupDigest(card, config.defaultCleanup);
     const active = feedWork.filter((work) =>
       work.cardId === cardId
@@ -1431,31 +1466,25 @@ export class AttentionDomain {
         detail: { reason: work.error },
       });
     }
-    const work: WorkItem = {
-      id: makeId("work"),
-      feedId,
-      cardId,
+    const work = queuedWork(feedId, cardId, config.defaultCleanup, {
       kind: "default_cleanup",
-      instruction: config.defaultCleanup,
-      status: "queued",
-      capabilityToken: makeToken(),
       approvalDigest,
       ...(sourceMobileCommandId ? { sourceMobileCommandId } : {}),
-      createdAt: now,
-      updatedAt: now,
-    };
+    });
     card.status = "queued";
     appendHistory(card, "user.default_cleanup_approved", config.defaultCleanup);
-    await this.store.writeWork(work);
-    await this.store.writeCard(card);
-    await this.store.appendEvent({
-      feedId,
-      cardId,
-      workId: work.id,
-      type: "cleanup.queued",
-      detail: { cleanup: config.defaultCleanup, sourceMobileCommandId },
+    await this.persistQueuedWork(feedId, work, {
+      afterWrite: async () => {
+        await this.store.writeCard(card);
+        await this.store.appendEvent({
+          feedId,
+          cardId,
+          workId: work.id,
+          type: "cleanup.queued",
+          detail: { cleanup: config.defaultCleanup, sourceMobileCommandId },
+        });
+      },
     });
-    await this.maybeEmitClaudeWake(feedId, work);
     return work;
   }
 
@@ -1470,9 +1499,9 @@ export class AttentionDomain {
     await this.assertClaudeRoutingAllowed(feedId, options.assignee);
     return this.store.serialize(async () => {
       const work = queuedWork(feedId, "__feed__", instruction, { kind: "instruction", ...(options.assignee ? { assignee: options.assignee } : {}) });
-      await this.store.writeWork(work);
-      await this.store.appendEvent({ feedId, workId: work.id, type: "feed.instruction_queued", detail: { instruction: work.instruction } });
-      await this.maybeEmitClaudeWake(feedId, work);
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: () => this.store.appendEvent({ feedId, workId: work.id, type: "feed.instruction_queued", detail: { instruction: work.instruction } }),
+      });
       return work;
     });
   }
@@ -1593,15 +1622,17 @@ export class AttentionDomain {
     });
     group.status = "queued";
     group.workId = work.id;
-    await this.store.writeWork(work);
-    await this.store.writeRoutineActionGroup(group);
-    await this.store.appendEvent({
-      feedId,
-      workId: work.id,
-      type: "routine_action.approved",
-      detail: { groupId: group.id, approvalDigest, items: group.items.length, sourceMobileCommandId },
+    await this.persistQueuedWork(feedId, work, {
+      afterWrite: async () => {
+        await this.store.writeRoutineActionGroup(group);
+        await this.store.appendEvent({
+          feedId,
+          workId: work.id,
+          type: "routine_action.approved",
+          detail: { groupId: group.id, approvalDigest, items: group.items.length, sourceMobileCommandId },
+        });
+      },
     });
-    await this.maybeEmitClaudeWake(feedId, work);
     return work;
   }
 
@@ -1687,9 +1718,8 @@ export class AttentionDomain {
     });
   }
 
-  async reassignQueuedWork(feedId: string, workId: string, agent: WorkAgent): Promise<WorkItemView> {
-    if (agent !== "codex" && agent !== "claude") throw new Error(`Unsupported work assignee: ${agent}`);
-    await this.assertClaudeRoutingAllowed(feedId, agent === "claude" ? agent : undefined);
+  async reassignQueuedWork(feedId: string, workId: string, agent: WorkAgent): Promise<WorkItemView & { warning?: string }> {
+    await this.assertClaudeRoutingAllowed(feedId, agent);
     return this.store.serialize(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "queued") throw new Error("Only queued work can be reassigned.");
@@ -1698,10 +1728,11 @@ export class AttentionDomain {
       } else {
         work.assignee = agent;
       }
-      await this.store.writeWork(work);
-      await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.assignee_set", detail: { agent } });
-      await this.maybeEmitClaudeWake(feedId, work);
-      return workItemView(work);
+      const warning = await this.claudeExternalMutationWarning(feedId, work, agent);
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: () => this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.assignee_set", detail: { agent } }),
+      });
+      return { ...workItemView(work), ...(warning ? { warning } : {}) };
     });
   }
 
@@ -1891,21 +1922,12 @@ export class AttentionDomain {
     return this.store.serialize(async () => {
       const existing = (await this.store.readWorkItems(feedId)).find((work) => work.kind === "compound_learnings" && (work.status === "queued" || work.status === "working"));
       if (existing) return existing;
-      const now = isoNow();
-      const work: WorkItem = {
-        id: makeId("work"),
-        feedId,
-        cardId: "__feed__",
+      const work = queuedWork(feedId, "__feed__", "The user approved a learning pass. Review raw snapshots, runs, events, outcomes, and policy history. Distill a compact feed-policy improvement, then create an editable revision proposal with revision:propose --source compound. Do not apply it. The browser will bring the proposal back to the user for review.", {
         kind: "compound_learnings",
-        instruction: "The user approved a learning pass. Review raw snapshots, runs, events, outcomes, and policy history. Distill a compact feed-policy improvement, then create an editable revision proposal with revision:propose --source compound. Do not apply it. The browser will bring the proposal back to the user for review.",
-        status: "queued",
-        capabilityToken: makeToken(),
-        createdAt: now,
-        updatedAt: now,
-      };
-      await this.store.writeWork(work);
-      await this.store.appendEvent({ feedId, workId: work.id, type: "learning.compound_queued" });
-      await this.maybeEmitClaudeWake(feedId, work);
+      });
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: () => this.store.appendEvent({ feedId, workId: work.id, type: "learning.compound_queued" }),
+      });
       return work;
     });
   }
@@ -1983,23 +2005,16 @@ export class AttentionDomain {
       if (work.capabilityToken !== token) throw new Error("Invalid scoped work capability token.");
       if (!work.claimedBy) throw new Error("Working work has no recorded claimant.");
       const releasedBy = work.claimedBy;
-      work.status = "queued";
-      work.capabilityToken = makeToken();
-      work.claimedAt = undefined;
-      work.claimedBy = undefined;
-      work.error = undefined;
-      work.verifiedAt = undefined;
-      work.verifiedApprovalDigest = undefined;
-      work.verifiedMailbox = undefined;
-      await this.store.writeWork(work);
-      await this.store.appendEvent({
-        feedId,
-        cardId: work.cardId,
-        workId,
-        type: "work.released",
-        detail: { threadId: releasedBy.threadId, agent: releasedBy.agent, ...(sessionId ? { sessionId } : {}) },
+      this.requeueWorkItem(work);
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: () => this.store.appendEvent({
+          feedId,
+          cardId: work.cardId,
+          workId,
+          type: "work.released",
+          detail: { threadId: releasedBy.threadId, agent: releasedBy.agent, ...(sessionId ? { sessionId } : {}) },
+        }),
       });
-      await this.maybeEmitClaudeWake(feedId, work);
       return workItemView(work);
     });
   }
@@ -2367,21 +2382,15 @@ export class AttentionDomain {
         await this.store.appendEvent({ feedId, cardId: card.id, workId, type: "action.stale" });
         throw new Error(work.error);
       }
-      work.status = "queued";
-      work.capabilityToken = makeToken();
-      work.updatedAt = isoNow();
-      work.claimedAt = undefined;
-      work.claimedBy = undefined;
-      work.error = undefined;
-      work.verifiedAt = undefined;
-      work.verifiedApprovalDigest = undefined;
-      work.verifiedMailbox = undefined;
+      this.requeueWorkItem(work);
       card.status = "queued";
       appendHistory(card, "codex.approved_action_retry_queued", work.id);
-      await this.store.writeWork(work);
-      await this.store.writeCard(card);
-      await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.approved_action_retry_queued" });
-      await this.maybeEmitClaudeWake(feedId, work);
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: async () => {
+          await this.store.writeCard(card);
+          await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.approved_action_retry_queued" });
+        },
+      });
       return workItemView(work);
     });
   }

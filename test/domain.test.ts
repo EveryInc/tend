@@ -1430,7 +1430,7 @@ describe("Claude wake emission", () => {
     const lines = await readClaudeWakeLines(root);
     expect(lines.map((line) => line.workId).sort()).toEqual([first.id, second.id].sort());
     expect(lines.map((line) => line.queued)).toEqual([2, 2]);
-    await expect(domain.setFeedDrainAgent("company-attention", "claude")).rejects.toThrow("without a Claude binding");
+    await expect(domain.setFeedDrainAgent("company-attention", "claude")).rejects.toThrow("has no Claude binding");
   });
 
   test("reassigns queued work to Codex and rejects working reassignment", async () => {
