@@ -343,6 +343,7 @@ const MIND_CONTEXT_HISTORY_MS = 7 * 24 * 60 * 60 * 1_000;
 const MIND_CONTEXT_MAX_OBSERVATION_MS = 10 * 60 * 1_000;
 const MIND_CONTEXT_MAX_TOTAL_FULL_TEXT = 200_000;
 const MIND_CONTEXT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const AGENT_LABEL_MAX_LENGTH = 64;
 
 function requiredMindText(value: unknown, label: string, maxLength: number): string {
   if (!hasText(value)) throw new Error(`${label} is required.`);
@@ -660,7 +661,7 @@ export class AttentionDomain {
     if (agent !== "claude") throw new Error(`Unsupported agent presence: ${agent}`);
     const sessionId = input.sessionId.trim();
     if (!sessionId) throw new Error("Agent presence sessionId is required.");
-    const label = input.label?.trim();
+    const label = input.label ? requiredMindText(input.label, "Agent presence label", AGENT_LABEL_MAX_LENGTH) : undefined;
     return this.store.serialize(async () => {
       const previous = await this.store.readAgentPresence(agent);
       const shouldReplay = !previous || agentPresenceLiveness(previous) !== "live" || previous.sessionId !== sessionId;
@@ -706,6 +707,14 @@ export class AttentionDomain {
       }
       return thread;
     });
+  }
+
+  private async assertClaudeRoutingAllowed(feedId: string, assignee?: WorkAgent): Promise<void> {
+    if (!assignee) return;
+    if (assignee !== "codex" && assignee !== "claude") throw new Error(`Unsupported work assignee: ${assignee}`);
+    if (assignee !== "claude") return;
+    const thread = await this.store.readThread(feedId);
+    if (!thread.agents?.claude) throw new Error(`Feed ${feedId} has no Claude binding. Bind Claude before routing work to Claude.`);
   }
 
   async bindMindContextPublisher(threadId: string, replace = false): Promise<MindContextBinding> {
@@ -986,6 +995,8 @@ export class AttentionDomain {
   async submitVoiceInstruction(anchorFeedId: string, requested: VoiceTarget, instruction: string, options: { assignee?: WorkAgent } = {}) {
     if (!instruction.trim()) throw new Error("Instruction is required.");
     const target = await this.store.validateVoiceTarget(requested);
+    const targetFeedId = target.kind === "sweep" || "feedId" in target ? target.feedId : anchorFeedId;
+    await this.assertClaudeRoutingAllowed(targetFeedId, options.assignee);
     return this.store.serializeAtomic(async () => {
       if (target.kind === "sweep") {
         const feed = await this.store.readFeed(target.feedId);
@@ -1208,6 +1219,26 @@ export class AttentionDomain {
     });
   }
 
+  async bindAgentFeed(feedId: string, agent: AgentPresence["agent"], replace = false): Promise<ThreadBinding> {
+    if (agent !== "claude") throw new Error(`Unsupported feed agent binding: ${agent}`);
+    return this.store.serialize(async () => {
+      const thread = await this.store.readThread(feedId);
+      const current = thread.agents?.claude;
+      if (current && !replace) {
+        throw new Error(`Feed ${feedId} is already bound to Claude lane ${current.threadId} at ${current.boundAt}. Use --replace for a deliberate handoff.`);
+      }
+      const binding = { threadId: makeId("claude-lane"), boundAt: isoNow() };
+      thread.agents = { ...thread.agents, claude: binding };
+      await this.store.writeThread(feedId, thread);
+      await this.store.appendEvent({
+        feedId,
+        type: "thread.bound",
+        detail: { agent, threadId: binding.threadId, boundAt: binding.boundAt },
+      });
+      return thread;
+    });
+  }
+
   async proposeHeartbeat(feedId: string, cadence: string): Promise<ThreadBinding> {
     return this.store.serialize(async () => {
       const thread = await this.store.readThread(feedId);
@@ -1234,11 +1265,13 @@ export class AttentionDomain {
     cardId: string,
     instruction: string,
     sourceMobileCommandId?: string,
+    options: { assignee?: WorkAgent } = {},
   ): Promise<WorkItem> {
     const card = await this.store.readCard(feedId, cardId);
     if (card.status === "done") throw new Error("Done cards cannot be queued.");
     const work = queuedWork(feedId, cardId, instruction, {
       kind: "instruction",
+      ...(options.assignee ? { assignee: options.assignee } : {}),
       ...(sourceMobileCommandId ? { sourceMobileCommandId } : {}),
     });
     card.status = "queued";
@@ -1408,15 +1441,17 @@ export class AttentionDomain {
     return work;
   }
 
-  async queueInstruction(feedId: string, cardId: string, instruction: string): Promise<WorkItem> {
+  async queueInstruction(feedId: string, cardId: string, instruction: string, options: { assignee?: WorkAgent } = {}): Promise<WorkItem> {
     if (!instruction.trim()) throw new Error("Instruction is required.");
-    return this.store.serialize(() => this.queueInstructionLocked(feedId, cardId, instruction));
+    await this.assertClaudeRoutingAllowed(feedId, options.assignee);
+    return this.store.serialize(() => this.queueInstructionLocked(feedId, cardId, instruction, undefined, options));
   }
 
-  async queueFeedInstruction(feedId: string, instruction: string): Promise<WorkItem> {
+  async queueFeedInstruction(feedId: string, instruction: string, options: { assignee?: WorkAgent } = {}): Promise<WorkItem> {
     if (!instruction.trim()) throw new Error("Instruction is required.");
+    await this.assertClaudeRoutingAllowed(feedId, options.assignee);
     return this.store.serialize(async () => {
-      const work = queuedWork(feedId, "__feed__", instruction, { kind: "instruction" });
+      const work = queuedWork(feedId, "__feed__", instruction, { kind: "instruction", ...(options.assignee ? { assignee: options.assignee } : {}) });
       await this.store.writeWork(work);
       await this.store.appendEvent({ feedId, workId: work.id, type: "feed.instruction_queued", detail: { instruction: work.instruction } });
       await this.maybeEmitClaudeWake(feedId, work);
@@ -1630,6 +1665,24 @@ export class AttentionDomain {
       appendHistory(card, "user.edited_queued_instruction", work.instruction);
       await this.store.writeCard(card);
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.instruction_edited" });
+      return work;
+    });
+  }
+
+  async reassignQueuedWork(feedId: string, workId: string, agent: WorkAgent): Promise<WorkItem> {
+    if (agent !== "codex" && agent !== "claude") throw new Error(`Unsupported work assignee: ${agent}`);
+    await this.assertClaudeRoutingAllowed(feedId, agent === "claude" ? agent : undefined);
+    return this.store.serialize(async () => {
+      const work = await this.store.readWork(feedId, workId);
+      if (work.status !== "queued") throw new Error("Only queued work can be reassigned.");
+      if (agent === "codex") {
+        work.assignee = undefined;
+      } else {
+        work.assignee = agent;
+      }
+      await this.store.writeWork(work);
+      await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.assignee_set", detail: { agent } });
+      await this.maybeEmitClaudeWake(feedId, work);
       return work;
     });
   }

@@ -893,6 +893,26 @@ describe("filesystem workspace", () => {
 });
 
 describe("thread-owned work drain", () => {
+  test("binds Claude lanes with server-minted ids and replace fencing", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+
+    const first = await domain.bindAgentFeed("inbox", "claude");
+    expect(first.agents?.claude?.threadId).toStartWith("claude-lane_");
+    expect(first.agents?.claude?.boundAt).toBeTruthy();
+    expect(first.homeThreadId).toBe("thread-codex");
+
+    await expect(domain.bindAgentFeed("inbox", "claude")).rejects.toThrow(`already bound to Claude lane ${first.agents?.claude?.threadId} at ${first.agents?.claude?.boundAt}`);
+
+    const replaced = await domain.bindAgentFeed("inbox", "claude", true);
+    expect(replaced.agents?.claude?.threadId).toStartWith("claude-lane_");
+    expect(replaced.agents?.claude?.threadId).not.toBe(first.agents?.claude?.threadId);
+    expect((await store.readEvents("inbox")).filter((event) => event.type === "thread.bound").at(-1)?.detail).toMatchObject({
+      agent: "claude",
+      threadId: replaced.agents?.claude?.threadId,
+    });
+  });
+
   test("characterization: Codex single-lane claim replay returns the original token to the same home thread", async () => {
     const { store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-inbox");
@@ -1173,11 +1193,10 @@ describe("Claude wake emission", () => {
     expect(lines[0].workId).not.toBe(plain.work.id);
   });
 
-  test("Claude assignment without a Claude binding queues but emits no wake", async () => {
+  test("Claude assignment without a Claude binding is rejected before queueing", async () => {
     const { root, domain } = await setup();
-    const routed = await domain.submitVoiceInstruction("inbox", { kind: "feed", feedId: "inbox" }, "Parked without binding.", { assignee: "claude" });
 
-    expect(routed.work.assignee).toBe("claude");
+    await expect(domain.submitVoiceInstruction("inbox", { kind: "feed", feedId: "inbox" }, "Parked without binding.", { assignee: "claude" })).rejects.toThrow("has no Claude binding");
     expect(await readClaudeWakeLines(root)).toEqual([]);
   });
 
@@ -1304,6 +1323,20 @@ describe("Claude wake emission", () => {
     expect(lines.map((line) => line.workId)).toEqual([first.id, second.id]);
     expect(lines.map((line) => line.queued)).toEqual([2, 2]);
     await expect(domain.setFeedDrainAgent("company-attention", "claude")).rejects.toThrow("without a Claude binding");
+  });
+
+  test("reassigns queued work to Codex and rejects working reassignment", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    const queued = await domain.submitVoiceInstruction("inbox", { kind: "feed", feedId: "inbox" }, "Park this for Claude.", { assignee: "claude" });
+
+    const reassigned = await domain.reassignQueuedWork("inbox", queued.work.id, "codex");
+    expect(reassigned.assignee).toBeUndefined();
+    expect((await domain.listPendingWork("inbox", "thread-codex")).map((work) => work.id)).toContain(queued.work.id);
+
+    const claimed = await domain.claimWork("inbox", "thread-codex") as WorkItem;
+    await expect(domain.reassignQueuedWork("inbox", claimed.id, "codex")).rejects.toThrow("Only queued work can be reassigned");
   });
 
   test("wake ledger bytes omit instruction text and capability tokens from domain emissions", async () => {

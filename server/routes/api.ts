@@ -1,10 +1,16 @@
 import { Hono } from "hono";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { PostActionCompletion, VoiceTarget } from "../../shared/types";
+import type { PostActionCompletion, VoiceTarget, WorkAgent } from "../../shared/types";
 import { mindContextPublicationReceipt } from "../domain";
 import { versionInfo } from "../version";
 import { body, mutation, mutationAccessError, type LocalRouteContext } from "./shared";
+
+function optionalAgent(value: unknown): WorkAgent | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "codex" || value === "claude") return value;
+  throw new Error(`Unsupported agent: ${String(value)}`);
+}
 
 export function apiRoutes(context: LocalRouteContext): Hono {
   const { artifactsDir, dataDir, domain, mobileStatus, mutationToken, notify, sqlite, store } = context;
@@ -67,6 +73,20 @@ export function apiRoutes(context: LocalRouteContext): Hono {
     );
   }));
   app.post("/api/feeds/:feed/bind", async (c) => mutation(c, notify, async () => domain.bindFeed(c.req.param("feed"), String((await body(c)).threadId ?? ""))));
+  app.post("/api/agents/:agent/presence", async (c) => {
+    if (c.req.param("agent") !== "claude") return c.json({ error: "Unsupported agent presence endpoint." }, 404);
+    return mutation(c, notify, async () => {
+      const input = await body(c);
+      return domain.registerAgentPresence("claude", {
+        sessionId: String(input.sessionId ?? ""),
+        ...(typeof input.label === "string" ? { label: input.label } : {}),
+      });
+    });
+  });
+  app.post("/api/feeds/:feed/drain-agent", async (c) => mutation(c, notify, async () => {
+    const input = await body(c);
+    return domain.setFeedDrainAgent(c.req.param("feed"), optionalAgent(input.agent) ?? "codex");
+  }));
   app.post("/api/feeds/:feed/heartbeat", async (c) => mutation(c, notify, async () => domain.proposeHeartbeat(c.req.param("feed"), String((await body(c)).cadence ?? ""))));
   app.post("/api/feeds/:feed/sources", async (c) => mutation(c, notify, async () => domain.addSourceFromBrief(c.req.param("feed"), String((await body(c)).brief ?? ""))));
   app.post("/api/feeds/:feed/sources/:source", async (c) => mutation(c, notify, async () => domain.updateWorkspaceDocument(c.req.param("feed"), { kind: "source_recipe", feedId: c.req.param("feed"), sourceId: c.req.param("source") }, String((await body(c)).content ?? ""))));
@@ -86,17 +106,29 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   }));
   app.post("/api/voice/instructions", async (c) => mutation(c, notify, async () => {
     const input = await body(c);
-    return domain.submitVoiceInstruction(String(input.feedId ?? "inbox"), input.target as VoiceTarget, String(input.instruction ?? ""));
+    return domain.submitVoiceInstruction(String(input.feedId ?? "inbox"), input.target as VoiceTarget, String(input.instruction ?? ""), {
+      assignee: optionalAgent(input.assignee),
+    });
   }));
   app.post("/api/revision-proposals/:proposal/apply", async (c) => mutation(c, notify, async () => domain.applyRevisionProposal(c.req.param("proposal"))));
   app.post("/api/revision-proposals/:proposal/reject", async (c) => mutation(c, notify, async () => domain.rejectRevisionProposal(c.req.param("proposal"))));
   app.post("/api/revision-proposals/:proposal", async (c) => mutation(c, notify, async () => domain.updateRevisionProposal(c.req.param("proposal"), String((await body(c)).content ?? ""))));
   app.post("/api/revisions/:revision/revert", async (c) => mutation(c, notify, async () => domain.revertWorkspaceRevision(c.req.param("revision"))));
   app.post("/api/feeds/:feed/recollect", async (c) => mutation(c, notify, async () => domain.requestSweepRecollection(c.req.param("feed"))));
-  app.post("/api/feeds/:feed/instructions", async (c) => mutation(c, notify, async () => domain.queueFeedInstruction(c.req.param("feed"), String((await body(c)).instruction ?? ""))));
-  app.post("/api/feeds/:feed/cards/:card/instructions", async (c) => mutation(c, notify, async () => domain.queueInstruction(c.req.param("feed"), c.req.param("card"), String((await body(c)).instruction ?? ""))));
+  app.post("/api/feeds/:feed/instructions", async (c) => mutation(c, notify, async () => {
+    const input = await body(c);
+    return domain.queueFeedInstruction(c.req.param("feed"), String(input.instruction ?? ""), { assignee: optionalAgent(input.assignee) });
+  }));
+  app.post("/api/feeds/:feed/cards/:card/instructions", async (c) => mutation(c, notify, async () => {
+    const input = await body(c);
+    return domain.queueInstruction(c.req.param("feed"), c.req.param("card"), String(input.instruction ?? ""), { assignee: optionalAgent(input.assignee) });
+  }));
   app.post("/api/feeds/:feed/work/:work/cancel", async (c) => mutation(c, notify, async () => domain.cancelQueuedWork(c.req.param("feed"), c.req.param("work"), String((await body(c)).reason ?? "Cancelled from the browser before Codex started work."))));
   app.post("/api/feeds/:feed/work/:work/instruction", async (c) => mutation(c, notify, async () => domain.updateQueuedWorkInstruction(c.req.param("feed"), c.req.param("work"), String((await body(c)).instruction ?? ""))));
+  app.post("/api/feeds/:feed/work/:work/assignee", async (c) => mutation(c, notify, async () => {
+    const input = await body(c);
+    return domain.reassignQueuedWork(c.req.param("feed"), c.req.param("work"), optionalAgent(input.agent) ?? "codex");
+  }));
   app.post("/api/feeds/:feed/work/:work/reconcile-approved", async (c) => mutation(c, notify, async () => {
     const input = await body(c);
     const result = input.result && typeof input.result === "object" ? input.result as { response: string; done?: boolean; postAction?: PostActionCompletion } : { response: "" };

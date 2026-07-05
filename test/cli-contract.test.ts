@@ -15,8 +15,10 @@ describe("CLI contract", () => {
     expect(commandNames).toContain("context:publish");
     expect(commandNames).toContain("context:status");
     expect(commandNames).toContain("context:for-feed");
+    expect(commandNames).toContain("agent:presence");
     expect(commandNames).toContain("work:list");
     expect(commandNames).toContain("work:claim");
+    expect(commandNames).toContain("feed:drain-agent");
     expect(commandNames).toContain("action:verify");
     expect(commandNames).toContain("work:complete");
     expect(commandNames).toContain("work:reconcile-approved");
@@ -47,6 +49,7 @@ describe("CLI contract", () => {
       code: "missing_flag",
       hint: "Usage: tend cli work:claim --feed <id> --thread <id> [--cross-feed] [--session <id>]",
     });
+    expect(CLI_COMMANDS.find((command) => command.startsWith("feed:bind "))).toContain("--agent claude [--replace]");
   });
 
   test("prints a self-contained Codex setup prompt for binary installs", () => {

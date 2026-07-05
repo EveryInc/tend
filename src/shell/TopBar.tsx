@@ -21,6 +21,8 @@ export function TopBar({
 }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const claude = state.agents?.claude ?? { liveness: "offline" as const, lastSeenAt: null };
+  const claudeLabel = claude.label ? `Claude ${claude.liveness} · ${claude.label}` : `Claude ${claude.liveness}`;
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
@@ -33,6 +35,9 @@ export function TopBar({
     <div className="feed-bar" ref={menuRef}>
       <button className="menu-trigger" onClick={() => setOpen(!open)} aria-label="Open feed navigation">☰</button>
       <strong>{title}</strong>
+      <span className={`tend-agent-chip tend-agent-${claude.liveness}`} title={claude.lastSeenAt ? `Last seen ${claude.lastSeenAt}` : "No Claude presence yet"}>
+        {claudeLabel}
+      </span>
       {open && (
         <div className="feed-menu">
           <button className={destination === "mind" ? "selected" : ""} onClick={() => { onMind(); setOpen(false); }}>

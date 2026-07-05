@@ -27,7 +27,20 @@ export async function body(c: any): Promise<Record<string, unknown>> {
   return value as Record<string, unknown>;
 }
 
+function isAllowedLocalOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin);
+    return (url.hostname === "127.0.0.1" || url.hostname === "localhost") && Boolean(url.port);
+  } catch {
+    return false;
+  }
+}
+
 export async function mutation(c: any, notify: Notify, callback: () => Promise<unknown>) {
+  const origin = c.req.header("origin");
+  if (origin && !isAllowedLocalOrigin(origin)) {
+    return c.json({ error: "Mutating requests are only accepted from localhost origins." }, 403);
+  }
   try {
     const result = await callback();
     notify({ changedAt: new Date().toISOString() });

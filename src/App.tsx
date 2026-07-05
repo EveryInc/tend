@@ -27,6 +27,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const [undoQueuedWork, setUndoQueuedWork] = useState<{ feedId: string; workId: string } | null>(null);
   const [undoRevision, setUndoRevision] = useState<string | null>(null);
   const [workspaceFocus, setWorkspaceFocus] = useState<VoiceTarget | null>(null);
+  const [routeDockToClaude, setRouteDockToClaude] = useState(false);
   const [dockTarget, setDockTarget] = useState<VoiceTarget | null>(() => {
     try {
       return JSON.parse(sessionStorage.getItem("attention.voiceTarget") ?? "null") as VoiceTarget | null;
@@ -46,6 +47,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     setTab("review");
     setWorkspaceFocus(null);
     setInspector(null);
+    setRouteDockToClaude(false);
   }, [feedId]);
 
   const workspaceQuery = useQuery({
@@ -63,6 +65,11 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   );
 
   const feed = state?.active;
+  const canRouteDockToClaude = Boolean(feed?.thread.agents?.claude);
+  const claudeLiveness = state?.agents?.claude.liveness ?? "offline";
+  useEffect(() => {
+    if (!canRouteDockToClaude) setRouteDockToClaude(false);
+  }, [canRouteDockToClaude]);
   const cards = useMemo(() => feed ? visibleCards(feed, tab) : [], [feed, tab]);
   const routineActions = useMemo(() => feed ? visibleRoutineActions(feed, tab) : [], [feed, tab]);
   const cardIds = useMemo(() => cards.map((card) => card.id), [cards]);
@@ -186,12 +193,14 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     if (!feed || !dockTarget) return;
     void (async () => {
       try {
-        const result = await post<any>("/api/voice/instructions", { feedId: feed.config.id, target: dockTarget, instruction });
+        const assignee = canRouteDockToClaude && routeDockToClaude ? "claude" : undefined;
+        const result = await post<any>("/api/voice/instructions", { feedId: feed.config.id, target: dockTarget, instruction, assignee });
         if (result.kind === "scoped_work") {
           const queued = { feedId: feed.config.id, workId: result.work.id };
           setUndoQueuedWork(queued);
           window.setTimeout(() => setUndoQueuedWork((current) => current?.workId === queued.workId ? null : current), 5_000);
-          showToast(result.work.intent === "sweep_rejudge" ? "Feedback queued for Codex" : "Queued for Codex");
+          const agentName = result.work.assignee === "claude" ? "Claude" : "Codex";
+          showToast(result.work.intent === "sweep_rejudge" ? `Feedback queued for ${agentName}` : `Queued for ${agentName}`);
         } else {
           showToast("Revision proposal ready for approval");
         }
@@ -243,6 +252,10 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     if (unseen && screen === "feed") openLearningReview();
   }, [feed, openLearningReview, screen, state]);
   const recollect = () => void withRefresh(() => post(`/api/feeds/${feed?.config.id}/recollect`), "Source search queued");
+  const reassignQueuedWork = (work: WorkItemView) => void withRefresh(
+    () => post(`/api/feeds/${work.feedId}/work/${work.id}/assignee`, { agent: "codex" }),
+    "Reassigned to Codex",
+  );
   const flushVisibleCardEdits = async (card: Card) => {
     const textareas = document.querySelectorAll<HTMLTextAreaElement>(`[data-card-id="${CSS.escape(card.id)}"] textarea[data-block-id]`);
     await Promise.all(Array.from(textareas).map(async (textarea) => {
@@ -321,13 +334,15 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   if (!state || !feed) return withRealtime(<main className="loading">Loading attention…</main>);
   const resolvedDockTarget = dockTarget ?? ladder[0];
   const compoundProposals = state.proposals.filter((proposal) => proposal.anchorFeedId === feed.config.id && proposal.source === "compound");
+  const workAgent = (work: WorkItemView) => work.assignee ?? feed.thread.drainAgent ?? "codex";
+  const workAgentLabel = (work: WorkItemView) => workAgent(work) === "claude" ? "Claude" : "Codex";
 
   if (screen === "workspace") return withRealtime(
     <>
       <TopBar state={state} onMind={openMind} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
       <div className="workspace-proposals"><RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} /></div>
       <PromptWorkspace state={state} refreshVersion={workspaceQuery.dataUpdatedAt} tab={workspaceTab} onTab={openWorkspace} onBack={closeWorkspace} onInspector={setInspector} onSaved={showToast} onTargetFocus={(target) => { setWorkspaceFocus(target); selectDockTarget(target); }} />
-      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
+      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} canRouteToClaude={canRouteDockToClaude} routeToClaude={routeDockToClaude} onRouteToClaude={setRouteDockToClaude} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
     </>
@@ -337,7 +352,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     <>
       <TopBar state={state} onMind={openMind} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
       <LearningReview feed={feed} proposals={compoundProposals} onBack={closeWorkspace} onApply={applyLearningProposal} onReject={rejectLearningProposal} />
-      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
+      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} canRouteToClaude={canRouteDockToClaude} routeToClaude={routeDockToClaude} onRouteToClaude={setRouteDockToClaude} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
     </>
@@ -377,15 +392,21 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
             </header>
             <p className="why">
               {work.status === "queued"
-                ? "Ready for the home Codex thread to drain."
+                ? `Ready for ${workAgentLabel(work)} to drain.`
                 : work.status === "working"
-                  ? "The home Codex thread is working through this feed-level instruction."
-                  : "The home Codex thread completed this feed-level instruction."}
+                  ? `${workAgentLabel(work)} is working through this feed-level instruction.`
+                  : `${workAgentLabel(work)} completed this feed-level instruction.`}
             </p>
+            {work.status === "queued" && workAgent(work) === "claude" && claudeLiveness === "offline" && (
+              <div className="parked-work">
+                <span>Claude is offline, so this instruction is parked.</span>
+                <button className="button ghost" onClick={() => reassignQueuedWork(work)}>Reassign to Codex</button>
+              </div>
+            )}
             {work.status === "completed" && work.response && (
               <div className="blocks">
                 <section className="block block-rich_text">
-                  <h3>Codex response</h3>
+                  <h3>{workAgentLabel(work)} response</h3>
                   <p><FormattedText text={work.response} /></p>
                 </section>
               </div>
@@ -393,7 +414,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
             {work.status === "queued" && (
               <footer className="card-action">
                 <div>
-                  <span className="action-label">Queued for Codex</span>
+                  <span className="action-label">Queued for {workAgentLabel(work)}</span>
                   <b>Waiting for the feed thread</b>
                 </div>
                 <div className="action-buttons">
@@ -426,7 +447,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
           </div>
         </section>}
       </main>
-      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
+      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} canRouteToClaude={canRouteDockToClaude} routeToClaude={routeDockToClaude} onRouteToClaude={setRouteDockToClaude} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoCleanup && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoCleanup.feedId}/cards/${undoCleanup.cardId}/undo-dismiss`), "Cleanup undone").then(() => setUndoCleanup(null))}>Undo</button>}{undoQueuedWork && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoQueuedWork.feedId}/work/${undoQueuedWork.workId}/cancel`), "Instruction cancelled").then(() => setUndoQueuedWork(null))}>Undo</button>}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
     </>
