@@ -872,6 +872,26 @@ describe("filesystem workspace", () => {
 });
 
 describe("thread-owned work drain", () => {
+  test("characterization: Codex single-lane claim replay returns the original token to the same home thread", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Collect the first real sweep.");
+
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    const replayed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+
+    expect(claimed.id).toBe(queued.id);
+    expect(replayed.id).toBe(queued.id);
+    expect(replayed.capabilityToken).toBe(claimed.capabilityToken);
+    expect((await store.readWork("inbox", queued.id)).claimedBy).toMatchObject({
+      agent: "codex",
+      threadId: "thread-inbox",
+    });
+    const claimedEvent = (await store.readEvents("inbox")).find((event) => event.type === "work.claimed");
+    expect(claimedEvent?.detail).toEqual({ threadId: "thread-inbox", agent: "codex" });
+    expect(JSON.stringify(claimedEvent)).not.toContain(claimed.capabilityToken);
+  });
+
   test("queues, claims, completes, and buffers finished work for the next pass", async () => {
     const { store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-inbox");
@@ -894,7 +914,7 @@ describe("thread-owned work drain", () => {
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("queued");
     expect((await domain.cancelQueuedWork("inbox", queued.id, "Accidental dictation.")).status).toBe("cancelled");
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("to_review_updated");
-    await expect(domain.claimWork("inbox", "thread-inbox")).rejects.toThrow("no bound home thread");
+    await expect(domain.claimWork("inbox", "thread-inbox")).rejects.toThrow("no bound agent thread");
   });
 
   test("requires the home thread unless cross-feed work is explicit", async () => {
@@ -913,6 +933,141 @@ describe("thread-owned work drain", () => {
     await domain.queueInstruction("company-attention", "demo-company-models", "Draft the feed recipe.");
     expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(first.id);
     expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(first.id);
+  });
+
+  test("filters list and claim by Codex and Claude lanes", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await store.writeThread("inbox", {
+      ...await store.readThread("inbox"),
+      agents: { claude: { threadId: "thread-claude", boundAt: "2026-07-05T00:00:00.000Z" } },
+    });
+    const codex = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Codex lane work.");
+    const claude = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Claude lane work.");
+    claude.assignee = "claude";
+    await store.writeWork(claude);
+
+    expect((await domain.listPendingWork("inbox", "thread-codex")).map((work) => work.id)).toEqual([codex.id]);
+    expect((await domain.listPendingWork("inbox", "thread-claude")).map((work) => work.id)).toEqual([claude.id]);
+    expect((await domain.claimWork("inbox", "thread-codex") as WorkItem).id).toBe(codex.id);
+    expect((await domain.claimWork("inbox", "thread-claude") as WorkItem).id).toBe(claude.id);
+  });
+
+  test("cross-feed guest sees only unassigned codex-lane work", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await store.writeThread("inbox", {
+      ...await store.readThread("inbox"),
+      agents: { claude: { threadId: "thread-claude", boundAt: "2026-07-05T00:00:00.000Z" } },
+    });
+    const codex = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Unassigned codex work.");
+    const claude = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Assigned claude work.");
+    claude.assignee = "claude";
+    await store.writeWork(claude);
+    expect((await domain.listPendingWork("inbox", "thread-guest", true)).map((work) => work.id)).toEqual([codex.id]);
+
+    await domain.releaseWork("inbox", (await domain.claimWork("inbox", "thread-guest", true) as WorkItem).id, (await store.readWork("inbox", codex.id)).capabilityToken);
+    const drainClaude = await domain.queueInstruction("company-attention", "company-source-confirmation", "Default Claude-drain work.");
+    await store.writeThread("company-attention", {
+      ...await store.readThread("company-attention"),
+      homeThreadId: "thread-company",
+      boundAt: "2026-07-05T00:00:00.000Z",
+      agents: { claude: { threadId: "thread-company-claude", boundAt: "2026-07-05T00:00:00.000Z" } },
+      drainAgent: "claude",
+    });
+    expect(drainClaude.assignee).toBeUndefined();
+    expect(await domain.listPendingWork("company-attention", "thread-guest", true)).toEqual([]);
+    expect(await domain.claimWork("company-attention", "thread-guest", true)).toBeNull();
+  });
+
+  test("second same-lane claimer receives a tokenless claimed-by report while the original claimant replays the token", async () => {
+    const { domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Collect this once.");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+
+    const conflict = await domain.claimWork("inbox", "thread-other", true) as any;
+    expect(conflict).toMatchObject({
+      claim: "claimed_by_other",
+      workId: queued.id,
+      claimedBy: { agent: "codex", threadId: "thread-inbox" },
+    });
+    expect(JSON.stringify(conflict)).not.toContain(claimed.capabilityToken);
+
+    const replayed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    expect(replayed.capabilityToken).toBe(claimed.capabilityToken);
+  });
+
+  test("work release requeues without card churn, rotates token, and records claimant attribution", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Collect and release.");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    const cardAfterClaim = await store.readCard("inbox", "inbox-ready-to-collect");
+
+    await expect(domain.releaseWork("inbox", queued.id, "not-the-token")).rejects.toThrow("Invalid scoped work capability token");
+    const released = await domain.releaseWork("inbox", queued.id, claimed.capabilityToken, "session-release");
+
+    expect(released.status).toBe("queued");
+    expect(released.claimedBy).toBeUndefined();
+    expect(released.claimedAt).toBeUndefined();
+    expect(released.capabilityToken).not.toBe(claimed.capabilityToken);
+    expect(await store.readCard("inbox", "inbox-ready-to-collect")).toEqual(cardAfterClaim);
+    await expect(domain.completeWork("inbox", queued.id, claimed.capabilityToken, { response: "Old token should fail." })).rejects.toThrow("not currently claimed");
+    const releaseEvent = (await store.readEvents("inbox")).find((event) => event.type === "work.released");
+    expect(releaseEvent?.detail).toEqual({ threadId: "thread-inbox", agent: "codex", sessionId: "session-release" });
+    expect(JSON.stringify(releaseEvent)).not.toContain(claimed.capabilityToken);
+  });
+
+  test("session handoff keeps authorization on lane id, not session id", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await store.writeThread("inbox", {
+      ...await store.readThread("inbox"),
+      agents: { claude: { threadId: "thread-claude", boundAt: "2026-07-05T00:00:00.000Z" } },
+    });
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Claude session handoff.");
+    queued.assignee = "claude";
+    await store.writeWork(queued);
+
+    const sessionA = await domain.claimWork("inbox", "thread-claude", false, "session-a") as WorkItem;
+    const sessionB = await domain.claimWork("inbox", "thread-claude", false, "session-b") as WorkItem;
+    expect(sessionB.capabilityToken).toBe(sessionA.capabilityToken);
+    expect((await store.readWork("inbox", queued.id)).claimedBy).toEqual({ agent: "claude", threadId: "thread-claude", sessionId: "session-b" });
+    await domain.releaseWork("inbox", queued.id, sessionB.capabilityToken, "session-b");
+    expect((await store.readWork("inbox", queued.id)).status).toBe("queued");
+  });
+
+  test("Claude-only bound feeds are claimable by Claude, while unbound or wrong-agent feeds reject with agent-aware copy", async () => {
+    const { store, domain } = await setup();
+    await store.writeThread("inbox", {
+      ...await store.readThread("inbox"),
+      agents: { claude: { threadId: "thread-claude", boundAt: "2026-07-05T00:00:00.000Z" } },
+    });
+    const claudeOnly = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Claude-only feed work.");
+    claudeOnly.assignee = "claude";
+    await store.writeWork(claudeOnly);
+    expect((await domain.claimWork("inbox", "thread-claude") as WorkItem).id).toBe(claudeOnly.id);
+
+    await domain.queueInstruction("company-attention", "company-source-confirmation", "Unbound feed work.");
+    await expect(domain.claimWork("company-attention", "thread-any")).rejects.toThrow("no bound agent thread");
+
+    await domain.bindFeed("company-attention", "thread-codex");
+    await expect(domain.claimWork("company-attention", "thread-claude")).rejects.toThrow("Bound agents: codex:thread-codex");
+  });
+
+  test("workspace reads and work:list output redact capability tokens", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Do not leak token.");
+
+    const workspaceBytes = JSON.stringify(await store.readWorkspace("inbox"));
+    const listBytes = JSON.stringify(formatWorkListOutput("inbox", await domain.listPendingWork("inbox", "thread-inbox")));
+
+    expect(workspaceBytes).not.toContain("capabilityToken");
+    expect(workspaceBytes).not.toContain(queued.capabilityToken);
+    expect(listBytes).not.toContain("capabilityToken");
+    expect(listBytes).not.toContain(queued.capabilityToken);
   });
 });
 

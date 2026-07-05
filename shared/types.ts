@@ -379,6 +379,24 @@ export interface WorkItem {
   sourceMobileCommandId?: string;
 }
 
+export type WorkClaimant = NonNullable<WorkItem["claimedBy"]>;
+export type WorkItemView = Omit<WorkItem, "capabilityToken">;
+
+export interface WorkClaimedByReport {
+  claim: "claimed_by_other";
+  workId: string;
+  feedId: FeedId;
+  cardId: string;
+  kind: WorkItem["kind"];
+  status: "working";
+  assignee?: WorkAgent;
+  claimedAt?: string;
+  claimedBy: WorkClaimant;
+  message: string;
+}
+
+export type WorkClaimResult = WorkItem | WorkClaimedByReport | null;
+
 export interface PostActionCompletion {
   cleanup: {
     status: "completed" | "not_required" | "blocked";
@@ -498,7 +516,7 @@ export interface FeedView {
   cards: Card[];
   runs: SourceRun[];
   routineActions: RoutineActionGroup[];
-  work: WorkItem[];
+  work: WorkItemView[];
   sweep: SweepState;
   drain: DrainState;
   readyNextPass: number;

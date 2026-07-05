@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { containsFullEmail } from "../../shared/emailThread";
 import { post } from "../app/api";
-import type { Card, CardAction, CardBlock, WorkItem } from "../types";
+import type { Card, CardAction, CardBlock, WorkItemView } from "../types";
 import { DetachedLink } from "../ui/DetachedLink";
 import { FormattedText } from "../ui/FormattedText";
 import { visibleCardActions } from "./selectors";
@@ -217,7 +217,7 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
   return <section className={`block block-${block.type}`}>{block.label && <h3>{block.label}</h3>}<p><FormattedText text={block.text} /></p></section>;
 }
 
-function QueuedNoteEditor({ work, onChanged }: { work: WorkItem; onChanged: () => void }) {
+function QueuedNoteEditor({ work, onChanged }: { work: WorkItemView; onChanged: () => void }) {
   const [value, setValue] = useState(work.instruction);
   const [saving, setSaving] = useState(false);
   useEffect(() => setValue(work.instruction), [work.instruction]);
@@ -273,7 +273,7 @@ export function CardView({
   onReturnToReview,
 }: {
   card: Card;
-  queuedNote?: WorkItem;
+  queuedNote?: WorkItemView;
   active: boolean;
   onActivate: () => void;
   onChanged: () => void;

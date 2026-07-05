@@ -27,7 +27,12 @@ import type {
   SweepFeedbackTrace,
   ThreadBinding,
   VoiceTarget,
+  WorkAgent,
+  WorkClaimResult,
+  WorkClaimant,
+  WorkClaimedByReport,
   WorkItem,
+  WorkItemView,
   WorkspaceRevision,
 } from "../shared/types";
 import type { MobileActionProjection, MobileCommand, MobileCommandResult, MobileCommandReceipt } from "../shared/mobile";
@@ -42,6 +47,55 @@ import { mobileActionConfirmation, projectMobileCard, projectMobileRoutineAction
 
 function appendHistory(card: Card, type: string, detail?: string): void {
   card.history.push({ at: isoNow(), type, detail });
+}
+
+type WorkCaller =
+  | { kind: "agent"; agent: WorkAgent; threadId: string; sessionId?: string }
+  | { kind: "guest"; threadId: string; sessionId?: string };
+
+function effectiveWorkLane(work: Pick<WorkItem, "assignee">, thread: ThreadBinding): WorkAgent {
+  return work.assignee ?? thread.drainAgent ?? "codex";
+}
+
+function callerCanSeeWork(caller: WorkCaller, work: Pick<WorkItem, "assignee">, thread: ThreadBinding): boolean {
+  const lane = effectiveWorkLane(work, thread);
+  if (caller.kind === "agent") return lane === caller.agent;
+  return !work.assignee && lane === "codex";
+}
+
+function claimantForWork(caller: WorkCaller, work: Pick<WorkItem, "assignee">, thread: ThreadBinding): WorkClaimant {
+  return {
+    agent: caller.kind === "agent" ? caller.agent : effectiveWorkLane(work, thread),
+    threadId: caller.threadId,
+    ...(caller.sessionId ? { sessionId: caller.sessionId } : {}),
+  };
+}
+
+function sameClaimant(left: WorkClaimant | undefined, right: WorkClaimant): boolean {
+  return left?.agent === right.agent && left.threadId === right.threadId;
+}
+
+function claimedByReport(work: WorkItem, claimedBy: WorkClaimant): WorkClaimedByReport {
+  return {
+    claim: "claimed_by_other",
+    workId: work.id,
+    feedId: work.feedId,
+    cardId: work.cardId,
+    kind: work.kind,
+    status: "working",
+    ...(work.assignee ? { assignee: work.assignee } : {}),
+    ...(work.claimedAt ? { claimedAt: work.claimedAt } : {}),
+    claimedBy,
+    message: `Work ${work.id} is already claimed by ${claimedBy.agent} thread ${claimedBy.threadId}.`,
+  };
+}
+
+function orderedWorkItems(work: WorkItem[]): WorkItem[] {
+  return [...work].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+}
+
+export function isClaimedWorkItem(result: WorkClaimResult): result is WorkItem {
+  return Boolean(result && !("claim" in result));
 }
 
 const INBOX_DEMO_REPLAY_SOURCE_IDS: Record<string, string> = {
@@ -912,8 +966,7 @@ export class AttentionDomain {
 
   async recordSweepRejudgment(feedId: string, feedbackId: string, orderedCardIds: string[], removedCardIds: string[]): Promise<SweepFeedbackTrace> {
     return this.store.serialize(async () => {
-      const feed = await this.store.readFeed(feedId);
-      const work = feed.work.find((item) => item.intent === "sweep_rejudge" && item.feedbackId === feedbackId);
+      const work = (await this.store.readWorkItems(feedId)).find((item) => item.intent === "sweep_rejudge" && item.feedbackId === feedbackId);
       if (!work || work.status !== "working") throw new Error("Sweep feedback must be claimed before rejudgment write-back.");
       const trace = await this.store.readSweepFeedback(feedId, feedbackId);
       if (trace.rejudgedAt) throw new Error("Sweep feedback has already been rejudged.");
@@ -959,7 +1012,7 @@ export class AttentionDomain {
   async requestSweepRecollection(feedId: string): Promise<WorkItem> {
     return this.store.serialize(async () => {
       const feed = await this.store.readFeed(feedId);
-      const existing = feed.work.find((work) => work.intent === "recollect_sources" && (work.status === "queued" || work.status === "working"));
+      const existing = (await this.store.readWorkItems(feedId)).find((work) => work.intent === "recollect_sources" && (work.status === "queued" || work.status === "working"));
       if (existing) return existing;
       const sweep = feed.sweep;
       if (!sweep.recollectionOffered) throw new Error("Search sources again is not currently offered.");
@@ -1127,7 +1180,7 @@ export class AttentionDomain {
     const now = isoNow();
     const approvalDigest = actionDigest(card, cardActionId);
     const feed = await this.store.readFeed(feedId);
-    const active = feed.work.filter((work) =>
+    const active = (await this.store.readWorkItems(feedId)).filter((work) =>
       work.cardId === cardId
       && work.kind === "execute_approved_action"
       && (work.status === "queued" || work.status === "working")
@@ -1194,8 +1247,8 @@ export class AttentionDomain {
   ): Promise<WorkItem> {
     const config = await this.store.readConfig(feedId);
     const card = await this.store.readCard(feedId, cardId);
-    const feed = await this.store.readFeed(feedId);
-    const completedCleanup = feed.work.some((work) =>
+    const feedWork = await this.store.readWorkItems(feedId);
+    const completedCleanup = feedWork.some((work) =>
       work.cardId === cardId
       && work.status === "completed"
       && (
@@ -1206,7 +1259,7 @@ export class AttentionDomain {
     if (card.status === "done" && completedCleanup) throw new Error("This card's default cleanup is already complete.");
     const now = isoNow();
     const approvalDigest = cleanupDigest(card, config.defaultCleanup);
-    const active = feed.work.filter((work) =>
+    const active = feedWork.filter((work) =>
       work.cardId === cardId
       && work.kind === "default_cleanup"
       && (work.status === "queued" || work.status === "working")
@@ -1362,8 +1415,7 @@ export class AttentionDomain {
   ): Promise<WorkItem> {
     const group = await this.store.readRoutineActionGroup(feedId, groupId);
     const approvalDigest = routineActionDigest(group);
-    const feed = await this.store.readFeed(feedId);
-    const active = feed.work.filter((work) =>
+    const active = (await this.store.readWorkItems(feedId)).filter((work) =>
       work.kind === "routine_action_batch"
       && work.routineActionGroupId === groupId
       && (work.status === "queued" || work.status === "working")
@@ -1407,7 +1459,7 @@ export class AttentionDomain {
   async undoDismiss(feedId: string, cardId: string): Promise<Card> {
     return this.store.serialize(async () => {
       const feed = await this.store.readFeed(feedId);
-      const work = [...feed.work].reverse().find((item) => item.cardId === cardId && item.kind === "default_cleanup" && item.status === "queued");
+      const work = [...(await this.store.readWorkItems(feedId))].reverse().find((item) => item.cardId === cardId && item.kind === "default_cleanup" && item.status === "queued");
       if (!work) throw new Error("Queued cleanup is no longer available to undo.");
       work.status = "cancelled";
       const card = await this.store.readCard(feedId, cardId);
@@ -1426,7 +1478,7 @@ export class AttentionDomain {
       const feed = await this.store.readFeed(feedId);
       const card = await this.store.readCard(feedId, cardId);
       if (card.routineActionGroupId) throw new Error("This card belongs to a routine action group. Review the group instead.");
-      const activeWork = feed.work.filter((work) =>
+      const activeWork = (await this.store.readWorkItems(feedId)).filter((work) =>
         work.cardId === cardId &&
         (work.status === "queued" || work.status === "working" || work.status === "approved_blocked")
       );
@@ -1607,7 +1659,7 @@ export class AttentionDomain {
           const feed = await this.store.readFeed(command.feedId);
           const card = await this.store.readCard(command.feedId, command.cardId);
           if (card.routineActionGroupId) throw new Error("Routine-group cards must be reviewed through their group.");
-          const activeWork = feed.work.filter((item) =>
+          const activeWork = (await this.store.readWorkItems(command.feedId)).filter((item) =>
             item.cardId === command.cardId
             && (item.status === "queued" || item.status === "working" || item.status === "approved_blocked")
           );
@@ -1670,8 +1722,7 @@ export class AttentionDomain {
 
   async queueCompound(feedId: string): Promise<WorkItem> {
     return this.store.serialize(async () => {
-      const feed = await this.store.readFeed(feedId);
-      const existing = feed.work.find((work) => work.kind === "compound_learnings" && (work.status === "queued" || work.status === "working"));
+      const existing = (await this.store.readWorkItems(feedId)).find((work) => work.kind === "compound_learnings" && (work.status === "queued" || work.status === "working"));
       if (existing) return existing;
       const now = isoNow();
       const work: WorkItem = {
@@ -1691,26 +1742,47 @@ export class AttentionDomain {
     });
   }
 
-  async listPendingWork(feedId: string, threadId: string, explicitCrossFeed = false): Promise<WorkItem[]> {
-    await this.assertThread(feedId, threadId, explicitCrossFeed);
-    const feed = await this.store.readFeed(feedId);
-    return feed.work.filter((work) => work.status === "queued" || work.status === "working");
+  async listPendingWork(feedId: string, threadId: string, explicitCrossFeed = false): Promise<WorkItemView[]> {
+    const caller = await this.assertThread(feedId, threadId, explicitCrossFeed);
+    const thread = await this.store.readThread(feedId);
+    const work = orderedWorkItems(await this.store.readWorkItems(feedId));
+    return work
+      .filter((item) => item.status === "queued" && callerCanSeeWork(caller, item, thread))
+      .map(({ capabilityToken: _capabilityToken, ...view }) => view);
   }
 
-  async claimWork(feedId: string, threadId: string, explicitCrossFeed = false): Promise<WorkItem | null> {
-    await this.assertThread(feedId, threadId, explicitCrossFeed);
+  async claimWork(feedId: string, threadId: string, explicitCrossFeed = false, sessionId?: string): Promise<WorkClaimResult> {
+    const caller = await this.assertThread(feedId, threadId, explicitCrossFeed, sessionId);
     return this.store.serialize(async () => {
-      const feed = await this.store.readFeed(feedId);
-      for (const existing of feed.work.filter((work) => work.status === "working")) {
-        if (!(await this.quarantineLegacyMutationWork(feed, existing))) return existing;
+      const [feed, thread] = await Promise.all([
+        this.store.readFeed(feedId),
+        this.store.readThread(feedId),
+      ]);
+      const workItems = orderedWorkItems(await this.store.readWorkItems(feedId));
+      const existing = workItems.find((work) => work.status === "working" && callerCanSeeWork(caller, work, thread));
+      if (existing && !(await this.quarantineLegacyMutationWork(feed, existing))) {
+        const claimant = claimantForWork(caller, existing, thread);
+        if (!existing.claimedBy) {
+          existing.claimedBy = claimant;
+          await this.store.writeWork(existing);
+        }
+        if (sameClaimant(existing.claimedBy, claimant)) {
+          if (existing.claimedBy.sessionId !== claimant.sessionId) {
+            existing.claimedBy = claimant;
+            await this.store.writeWork(existing);
+          }
+          return existing;
+        }
+        return claimedByReport(existing, existing.claimedBy);
       }
-      let work: WorkItem | undefined;
-      for (const candidate of feed.work.filter((item) => item.status === "queued")) {
-        if (await this.quarantineLegacyMutationWork(feed, candidate)) continue;
-        work ??= candidate;
+      let work = workItems.find((item) => item.status === "queued" && callerCanSeeWork(caller, item, thread));
+      while (work && await this.quarantineLegacyMutationWork(feed, work)) {
+        const nextItems = orderedWorkItems(await this.store.readWorkItems(feedId));
+        work = nextItems.find((item) => item.status === "queued" && callerCanSeeWork(caller, item, thread));
       }
       if (!work) return null;
       work.status = "working";
+      work.claimedBy = claimantForWork(caller, work, thread);
       work.claimedAt = isoNow();
       await this.store.writeWork(work);
       if (work.kind === "routine_action_batch" && work.routineActionGroupId) {
@@ -1724,7 +1796,40 @@ export class AttentionDomain {
         appendHistory(card, "codex.claimed", work.id);
         await this.store.writeCard(card);
       }
-      await this.store.appendEvent({ feedId, cardId: work.cardId, workId: work.id, type: "work.claimed", detail: { threadId } });
+      await this.store.appendEvent({
+        feedId,
+        cardId: work.cardId,
+        workId: work.id,
+        type: "work.claimed",
+        detail: { threadId: work.claimedBy.threadId, agent: work.claimedBy.agent, ...(work.claimedBy.sessionId ? { sessionId: work.claimedBy.sessionId } : {}) },
+      });
+      return work;
+    });
+  }
+
+  async releaseWork(feedId: string, workId: string, token: string, sessionId?: string): Promise<WorkItem> {
+    return this.store.serialize(async () => {
+      const work = await this.store.readWork(feedId, workId);
+      if (work.status !== "working") throw new Error("Only working work can be released.");
+      if (work.capabilityToken !== token) throw new Error("Invalid scoped work capability token.");
+      if (!work.claimedBy) throw new Error("Working work has no recorded claimant.");
+      const releasedBy = work.claimedBy;
+      work.status = "queued";
+      work.capabilityToken = makeToken();
+      work.claimedAt = undefined;
+      work.claimedBy = undefined;
+      work.error = undefined;
+      work.verifiedAt = undefined;
+      work.verifiedApprovalDigest = undefined;
+      work.verifiedMailbox = undefined;
+      await this.store.writeWork(work);
+      await this.store.appendEvent({
+        feedId,
+        cardId: work.cardId,
+        workId,
+        type: "work.released",
+        detail: { threadId: releasedBy.threadId, agent: releasedBy.agent, ...(sessionId ? { sessionId } : {}) },
+      });
       return work;
     });
   }
@@ -2094,6 +2199,7 @@ export class AttentionDomain {
       work.capabilityToken = makeToken();
       work.updatedAt = isoNow();
       work.claimedAt = undefined;
+      work.claimedBy = undefined;
       work.error = undefined;
       work.verifiedAt = undefined;
       work.verifiedApprovalDigest = undefined;
@@ -2418,10 +2524,19 @@ export class AttentionDomain {
     await this.store.serialize(() => this.store.writeGlobalPrompt(name, content.replace(/\\n/g, "\n").trim()));
   }
 
-  private async assertThread(feedId: string, threadId: string, explicitCrossFeed: boolean): Promise<void> {
-    if (!threadId.trim()) throw new Error("A Codex thread ID is required.");
+  private async assertThread(feedId: string, threadId: string, explicitCrossFeed: boolean, sessionId?: string): Promise<WorkCaller> {
+    const normalized = threadId.trim();
+    if (!normalized) throw new Error("A thread ID is required.");
     const thread = await this.store.readThread(feedId);
-    if (!thread.homeThreadId) throw new Error("Feed has no bound home thread.");
-    if (thread.homeThreadId !== threadId.trim() && !explicitCrossFeed) throw new Error("This Codex thread does not own the feed. Use explicit cross-feed mode to proceed.");
+    const claudeThreadId = thread.agents?.claude?.threadId ?? null;
+    const boundAgents = [
+      thread.homeThreadId ? `codex:${thread.homeThreadId}` : null,
+      claudeThreadId ? `claude:${claudeThreadId}` : null,
+    ].filter((value): value is string => Boolean(value));
+    if (boundAgents.length === 0) throw new Error("Feed has no bound agent thread.");
+    if (explicitCrossFeed) return { kind: "guest", threadId: normalized, ...(sessionId ? { sessionId } : {}) };
+    if (thread.homeThreadId === normalized) return { kind: "agent", agent: "codex", threadId: normalized, ...(sessionId ? { sessionId } : {}) };
+    if (claudeThreadId === normalized) return { kind: "agent", agent: "claude", threadId: normalized, ...(sessionId ? { sessionId } : {}) };
+    throw new Error(`This thread does not own the feed. Bound agents: ${boundAgents.join(", ")}. Use explicit cross-feed mode to proceed as a guest.`);
   }
 }

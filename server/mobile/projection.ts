@@ -7,7 +7,7 @@ import type {
   MindContextUpdate,
   ProposedAction,
   RoutineActionGroup,
-  WorkItem,
+  WorkItemView,
 } from "../../shared/types";
 import {
   MOBILE_SCHEMA_VERSION,
@@ -246,13 +246,13 @@ function isReviewableCard(feed: FeedView, card: Card): boolean {
     && !card.routineActionGroupId;
 }
 
-function latestActiveWork(work: WorkItem[], cardId: string): WorkItem | undefined {
+function latestActiveWork(work: WorkItemView[], cardId: string): WorkItemView | undefined {
   return work
     .filter((item) => item.cardId === cardId && ACTIVE_WORK_STATUSES.has(item.status))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0];
 }
 
-function projectWork(work: WorkItem): MobileWorkProjection {
+function projectWork(work: WorkItemView): MobileWorkProjection {
   const safe = {
     id: work.id,
     kind: work.kind,

@@ -12,7 +12,7 @@ import { TopBar } from "./shell/TopBar";
 import { useActiveCard } from "./state/activeCard";
 import { RealtimeProvider } from "./state/realtime";
 import { preferredTarget, sameTarget } from "./state/voiceTarget";
-import type { Card, CardAction, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkItem, WorkspaceRevision, WorkspaceView } from "./types";
+import type { Card, CardAction, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkItemView, WorkspaceRevision, WorkspaceView } from "./types";
 import { FormattedText } from "./ui/FormattedText";
 import { LearningReview, RevisionProposals } from "./workspace/LearningReview";
 import { PromptWorkspace } from "./workspace/PromptWorkspace";
@@ -68,7 +68,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const cardIds = useMemo(() => cards.map((card) => card.id), [cards]);
   const { activeCardId, setActiveCardId, navTo } = useActiveCard(pageRef, cardIds);
   const activeCard = cards.find((card) => card.id === activeCardId) ?? cards[0];
-  const editableQueuedNote = useCallback((card: Card): WorkItem | undefined => {
+  const editableQueuedNote = useCallback((card: Card): WorkItemView | undefined => {
     if (!feed) return undefined;
     return [...feed.work].reverse().find((work) =>
       work.cardId === card.id &&

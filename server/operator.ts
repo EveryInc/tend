@@ -1,4 +1,4 @@
-import type { Card, CardBlock, FeedConfig, ProposedAction, RoutineActionGroup, SweepFeedbackTrace, WorkItem } from "../shared/types";
+import type { Card, CardBlock, FeedConfig, ProposedAction, RoutineActionGroup, SweepFeedbackTrace, WorkClaimResult, WorkClaimedByReport, WorkItem, WorkItemView } from "../shared/types";
 import { actionDigest, cleanupDigest, configuredApprovalAction, routineActionDigest } from "./workflow/approvals";
 
 export interface IdleWorkHandshake {
@@ -209,12 +209,13 @@ export function idleWorkHandshake(feedId: string): IdleWorkHandshake {
   };
 }
 
-export function formatWorkListOutput(feedId: string, work: WorkItem[]): WorkItem[] | IdleWorkHandshake {
+export function formatWorkListOutput(feedId: string, work: WorkItemView[]): WorkItemView[] | IdleWorkHandshake {
   return work.length > 0 ? work : idleWorkHandshake(feedId);
 }
 
-export function formatWorkClaimOutput(feedId: string, work: WorkItem | null, context: WorkClaimContext = {}): ClaimedWorkOutput | IdleWorkHandshake {
+export function formatWorkClaimOutput(feedId: string, work: WorkClaimResult, context: WorkClaimContext = {}): ClaimedWorkOutput | WorkClaimedByReport | IdleWorkHandshake {
   if (!work) return idleWorkHandshake(feedId);
+  if ("claim" in work) return work;
   const operatorGuidance: NonNullable<ClaimedWorkOutput["operatorGuidance"]> = {};
 
   if (feedId === "inbox" && context.card?.sourceMailbox) {

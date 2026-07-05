@@ -45,7 +45,7 @@ describe("CLI contract", () => {
       ok: false,
       error: "Missing --thread",
       code: "missing_flag",
-      hint: "Usage: tend cli work:claim --feed <id> --thread <id> [--cross-feed]",
+      hint: "Usage: tend cli work:claim --feed <id> --thread <id> [--cross-feed] [--session <id>]",
     });
   });
 

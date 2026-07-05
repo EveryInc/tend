@@ -25,6 +25,7 @@ import type {
   ThreadBinding,
   VoiceTarget,
   WorkItem,
+  WorkItemView,
   WorkspaceRevision,
   WorkspaceView,
 } from "../shared/types";
@@ -72,6 +73,11 @@ function defaultDrainState(): DrainState {
 
 function hasOwn(object: object, key: PropertyKey): boolean {
   return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function workItemView(work: WorkItem): WorkItemView {
+  const { capabilityToken: _capabilityToken, ...view } = work;
+  return view;
 }
 
 export function agentPresenceLiveness(presence: AgentPresence | null, now = Date.now()): AgentPresenceLiveness {
@@ -377,7 +383,7 @@ export class AttentionStore {
       cards,
       runs,
       routineActions,
-      work,
+      work: work.map(workItemView),
       sweep,
       drain,
       readyNextPass: cards.filter((card) => card.status === "to_review_updated" && card.readyForPass > config.currentPass).length,
