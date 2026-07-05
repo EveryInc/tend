@@ -1,7 +1,7 @@
 ---
 title: "feat: Claude wake lane — activate a Claude session from the Tend browser"
 type: feat
-status: active
+status: completed
 date: 2026-07-04
 deepened: 2026-07-05
 ---
