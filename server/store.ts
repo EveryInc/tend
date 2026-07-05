@@ -412,7 +412,9 @@ export class AttentionStore {
 
   async writeAgentPresence(agent: AgentPresence["agent"], presence: AgentPresence): Promise<void> {
     if (presence.agent !== agent) throw new Error(`Presence agent mismatch: ${presence.agent}`);
+    await mkdir(this.agentPath(agent), { recursive: true });
     await writeJson(this.agentPath(agent, "presence.json"), presence);
+    await appendFile(this.agentPath(agent, "wake.jsonl"), "", "utf8");
   }
 
   async appendAgentWake(agent: AgentPresence["agent"], line: Omit<AgentWakeLine, "seq">): Promise<AgentWakeLine> {

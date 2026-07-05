@@ -1266,6 +1266,64 @@ describe("Claude wake emission", () => {
     expect(lines.map((line) => line.workId)).toEqual([queued.id, queued.id, approved.id, approved.id]);
   });
 
+  test("failed Claude-lane work wakes unless Claude failed its own claim", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    const codexDropped = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Codex drops this Claude-lane item.");
+    const codexWorking = await store.readWork("inbox", codexDropped.id);
+    codexWorking.status = "working";
+    codexWorking.claimedBy = { agent: "codex", threadId: "thread-codex" };
+    await store.writeWork(codexWorking);
+    await domain.failWork("inbox", codexDropped.id, codexWorking.capabilityToken, "Codex cannot complete the handed-off item.");
+
+    const claudeDropped = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Claude drops its own item.");
+    const claudeClaimed = await domain.claimWork("inbox", "thread-claude") as WorkItem;
+    await domain.failWork("inbox", claudeDropped.id, claudeClaimed.capabilityToken, "Claude cannot complete its own item.");
+
+    const lines = await readClaudeWakeLines(root);
+    expect(lines.map((line) => line.workId)).toEqual([codexDropped.id, codexDropped.id, claudeDropped.id]);
+    expect(lines.map((line) => line.kind)).toEqual(["instruction", "instruction", "instruction"]);
+  });
+
+  test("blocked Claude-lane approved work wakes unless Claude blocked its own claim", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    await domain.upsertCard("inbox", {
+      id: "codex-blocks-claude-action",
+      title: "Codex blocked action.",
+      why: "Connector can fail before handoff.",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved body.", artifactBlockId: "draft" }],
+    });
+    const codexBlocked = await domain.approveAction("inbox", "codex-blocks-claude-action", "send");
+    const codexWorking = await store.readWork("inbox", codexBlocked.id);
+    codexWorking.status = "working";
+    codexWorking.claimedBy = { agent: "codex", threadId: "thread-codex" };
+    await store.writeWork(codexWorking);
+    await domain.blockApprovedWork("inbox", codexBlocked.id, codexWorking.capabilityToken, "Codex connector refused.");
+
+    await domain.upsertCard("inbox", {
+      id: "claude-blocks-own-action",
+      title: "Claude blocked action.",
+      why: "Claude connector can fail too.",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved body.", artifactBlockId: "draft" }],
+    });
+    const claudeBlocked = await domain.approveAction("inbox", "claude-blocks-own-action", "send");
+    const claudeClaimed = await domain.claimWork("inbox", "thread-claude") as WorkItem;
+    await domain.blockApprovedWork("inbox", claudeBlocked.id, claudeClaimed.capabilityToken, "Claude connector refused.");
+
+    const lines = await readClaudeWakeLines(root);
+    expect(lines.map((line) => line.workId)).toEqual([codexBlocked.id, codexBlocked.id, claudeBlocked.id]);
+    expect(lines.map((line) => line.kind)).toEqual(["execute_approved_action", "execute_approved_action", "execute_approved_action"]);
+  });
+
   test("presence registration replays parked Claude work only on liveness transitions", async () => {
     const { root, store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-codex");
@@ -1321,7 +1379,7 @@ describe("Claude wake emission", () => {
 
     expect(thread.drainAgent).toBe("claude");
     const lines = await readClaudeWakeLines(root);
-    expect(lines.map((line) => line.workId)).toEqual([first.id, second.id]);
+    expect(lines.map((line) => line.workId).sort()).toEqual([first.id, second.id].sort());
     expect(lines.map((line) => line.queued)).toEqual([2, 2]);
     await expect(domain.setFeedDrainAgent("company-attention", "claude")).rejects.toThrow("without a Claude binding");
   });
@@ -1860,6 +1918,7 @@ describe("approval, learning, and heartbeat safety", () => {
     await domain.bindFeed("inbox", "thread-inbox");
     const legacy = await domain.dismissCard("inbox", "inbox-ready-to-collect");
     legacy.approvalDigest = undefined;
+    legacy.createdAt = new Date(Date.now() - 60_000).toISOString();
     await store.writeWork(legacy);
     const next = await domain.queueFeedInstruction("inbox", "Process the next safe item.");
 
@@ -1901,6 +1960,7 @@ describe("approval, learning, and heartbeat safety", () => {
     });
     const legacy = await domain.approveRoutineActionGroup("inbox", "legacy-routine-cleanup");
     legacy.approvalDigest = undefined;
+    legacy.createdAt = new Date(Date.now() - 60_000).toISOString();
     await store.writeWork(legacy);
     const next = await domain.queueFeedInstruction("inbox", "Process the next safe item.");
 

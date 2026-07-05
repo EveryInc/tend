@@ -633,8 +633,8 @@ function verifyMobileRiskConfirmation(
 export class AttentionDomain {
   constructor(readonly store: AttentionStore) {}
 
-  private async maybeEmitClaudeWake(feedId: string, work: WorkItem, thread?: ThreadBinding): Promise<AgentWakeLine | null> {
-    if (work.status !== "queued") return null;
+  private async maybeEmitClaudeWake(feedId: string, work: WorkItem, thread?: ThreadBinding, options: { includeDropped?: boolean } = {}): Promise<AgentWakeLine | null> {
+    if (work.status !== "queued" && !options.includeDropped) return null;
     const binding = thread ?? await this.store.readThread(feedId);
     const claude = binding.agents?.claude;
     if (!claude || effectiveWorkLane(work, binding) !== "claude") return null;
@@ -2237,6 +2237,7 @@ export class AttentionDomain {
         }
       }
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.failed", detail: { error: work.error } });
+      if (work.claimedBy?.agent !== "claude") await this.maybeEmitClaudeWake(feedId, work, undefined, { includeDropped: true });
       return work;
     });
   }
@@ -2267,6 +2268,7 @@ export class AttentionDomain {
       await this.store.writeWork(work);
       await this.store.writeCard(card);
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.approved_action_blocked", detail: { error: work.error } });
+      if (work.claimedBy?.agent !== "claude") await this.maybeEmitClaudeWake(feedId, work, undefined, { includeDropped: true });
       return work;
     });
   }

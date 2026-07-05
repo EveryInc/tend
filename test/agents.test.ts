@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { threadBinding } from "../server/templates";
@@ -178,5 +178,93 @@ describe("agent state foundations", () => {
       agents: { claude: { threadId: "thread-claude", boundAt: "2026-07-05T12:01:00.000Z" } },
       drainAgent: "claude",
     });
+  });
+});
+
+async function bashPath(): Promise<string | null> {
+  for (const candidate of ["/bin/bash", "/usr/bin/bash"]) {
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // Try the next common bash location.
+    }
+  }
+  return null;
+}
+
+function normalizeText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, " ");
+}
+
+describe("Claude wake monitor script", () => {
+  test("fails closed with usage when --session is missing", async () => {
+    const bash = await bashPath();
+    if (!bash) return;
+
+    const proc = Bun.spawn([bash, "scripts/claude-wake-monitor.sh"], {
+      cwd: process.cwd(),
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    expect(exitCode).not.toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("--session is required");
+    expect(stderr).toContain("Usage:");
+  });
+
+  test("fails closed when presence succeeds but the server has not created the ledger", async () => {
+    const bash = await bashPath();
+    if (!bash) return;
+
+    const { root } = await setup();
+    const fakeBin = path.join(root, "fake-bin");
+    await mkdir(fakeBin, { recursive: true });
+    await writeFile(path.join(fakeBin, "curl"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
+    const proc = Bun.spawn([
+      bash,
+      "scripts/claude-wake-monitor.sh",
+      "--session",
+      "session-test",
+      "--port",
+      "43219",
+    ], {
+      cwd: process.cwd(),
+      env: { ...process.env, ATTENTION_HOME: root, PATH: `${fakeBin}:${process.env.PATH ?? ""}` },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+
+    expect(exitCode).not.toBe(0);
+    expect(stdout).toBe("");
+    expect(stderr).toContain("server has not created the wake ledger");
+    expect(stderr).toContain(path.join(root, "data", "agents", "claude", "wake.jsonl"));
+  });
+});
+
+describe("Claude protocol clause pins", () => {
+  test("pins the doorbell, mutation authorization, health-first, and release clauses", async () => {
+    const claudeThread = await readFile(path.join(process.cwd(), "docs", "CLAUDE_THREAD.md"), "utf8");
+    const tendSkill = await readFile(path.join(process.cwd(), ".claude", "skills", "tend", "SKILL.md"), "utf8");
+    const lowerThread = normalizeText(claudeThread);
+    const lowerSkill = normalizeText(tendSkill);
+
+    expect(lowerThread).toContain("wake notification is a doorbell");
+    expect(lowerSkill).toContain("wake notification is a doorbell");
+    expect(lowerThread).toContain("never authorize external mutation");
+    expect(lowerThread).toContain("work:release");
+    expect(lowerSkill).toMatch(/health[\s\S]{0,40}first/);
+    expect(lowerThread).toMatch(/health[\s\S]{0,40}first/);
   });
 });
