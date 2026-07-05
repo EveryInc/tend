@@ -94,6 +94,24 @@ sweep with `card:return-to-review`. Returning a queued card cancels its unstarte
 card can be returned for another review pass, but this does not reverse an external action that
 already happened.
 
+## Claude Lane
+
+Feeds can route work to a Claude Code session alongside the Codex home thread. The routing is
+explicit: a per-item `assignee` set from the dock's route-to-Claude toggle, or the feed-level
+drain agent (`tend cli feed:drain-agent --feed <feed> --agent claude`). Work is lane-scoped
+at claim time, so the two lanes never see each other's items.
+
+- The Claude session is woken by ledger lines in `data/agents/claude/wake.jsonl` and operates
+  under `docs/CLAUDE_THREAD.md`.
+- The TopBar chip shows the Claude lane's liveness (live / stale / offline) from its presence
+  heartbeat. Routing to Claude while offline parks the work visibly; the queued strip offers
+  `Reassign to Codex`, and returning presence replays wakes for still-queued items.
+- A claimed item stuck with a dead session can be recovered by any successor session holding the
+  same lane id (claim replay), or returned to the queue with
+  `tend cli work:release --feed <feed> --work <work> --token <token>`. Rebinding the lane
+  (`tend cli feed:bind --feed <feed> --agent claude --replace`) mints a new lane id and
+  fences out old sessions.
+
 ## End Of Sweep
 
 After a meaningful sweep or refresh reaches the idle handshake, always ask:

@@ -1,5 +1,8 @@
 # Tend Feed Thread Protocol
 
+- This protocol governs Codex feed threads. A Claude Code session operating the Claude lane
+  follows `docs/CLAUDE_THREAD.md` instead. Work is lane-scoped: you will not be offered items
+  assigned to the Claude lane; do not attempt to claim them.
 - Operate feeds through the installed `tend` executable, or `pnpm tend --` from a source checkout.
   Both use `~/.attention/` by default. Temporary worktrees must set an isolated `ATTENTION_HOME`.
 - Before operating a feed, run `tend health`. If it is unhealthy, report that in the

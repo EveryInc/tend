@@ -24,6 +24,15 @@ a promise of ongoing maintenance.
   transactional multi-record writes.
 - Add Supabase and native iOS CI coverage, reproducible source prerequisites, and complete packaged
   documentation.
+- Add the Claude agent lane: lane-scoped `work:list`/`work:claim` with claimant recording, the
+  `work:release` command, server-minted per-feed Claude lane bindings
+  (`feed:bind --agent claude`), `feed:drain-agent`, `agent:presence`, a content-free wake ledger
+  (`data/agents/claude/wake.jsonl`) with presence replay, a dock route-to-Claude toggle, a TopBar
+  liveness chip, and the `/tend` arming skill.
+- Advance the CLI contract to `0.3`: `work:claim` may return a token-less claimed-by report,
+  `work:claim`/`work:release` accept `--session`, and capability tokens are redacted from
+  workspace reads and `work:list` output (tokens now appear only in the claimant's claim result).
+- Reject mutating API requests that carry a foreign `Origin` header.
 
 ## 0.1.0 - Initial Local-First OSS Snapshot
 
