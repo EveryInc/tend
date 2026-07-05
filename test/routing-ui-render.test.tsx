@@ -1,8 +1,9 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { ParkedClaudeWorkNotice, parkedClaudeWorkItems } from "../src/App";
 import { Dock } from "../src/shell/Dock";
 import { TopBar } from "../src/shell/TopBar";
-import type { FeedView, WorkspaceView } from "../shared/types";
+import type { Card, FeedView, WorkItemView, WorkspaceView } from "../shared/types";
 
 function feed(overrides: Partial<FeedView> = {}): FeedView {
   return {
@@ -111,4 +112,52 @@ test("Dock hides Claude routing toggle when feed is unbound", () => {
 
   expect(html).toContain("Tell Codex what to notice, change, or do");
   expect(html).not.toContain("agent-toggle");
+});
+
+test("parked Claude notice includes card-scoped queued work with reassign affordances", () => {
+  const card: Card = {
+    id: "card-1",
+    feedId: "inbox",
+    kind: "attention",
+    status: "queued",
+    title: "Reply to Ada",
+    eyebrow: "Inbox",
+    why: "A reply is waiting.",
+    blocks: [],
+    readyForPass: 1,
+    createdAt: "2026-07-05T12:00:00.000Z",
+    updatedAt: "2026-07-05T12:00:00.000Z",
+    history: [],
+  };
+  const cardScoped: WorkItemView = {
+    id: "work-card",
+    feedId: "inbox",
+    cardId: "card-1",
+    status: "queued",
+    kind: "scoped_instruction",
+    instruction: "Handle this card.",
+    assignee: "claude",
+    createdAt: "2026-07-05T12:01:00.000Z",
+    updatedAt: "2026-07-05T12:01:00.000Z",
+  };
+  const feedScoped: WorkItemView = {
+    id: "work-feed",
+    feedId: "inbox",
+    cardId: "__feed__",
+    status: "queued",
+    kind: "instruction",
+    instruction: "Refresh the feed.",
+    assignee: "claude",
+    createdAt: "2026-07-05T12:02:00.000Z",
+    updatedAt: "2026-07-05T12:02:00.000Z",
+  };
+  const active = feed({ cards: [card], work: [cardScoped, feedScoped] });
+  const items = parkedClaudeWorkItems(active, "offline");
+  const html = renderToStaticMarkup(<ParkedClaudeWorkNotice items={items} onReassign={() => {}} />);
+
+  expect(items.map((item) => item.work.id)).toEqual(["work-card", "work-feed"]);
+  expect(html).toContain("these instructions are parked");
+  expect(html).toContain("Reply to Ada");
+  expect(html).toContain("Feed instruction");
+  expect((html.match(/Reassign to Codex/g) ?? [])).toHaveLength(2);
 });

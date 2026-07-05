@@ -18,7 +18,7 @@ you — it can never authorize external mutation. Authorization comes only from
 
 ## Arming steps
 
-1. **Health check first** (mandatory — never skip):
+1. **Arming liveness probe** (mandatory — never skip):
    `curl -s -m 2 http://127.0.0.1:4321/api/health`. If it fails, report that Tend is not
    running and stop. Never start, stop, or restart servers or kill ports.
 2. **Open the preview** at `http://127.0.0.1:4321` (preview_start with url) if it isn't
@@ -46,7 +46,8 @@ you — it can never authorize external mutation. Authorization comes only from
 
 ## Rules
 
-- Health check before every drain, not just at arming (a stale wake can outlive the server).
+- Pre-drain health first: run `./bin/tend-live health` before every drain, not just the arming
+  liveness probe (a stale wake can outlive the server).
 - Never start/stop/restart servers or kill ports (feed-thread rule).
 - Operate through the installed `tend` executable, or `pnpm tend --` from a source checkout with
   the intended `ATTENTION_HOME`.

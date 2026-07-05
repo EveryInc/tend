@@ -160,7 +160,9 @@ h2 { margin: 0; font: 500 26px/1.12 var(--serif); letter-spacing: -.02em; }
 .button:disabled { cursor: default; opacity: .42; filter: none; }
 .button kbd { margin-left: 4px; color: inherit; opacity: .6; }
 .button.large { min-height: 42px; padding: 0 17px; }
-.parked-work { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin: -5px 0 18px 22px; padding: 10px 12px; border: 1px solid #e0d4bd; border-radius: 8px; background: #faf6ed; color: #765536; font-size: 13px; }
+.parked-work { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px; margin: -5px 0 18px 22px; padding: 10px 12px; border: 1px solid #e0d4bd; border-radius: 8px; background: #faf6ed; color: #765536; font-size: 13px; }
+.parked-work ul { margin: 6px 0 0; padding-left: 18px; }
+.parked-work-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
 
 .empty { margin: 60px 0; text-align: center; color: var(--ink-3); }
 .empty h2 { color: var(--ink-2); }

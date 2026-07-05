@@ -13,7 +13,7 @@ import { TopBar } from "./shell/TopBar";
 import { useActiveCard } from "./state/activeCard";
 import { RealtimeProvider } from "./state/realtime";
 import { preferredTarget, sameTarget } from "./state/voiceTarget";
-import type { Card, CardAction, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkItemView, WorkspaceRevision, WorkspaceView } from "./types";
+import type { Card, CardAction, FeedView, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkItemView, WorkspaceRevision, WorkspaceView } from "./types";
 import { FormattedText } from "./ui/FormattedText";
 import { LearningReview, RevisionProposals } from "./workspace/LearningReview";
 import { PromptWorkspace } from "./workspace/PromptWorkspace";
@@ -21,6 +21,38 @@ import { PromptWorkspace } from "./workspace/PromptWorkspace";
 type VoiceInstructionResult =
   | { kind: "scoped_work"; work: WorkItemView }
   | { kind: "revision_proposal"; proposal: RevisionProposal };
+
+type ParkedClaudeWork = { work: WorkItemView; label: string };
+
+export function parkedClaudeWorkItems(feed: FeedView, claudeLiveness: string): ParkedClaudeWork[] {
+  if (claudeLiveness !== "offline") return [];
+  const cardsById = new Map(feed.cards.map((card) => [card.id, card.title]));
+  return feed.work
+    .filter((work) => work.status === "queued" && effectiveWorkLane(work, feed.thread) === "claude")
+    .map((work) => ({
+      work,
+      label: work.cardId === "__feed__" ? "Feed instruction" : cardsById.get(work.cardId) ?? "Card instruction",
+    }));
+}
+
+export function ParkedClaudeWorkNotice({ items, onReassign }: { items: ParkedClaudeWork[]; onReassign: (work: WorkItemView) => void }) {
+  if (!items.length) return null;
+  return (
+    <div className="parked-work">
+      <div>
+        <span>Claude is offline, so {items.length === 1 ? "this instruction is" : "these instructions are"} parked.</span>
+        <ul>
+          {items.map(({ work, label }) => <li key={work.id}>{label}</li>)}
+        </ul>
+      </div>
+      <div className="parked-work-actions">
+        {items.map(({ work }) => (
+          <button className="button ghost" key={work.id} onClick={() => onReassign(work)}>Reassign to Codex</button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 export default function App({ feedId, screen, workspaceTab }: { feedId: string; screen: AttentionScreen; workspaceTab: WorkspaceTab }) {
   const queryClient = useQueryClient();
@@ -366,6 +398,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const updated = cards.filter((card) => card.status === "to_review_updated");
   const fresh = cards.filter((card) => card.status !== "to_review_updated");
   const feedWork = visibleFeedWork(feed, tab);
+  const parkedClaudeWork = tab === "queued" ? parkedClaudeWorkItems(feed, claudeLiveness) : [];
   return withRealtime(
     <>
       <TopBar state={state} onMind={openMind} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
@@ -381,6 +414,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
       <main className="page" ref={pageRef}>
         <RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} />
         {routineActions.map((group) => <RoutineActionGroupView key={group.id} group={group} onApprove={() => approveRoutineAction(group)} />)}
+        <ParkedClaudeWorkNotice items={parkedClaudeWork} onReassign={reassignQueuedWork} />
         {tab === "review" && updated.length > 0 && <div className="section-label">Back for review <span>{updated.length}</span></div>}
         {cards.map((card, index) => (
           <Fragment key={card.id}>
