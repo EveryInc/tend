@@ -36,14 +36,14 @@ function isAllowedLocalOrigin(origin: string): boolean {
   }
 }
 
-export async function mutation(c: any, notify: Notify, callback: () => Promise<unknown>) {
+export async function mutation(c: any, notify: Notify, callback: () => Promise<unknown>, shouldNotify: (result: unknown) => boolean = () => true) {
   const origin = c.req.header("origin");
   if (origin && !isAllowedLocalOrigin(origin)) {
     return c.json({ error: "Mutating requests are only accepted from localhost origins." }, 403);
   }
   try {
     const result = await callback();
-    notify({ changedAt: new Date().toISOString() });
+    if (shouldNotify(result)) notify({ changedAt: new Date().toISOString() });
     return c.json(result);
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);

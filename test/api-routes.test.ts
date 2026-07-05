@@ -8,7 +8,7 @@ import { AttentionStore } from "../server/store";
 
 const roots: string[] = [];
 
-async function setup() {
+async function setup(notify: (data: unknown) => void = () => {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "attention-api-test-"));
   roots.push(root);
   const store = new AttentionStore(root);
@@ -18,7 +18,7 @@ async function setup() {
     artifactsDir: root,
     dataDir: root,
     domain,
-    notify: () => {},
+    notify,
     port: 0,
     root,
     sqlite: { status: () => ({ ok: true }) } as any,
@@ -62,6 +62,35 @@ describe("API routing and mutation hardening", () => {
 
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({ error: "Unsupported agent presence endpoint." });
+  });
+
+  test("notifies presence changes only for visible transitions", async () => {
+    const notifications: unknown[] = [];
+    const { app, domain, store } = await setup((data) => notifications.push(data));
+    await domain.bindFeed("inbox", "thread-codex");
+    await domain.bindAgentFeed("inbox", "claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+    await domain.queueFeedInstruction("inbox", "Replay this parked Claude item.");
+
+    const first = await app.request("/api/agents/claude/presence", jsonPost({ sessionId: "session-a" }));
+    const heartbeat = await app.request("/api/agents/claude/presence", jsonPost({ sessionId: "session-a" }));
+    const sessionChanged = await app.request("/api/agents/claude/presence", jsonPost({ sessionId: "session-b" }));
+    await store.writeAgentPresence("claude", {
+      agent: "claude",
+      sessionId: "session-b",
+      lastSeenAt: new Date(Date.now() - 120_000).toISOString(),
+    });
+    const staleReplay = await app.request("/api/agents/claude/presence", jsonPost({ sessionId: "session-b" }));
+
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ changed: true, replayed: 1 });
+    expect(heartbeat.status).toBe(200);
+    expect(await heartbeat.json()).toMatchObject({ changed: false, replayed: 0 });
+    expect(sessionChanged.status).toBe(200);
+    expect(await sessionChanged.json()).toMatchObject({ changed: true, replayed: 0 });
+    expect(staleReplay.status).toBe(200);
+    expect(await staleReplay.json()).toMatchObject({ changed: true, replayed: 1 });
+    expect(notifications).toHaveLength(3);
   });
 
   test("rejects Claude-assigned instructions on unbound feeds before queueing", async () => {

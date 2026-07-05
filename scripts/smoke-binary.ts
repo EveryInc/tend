@@ -125,6 +125,7 @@ async function validateCliContract(): Promise<{
     "feed:bind --feed <id> (--thread <Codex thread id> | --agent claude [--replace])",
     "work:list --feed <id> --thread <id> [--cross-feed]",
     "work:claim --feed <id> --thread <id> [--cross-feed] [--session <id>]",
+    "work:assign --feed <id> --work <id> --agent <codex|claude>",
     "work:release --feed <id> --work <id> --token <token> [--session <id>]",
     "agent:presence --agent claude --session <id> [--label <text>]",
     "feed:drain-agent --feed <id> --agent <codex|claude>",

@@ -81,7 +81,7 @@ export function apiRoutes(context: LocalRouteContext): Hono {
         sessionId: String(input.sessionId ?? ""),
         ...(typeof input.label === "string" ? { label: input.label } : {}),
       });
-    });
+    }, (result) => Boolean((result as { changed?: boolean }).changed));
   });
   app.post("/api/feeds/:feed/drain-agent", async (c) => mutation(c, notify, async () => {
     const input = await body(c);

@@ -18,6 +18,7 @@ describe("CLI contract", () => {
     expect(commandNames).toContain("agent:presence");
     expect(commandNames).toContain("work:list");
     expect(commandNames).toContain("work:claim");
+    expect(commandNames).toContain("work:assign");
     expect(commandNames).toContain("feed:drain-agent");
     expect(commandNames).toContain("action:verify");
     expect(commandNames).toContain("work:complete");

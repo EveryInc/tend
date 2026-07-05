@@ -1223,6 +1223,16 @@ describe("Claude wake emission", () => {
     expect(await readClaudeWakeLines(root)).toEqual([]);
   });
 
+  test("Claude-routed sweep feedback persists an agent-aware status message", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+
+    await domain.submitVoiceInstruction("inbox", { kind: "sweep", feedId: "inbox" }, "Claude sweep feedback.", { assignee: "claude" });
+
+    expect((await store.readSweepState("inbox")).statusMessage).toBe("Feedback queued for Claude");
+  });
+
   test("wake append failures are logged without failing the queue mutation", async () => {
     const { store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-codex");
@@ -1368,9 +1378,12 @@ describe("Claude wake emission", () => {
     const staleReplay = await domain.registerAgentPresence("claude", { sessionId: "session-b" });
 
     const replayLines = (await readClaudeWakeLines(root)).slice(beforePresence.length);
-    expect(first).toMatchObject({ replayed: 1, presence: { sessionId: "session-a", label: "Claude Preview" } });
+    expect(first).toMatchObject({ changed: true, replayed: 1, presence: { sessionId: "session-a", label: "Claude Preview" } });
+    expect(heartbeat.changed).toBe(false);
     expect(heartbeat.replayed).toBe(0);
+    expect(sessionChanged.changed).toBe(true);
     expect(sessionChanged.replayed).toBe(0);
+    expect(staleReplay.changed).toBe(true);
     expect(staleReplay.replayed).toBe(1);
     expect(replayLines.map((line) => line.workId)).toEqual([parked.id, parked.id]);
     expect(replayLines.map((line) => line.workId)).not.toContain(cancelled.id);

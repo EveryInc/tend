@@ -674,13 +674,15 @@ export class AttentionDomain {
   async registerAgentPresence(
     agent: AgentPresence["agent"],
     input: { sessionId: string; label?: string },
-  ): Promise<{ presence: AgentPresence; replayed: number }> {
+  ): Promise<{ presence: AgentPresence; replayed: number; changed: boolean }> {
     if (agent !== "claude") throw new Error(`Unsupported agent presence: ${agent}`);
     const sessionId = requiredAgentPresenceText(input.sessionId, "Agent presence sessionId", AGENT_SESSION_ID_MAX_LENGTH);
     const label = input.label ? requiredAgentPresenceText(input.label, "Agent presence label", AGENT_LABEL_MAX_LENGTH) : undefined;
     return this.store.serialize(async () => {
       const previous = await this.store.readAgentPresence(agent);
       const shouldReplay = !previous || agentPresenceLiveness(previous) !== "live";
+      const sessionChanged = previous?.sessionId !== sessionId;
+      const labelChanged = previous?.label !== label;
       const presence: AgentPresence = {
         agent,
         sessionId,
@@ -703,7 +705,7 @@ export class AttentionDomain {
           }
         }
       }
-      return { presence, replayed };
+      return { presence, replayed, changed: shouldReplay || sessionChanged || labelChanged || replayed > 0 };
     });
   }
 
@@ -1049,7 +1051,7 @@ export class AttentionDomain {
           ...feed.sweep,
           lastFeedbackId: trace.id,
           recollectionOffered: false,
-          statusMessage: "Feedback queued for Codex",
+          statusMessage: `Feedback queued for ${effectiveWorkLane(work, await this.store.readThread(target.feedId)) === "claude" ? "Claude" : "Codex"}`,
         });
         await this.store.appendEvent({ feedId: target.feedId, workId: work.id, type: "sweep.feedback_recorded", detail: { feedbackId: trace.id, batchId: trace.batchId, instruction: trace.instruction } });
         await this.store.appendEvent({ feedId: target.feedId, workId: work.id, type: "voice.intent_queued", detail: { target, intent: work.intent } });
