@@ -1,7 +1,10 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, rename } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import type {
+  AgentPresence,
+  AgentPresenceLiveness,
+  AgentWakeLine,
   AppFeedback,
   Card,
   DictationCapability,
@@ -56,12 +59,29 @@ import type { MobileCommandReceipt } from "../shared/mobile";
 
 export const GLOBAL_PROMPT_NAMES = ["judge.md", "compose-card.md", "execute-work.md", "distill-policy.md", "compound.md"] as const;
 export const FEED_PROMPT_NAMES = ["judge.md", "compose-card.md"] as const;
+export const AGENT_PRESENCE_STALE_AFTER_MS = 90_000;
+export const AGENT_PRESENCE_OFFLINE_AFTER_MS = 10 * 60_000;
+export const MAX_AGENT_WAKE_LEDGER_BYTES = 512 * 1024;
 const DEFAULT_FEED_IDS = ["inbox", "company-attention"];
 
 type AtomicRunner = <T>(callback: () => Promise<T>) => Promise<T>;
 
 function defaultDrainState(): DrainState {
   return { status: "idle", consecutiveFailures: 0 };
+}
+
+function hasOwn(object: object, key: PropertyKey): boolean {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+export function agentPresenceLiveness(presence: AgentPresence | null, now = Date.now()): AgentPresenceLiveness {
+  if (!presence) return "offline";
+  const lastSeen = Date.parse(presence.lastSeenAt);
+  if (!Number.isFinite(lastSeen)) return "offline";
+  const age = now - lastSeen;
+  if (age <= AGENT_PRESENCE_STALE_AFTER_MS) return "live";
+  if (age <= AGENT_PRESENCE_OFFLINE_AFTER_MS) return "stale";
+  return "offline";
 }
 
 export class AttentionStore {
@@ -100,6 +120,7 @@ export class AttentionStore {
 
   async init(): Promise<void> {
     await mkdir(this.dataDir, { recursive: true });
+    await mkdir(this.agentPath("claude"), { recursive: true });
     const dictationPath = this.path("integrations/dictation.json");
     if (!existsSync(dictationPath)) await writeJson(dictationPath, defaultDictationCapability());
     await this.workspaceFeeds.init(DEFAULT_FEED_IDS);
@@ -140,6 +161,7 @@ export class AttentionStore {
     return {
       feeds,
       active: await this.readFeed(selected),
+      agents: await this.readWorkspaceAgents(),
       dictation: await this.readDictationCapability(),
       proposals: await this.readRevisionProposals(selected),
     };
@@ -376,6 +398,31 @@ export class AttentionStore {
     await writeJson(this.feedPath(feedId, "drain-state.json"), state);
   }
 
+  async readAgentPresence(agent: AgentPresence["agent"]): Promise<AgentPresence | null> {
+    const file = this.agentPath(agent, "presence.json");
+    if (!existsSync(file)) return null;
+    return readJson<AgentPresence>(file);
+  }
+
+  async writeAgentPresence(agent: AgentPresence["agent"], presence: AgentPresence): Promise<void> {
+    if (presence.agent !== agent) throw new Error(`Presence agent mismatch: ${presence.agent}`);
+    await writeJson(this.agentPath(agent, "presence.json"), presence);
+  }
+
+  async appendAgentWake(agent: AgentPresence["agent"], line: Omit<AgentWakeLine, "seq">): Promise<AgentWakeLine> {
+    return this.withAgentWakeLock(async () => {
+      await mkdir(this.agentPath(agent), { recursive: true });
+      await this.rotateAgentWakeIfNeeded(agent);
+      const nextSeq = await this.readAgentWakeSeq(agent) + 1;
+      const full: AgentWakeLine = { seq: nextSeq, ...line };
+      const serialized = JSON.stringify(full);
+      if (serialized.includes("\n") || serialized.includes("\r")) throw new Error("Agent wake lines must serialize to one physical line.");
+      await appendFile(this.agentPath(agent, "wake.jsonl"), `${serialized}\n`, "utf8");
+      await writeJson(this.agentPath(agent, "wake-state.json"), { seq: nextSeq });
+      return full;
+    });
+  }
+
   async readSweepState(feedId: string): Promise<SweepState> {
     return this.sweeps.readState(feedId);
   }
@@ -453,7 +500,15 @@ export class AttentionStore {
   }
 
   async writeThread(feedId: string, thread: ThreadBinding): Promise<void> {
-    await writeJson(this.feedPath(feedId, "thread.json"), thread);
+    const next: ThreadBinding = { ...thread };
+    try {
+      const previous = await this.readThread(feedId);
+      if (!hasOwn(thread, "agents") && previous.agents) next.agents = previous.agents;
+      if (!hasOwn(thread, "drainAgent") && previous.drainAgent) next.drainAgent = previous.drainAgent;
+    } catch {
+      // New feeds do not have a prior thread file.
+    }
+    await writeJson(this.feedPath(feedId, "thread.json"), next);
   }
 
   async appendEvent(event: Omit<FeedEvent, "id" | "at">): Promise<FeedEvent> {
@@ -567,6 +622,73 @@ export class AttentionStore {
 
   async serializeAtomic<T>(callback: () => Promise<T>): Promise<T> {
     return this.serialize(() => this.runAtomic ? this.runAtomic(callback) : callback());
+  }
+
+  private async withAgentWakeLock<T>(callback: () => Promise<T>): Promise<T> {
+    const lockPath = this.path(".agent-wake-lock");
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      try {
+        await mkdir(lockPath);
+        try {
+          return await callback();
+        } finally {
+          await rm(lockPath, { recursive: true, force: true });
+        }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        await new Promise((resolve) => setTimeout(resolve, 15));
+      }
+    }
+    throw new Error("Timed out waiting for the agent wake lock.");
+  }
+
+  private agentPath(agent: AgentPresence["agent"], ...parts: string[]): string {
+    return this.path("agents", agent, ...parts);
+  }
+
+  private async readWorkspaceAgents(): Promise<WorkspaceView["agents"]> {
+    const claude = await this.readAgentPresence("claude");
+    return {
+      claude: {
+        liveness: agentPresenceLiveness(claude),
+        lastSeenAt: claude?.lastSeenAt ?? null,
+        ...(claude?.label ? { label: claude.label } : {}),
+        ...(claude?.sessionId ? { sessionId: claude.sessionId } : {}),
+      },
+    };
+  }
+
+  private async rotateAgentWakeIfNeeded(agent: AgentPresence["agent"]): Promise<void> {
+    const file = this.agentPath(agent, "wake.jsonl");
+    try {
+      if ((await stat(file)).size > MAX_AGENT_WAKE_LEDGER_BYTES) await rename(file, `${file}.1`);
+    } catch {
+      // Missing wake ledger is fine.
+    }
+  }
+
+  private async readAgentWakeSeq(agent: AgentPresence["agent"]): Promise<number> {
+    const state = this.agentPath(agent, "wake-state.json");
+    if (existsSync(state)) return (await readJson<{ seq: number }>(state)).seq;
+    return this.scanAgentWakeSeq(agent);
+  }
+
+  private async scanAgentWakeSeq(agent: AgentPresence["agent"]): Promise<number> {
+    const files = [this.agentPath(agent, "wake.jsonl"), `${this.agentPath(agent, "wake.jsonl")}.1`];
+    let max = 0;
+    for (const file of files) {
+      if (!existsSync(file)) continue;
+      for (const line of (await readFile(file, "utf8")).split("\n")) {
+        if (!line) continue;
+        try {
+          const parsed = JSON.parse(line) as Partial<AgentWakeLine>;
+          if (typeof parsed.seq === "number" && parsed.seq > max) max = parsed.seq;
+        } catch {
+          // Rotated logs may contain legacy or partially written data; the state file is authoritative when present.
+        }
+      }
+    }
+    return max;
   }
 
   private async ensureDefaultFeed(feedId: "inbox" | "company-attention"): Promise<void> {

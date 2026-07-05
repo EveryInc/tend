@@ -2,6 +2,7 @@ export type FeedId = string;
 export type CardStatus = "to_review_new" | "to_review_updated" | "queued" | "working" | "approved_blocked" | "done";
 export type CardKind = "attention" | "feed_improvement";
 export type WorkStatus = "queued" | "working" | "approved_blocked" | "completed" | "failed" | "stale" | "cancelled";
+export type WorkAgent = "codex" | "claude";
 export type RoutineActionStatus = "proposed" | "queued" | "working" | "completed" | "failed" | "stale";
 export type MindContextPublicationState = "fresh" | "stale" | "unavailable";
 export type MindContextHealth = MindContextPublicationState | "never_published";
@@ -51,6 +52,41 @@ export interface ThreadBinding {
   autoDrain?: {
     enabled: boolean;
     updatedAt: string;
+  };
+  agents?: {
+    claude?: {
+      threadId: string;
+      boundAt: string;
+    };
+  };
+  drainAgent?: WorkAgent;
+}
+
+export interface AgentPresence {
+  agent: "claude";
+  sessionId: string;
+  label?: string;
+  lastSeenAt: string;
+}
+
+export interface AgentWakeLine {
+  seq: number;
+  at: string;
+  feedId: string;
+  workId: string;
+  kind: string;
+  queued: number;
+  threadId: string;
+}
+
+export type AgentPresenceLiveness = "live" | "stale" | "offline";
+
+export interface WorkspaceAgentSummary {
+  claude: {
+    liveness: AgentPresenceLiveness;
+    lastSeenAt: string | null;
+    label?: string;
+    sessionId?: string;
   };
 }
 
@@ -313,6 +349,12 @@ export interface WorkItem {
   cardId: string;
   kind: "instruction" | "scoped_instruction" | "execute_approved_action" | "default_cleanup" | "routine_action_batch" | "compound_learnings";
   instruction: string;
+  assignee?: WorkAgent;
+  claimedBy?: {
+    agent: WorkAgent;
+    threadId: string;
+    sessionId?: string;
+  };
   target?: VoiceTarget;
   intent?: "voice_instruction" | "sweep_rejudge" | "recollect_sources";
   feedbackId?: string;
@@ -465,6 +507,7 @@ export interface FeedView {
 export interface WorkspaceView {
   feeds: Array<{ id: string; name: string; purpose: string }>;
   active: FeedView;
+  agents?: WorkspaceAgentSummary;
   dictation: DictationCapability;
   proposals: RevisionProposal[];
 }
