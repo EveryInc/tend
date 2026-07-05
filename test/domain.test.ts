@@ -17,7 +17,7 @@ import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/re
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
-import type { Card, WorkItem } from "../shared/types";
+import type { AgentWakeLine, Card, WorkItem } from "../shared/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
 
 const roots: string[] = [];
@@ -59,6 +59,27 @@ async function setup() {
   const store = new AttentionStore(root);
   await store.init();
   return { root, store, domain: new AttentionDomain(store) };
+}
+
+async function readClaudeWakeLines(root: string): Promise<AgentWakeLine[]> {
+  try {
+    const text = await readFile(path.join(root, "agents", "claude", "wake.jsonl"), "utf8");
+    return text.split("\n").filter(Boolean).map((line) => JSON.parse(line) as AgentWakeLine);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+async function bindClaudeLane(store: AttentionStore, feedId: string, threadId = `thread-${feedId}-claude`): Promise<void> {
+  const thread = await store.readThread(feedId);
+  await store.writeThread(feedId, {
+    ...thread,
+    agents: {
+      ...thread.agents,
+      claude: { threadId, boundAt: "2026-07-05T12:00:00.000Z" },
+    },
+  });
 }
 
 afterEach(async () => {
@@ -1068,6 +1089,236 @@ describe("thread-owned work drain", () => {
     expect(workspaceBytes).not.toContain(queued.capabilityToken);
     expect(listBytes).not.toContain("capabilityToken");
     expect(listBytes).not.toContain(queued.capabilityToken);
+  });
+});
+
+describe("Claude wake emission", () => {
+  test("emits exactly one wake for each queue path on a Claude-drained feed", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    await domain.upsertCard("inbox", {
+      id: "wake-instruction",
+      title: "Instruction card",
+      why: "Needs a note.",
+      blocks: [{ id: "brief", type: "memo", text: "Instruction brief." }],
+    });
+    await domain.upsertCard("inbox", {
+      id: "wake-approval",
+      title: "Approval card",
+      why: "Needs an exact approved action.",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the exact approved body.", artifactBlockId: "draft" }],
+    });
+    await domain.upsertCard("inbox", {
+      id: "wake-cleanup",
+      title: "Cleanup card",
+      why: "No response needed.",
+      blocks: [{ id: "brief", type: "memo", text: "Archive this." }],
+      actions: [{ id: "archive", label: "Archive", behavior: "default_cleanup" }],
+    });
+    await domain.upsertCard("inbox", {
+      id: "wake-card-action",
+      title: "Preparation card",
+      why: "Needs prep.",
+      blocks: [{ id: "brief", type: "memo", text: "Prep this." }],
+      actions: [{ id: "draft", label: "Draft", behavior: "queue_instruction", instruction: "Draft a short pass." }],
+    });
+
+    const queued = [
+      await domain.queueInstruction("inbox", "wake-instruction", "Queue path private instruction."),
+      await domain.queueFeedInstruction("inbox", "Feed-level private instruction."),
+      await domain.approveAction("inbox", "wake-approval", "send"),
+      await domain.dismissCard("inbox", "wake-cleanup"),
+      await domain.approveRoutineActionGroup("inbox", (await domain.upsertRoutineActionGroup("inbox", {
+        id: "wake-routine",
+        label: "Archive batch",
+        summary: "Batch summary.",
+        proposedAction: { label: "Archive all", instruction: "Archive all listed items.", externalMutation: true },
+        items: [{ id: "item-1", title: "Notice", reason: "Routine." }],
+      })).id),
+      (await domain.submitVoiceInstruction("inbox", { kind: "feed", feedId: "inbox" }, "Scoped voice instruction.")).work,
+      await domain.queueCompound("inbox"),
+      await domain.runCardAction("inbox", "wake-card-action", "draft"),
+    ];
+
+    const lines = await readClaudeWakeLines(root);
+    expect(lines).toHaveLength(queued.length);
+    expect(lines.map((line) => line.workId)).toEqual(queued.map((work) => work.id));
+    expect(lines.map((line) => line.kind)).toEqual(queued.map((work) => work.kind));
+    expect(lines.every((line) => line.feedId === "inbox")).toBe(true);
+    expect(lines.every((line) => line.threadId === "thread-claude")).toBe(true);
+    expect(lines.map((line) => line.queued)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  test("dock-style Claude assignment wakes on a Codex-drained feed, while Codex-lane work does not", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+
+    const plain = await domain.submitVoiceInstruction("inbox", { kind: "card", feedId: "inbox", cardId: "inbox-ready-to-collect" }, "Plain dock instruction.");
+    const routed = await domain.submitVoiceInstruction("inbox", { kind: "feed", feedId: "inbox" }, "Claude dock instruction.", { assignee: "claude" });
+
+    const lines = await readClaudeWakeLines(root);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      feedId: "inbox",
+      workId: routed.work.id,
+      kind: "scoped_instruction",
+      queued: 1,
+      threadId: "thread-claude",
+    });
+    expect(lines[0].workId).not.toBe(plain.work.id);
+  });
+
+  test("Claude assignment without a Claude binding queues but emits no wake", async () => {
+    const { root, domain } = await setup();
+    const routed = await domain.submitVoiceInstruction("inbox", { kind: "feed", feedId: "inbox" }, "Parked without binding.", { assignee: "claude" });
+
+    expect(routed.work.assignee).toBe("claude");
+    expect(await readClaudeWakeLines(root)).toEqual([]);
+  });
+
+  test("wake append failures are logged without failing the queue mutation", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+    const originalAppend = store.appendAgentWake.bind(store);
+    const originalError = console.error;
+    const logged: unknown[] = [];
+    store.appendAgentWake = async () => {
+      throw new Error("simulated wake ledger failure");
+    };
+    console.error = (...args: unknown[]) => {
+      logged.push(args);
+    };
+    try {
+      const work = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Queue despite wake failure.");
+      expect(work.status).toBe("queued");
+      expect((await store.readWork("inbox", work.id)).status).toBe("queued");
+      expect(logged.length).toBe(1);
+    } finally {
+      store.appendAgentWake = originalAppend;
+      console.error = originalError;
+    }
+  });
+
+  test("sweep and dismiss mutations that are not Claude-lane queues emit nothing", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+
+    await domain.queueFeedInstruction("inbox", "Codex feed instruction.");
+    await domain.dismissCard("inbox", "inbox-ready-to-collect");
+    await domain.submitVoiceInstruction("inbox", { kind: "sweep", feedId: "inbox" }, "Codex sweep feedback.");
+
+    expect(await readClaudeWakeLines(root)).toEqual([]);
+  });
+
+  test("release and approved-action retry re-emit Claude-lane wakes with new seq values", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Release this Claude item.");
+    const claimed = await domain.claimWork("inbox", "thread-claude") as WorkItem;
+    await domain.releaseWork("inbox", queued.id, claimed.capabilityToken, "session-release");
+    await domain.cancelQueuedWork("inbox", queued.id, "Release wake verified; clear queue for retry coverage.");
+
+    await domain.upsertCard("inbox", {
+      id: "wake-retry",
+      title: "Retry approved action.",
+      why: "Connector can retry.",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved retry body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved retry body.", artifactBlockId: "draft" }],
+    });
+    const approved = await domain.approveAction("inbox", "wake-retry", "send");
+    const claimedApproved = await domain.claimWork("inbox", "thread-claude") as WorkItem;
+    await domain.blockApprovedWork("inbox", approved.id, claimedApproved.capabilityToken, "Connector temporarily refused.");
+    await domain.retryApprovedWork("inbox", approved.id);
+
+    const lines = await readClaudeWakeLines(root);
+    expect(lines.map((line) => line.seq)).toEqual([1, 2, 3, 4]);
+    expect(lines.map((line) => line.workId)).toEqual([queued.id, queued.id, approved.id, approved.id]);
+  });
+
+  test("presence registration replays parked Claude work only on liveness transitions", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    const parked = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Replay this parked item.");
+    const cancelled = await domain.queueFeedInstruction("inbox", "Cancel before replay.");
+    await domain.cancelQueuedWork("inbox", cancelled.id, "Cancelled before presence replay.");
+    const beforePresence = await readClaudeWakeLines(root);
+
+    const first = await domain.registerAgentPresence("claude", { sessionId: "session-a", label: "Claude Preview" });
+    const heartbeat = await domain.registerAgentPresence("claude", { sessionId: "session-a", label: "Claude Preview" });
+    const sessionChanged = await domain.registerAgentPresence("claude", { sessionId: "session-b" });
+    await store.writeAgentPresence("claude", {
+      agent: "claude",
+      sessionId: "session-b",
+      lastSeenAt: new Date(Date.now() - 120_000).toISOString(),
+    });
+    const staleReplay = await domain.registerAgentPresence("claude", { sessionId: "session-b" });
+
+    const replayLines = (await readClaudeWakeLines(root)).slice(beforePresence.length);
+    expect(first).toMatchObject({ replayed: 1, presence: { sessionId: "session-a", label: "Claude Preview" } });
+    expect(heartbeat.replayed).toBe(0);
+    expect(sessionChanged.replayed).toBe(1);
+    expect(staleReplay.replayed).toBe(1);
+    expect(replayLines.map((line) => line.workId)).toEqual([parked.id, parked.id, parked.id]);
+    expect(replayLines.map((line) => line.workId)).not.toContain(cancelled.id);
+  });
+
+  test("setting drainAgent to Claude wakes already queued unassigned work and rejects unbound feeds", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.upsertCard("inbox", {
+      id: "wake-drain-one",
+      title: "First queued item.",
+      why: "Already queued.",
+      blocks: [{ id: "brief", type: "memo", text: "First." }],
+    });
+    await domain.upsertCard("inbox", {
+      id: "wake-drain-two",
+      title: "Second queued item.",
+      why: "Already queued.",
+      blocks: [{ id: "brief", type: "memo", text: "Second." }],
+    });
+    const first = await domain.queueInstruction("inbox", "wake-drain-one", "First parked item.");
+    const second = await domain.queueInstruction("inbox", "wake-drain-two", "Second parked item.");
+    expect(await readClaudeWakeLines(root)).toEqual([]);
+
+    const thread = await domain.setFeedDrainAgent("inbox", "claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    expect(thread.drainAgent).toBe("claude");
+    const lines = await readClaudeWakeLines(root);
+    expect(lines.map((line) => line.workId)).toEqual([first.id, second.id]);
+    expect(lines.map((line) => line.queued)).toEqual([2, 2]);
+    await expect(domain.setFeedDrainAgent("company-attention", "claude")).rejects.toThrow("without a Claude binding");
+  });
+
+  test("wake ledger bytes omit instruction text and capability tokens from domain emissions", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    const work = await domain.queueFeedInstruction("inbox", "SECRET_WAKE_TEXT_DO_NOT_LEAK");
+    const bytes = await readFile(path.join(root, "agents", "claude", "wake.jsonl"), "utf8");
+
+    expect(bytes).not.toContain("SECRET_WAKE_TEXT_DO_NOT_LEAK");
+    expect(bytes).not.toContain(work.instruction);
+    expect(bytes).not.toContain(work.capabilityToken);
+    expect(bytes).not.toContain("capabilityToken");
   });
 });
 

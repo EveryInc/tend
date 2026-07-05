@@ -1,5 +1,7 @@
 import type {
   AppFeedback,
+  AgentPresence,
+  AgentWakeLine,
   Card,
   CardAction,
   CardBlock,
@@ -37,7 +39,7 @@ import type {
 } from "../shared/types";
 import type { MobileActionProjection, MobileCommand, MobileCommandResult, MobileCommandReceipt } from "../shared/mobile";
 import { containsFullEmail } from "../shared/emailThread";
-import { AttentionStore, FEED_PROMPT_NAMES } from "./store";
+import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES } from "./store";
 import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
 import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./util";
@@ -92,6 +94,10 @@ function claimedByReport(work: WorkItem, claimedBy: WorkClaimant): WorkClaimedBy
 
 function orderedWorkItems(work: WorkItem[]): WorkItem[] {
   return [...work].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+}
+
+function queuedClaudeWorkCount(work: WorkItem[], thread: ThreadBinding): number {
+  return work.filter((item) => item.status === "queued" && effectiveWorkLane(item, thread) === "claude").length;
 }
 
 export function isClaimedWorkItem(result: WorkClaimResult): result is WorkItem {
@@ -626,6 +632,82 @@ function verifyMobileRiskConfirmation(
 export class AttentionDomain {
   constructor(readonly store: AttentionStore) {}
 
+  private async maybeEmitClaudeWake(feedId: string, work: WorkItem, thread?: ThreadBinding): Promise<AgentWakeLine | null> {
+    if (work.status !== "queued") return null;
+    const binding = thread ?? await this.store.readThread(feedId);
+    const claude = binding.agents?.claude;
+    if (!claude || effectiveWorkLane(work, binding) !== "claude") return null;
+    const queued = queuedClaudeWorkCount(await this.store.readWorkItems(feedId), binding);
+    try {
+      return await this.store.appendAgentWake("claude", {
+        at: isoNow(),
+        feedId,
+        workId: work.id,
+        kind: work.kind,
+        queued,
+        threadId: claude.threadId,
+      });
+    } catch (error) {
+      console.error("[claude-wake] Failed to append Claude wake line", { feedId, workId: work.id, error });
+      return null;
+    }
+  }
+
+  async registerAgentPresence(
+    agent: AgentPresence["agent"],
+    input: { sessionId: string; label?: string },
+  ): Promise<{ presence: AgentPresence; replayed: number }> {
+    if (agent !== "claude") throw new Error(`Unsupported agent presence: ${agent}`);
+    const sessionId = input.sessionId.trim();
+    if (!sessionId) throw new Error("Agent presence sessionId is required.");
+    const label = input.label?.trim();
+    return this.store.serialize(async () => {
+      const previous = await this.store.readAgentPresence(agent);
+      const shouldReplay = !previous || agentPresenceLiveness(previous) !== "live" || previous.sessionId !== sessionId;
+      const presence: AgentPresence = {
+        agent,
+        sessionId,
+        ...(label ? { label } : {}),
+        lastSeenAt: isoNow(),
+      };
+      await this.store.writeAgentPresence(agent, presence);
+
+      let replayed = 0;
+      if (shouldReplay) {
+        const seenWorkIds = new Set<string>();
+        for (const feedId of await this.store.listFeedIds()) {
+          const thread = await this.store.readThread(feedId);
+          const parked = orderedWorkItems(await this.store.readWorkItems(feedId))
+            .filter((work) => work.status === "queued" && effectiveWorkLane(work, thread) === "claude");
+          for (const work of parked) {
+            if (seenWorkIds.has(work.id)) continue;
+            seenWorkIds.add(work.id);
+            if (await this.maybeEmitClaudeWake(feedId, work, thread)) replayed += 1;
+          }
+        }
+      }
+      return { presence, replayed };
+    });
+  }
+
+  async setFeedDrainAgent(feedId: string, agent: WorkAgent): Promise<ThreadBinding> {
+    if (agent !== "codex" && agent !== "claude") throw new Error(`Unsupported drain agent: ${agent}`);
+    return this.store.serialize(async () => {
+      const thread = await this.store.readThread(feedId);
+      if (agent === "claude" && !thread.agents?.claude) throw new Error("Cannot set drainAgent to claude without a Claude binding.");
+      const previous = thread.drainAgent ?? "codex";
+      thread.drainAgent = agent;
+      await this.store.writeThread(feedId, thread);
+      await this.store.appendEvent({ feedId, type: "thread.drain_agent_set", detail: { agent } });
+      if (previous !== "claude" && agent === "claude") {
+        const queuedUnassigned = orderedWorkItems(await this.store.readWorkItems(feedId))
+          .filter((work) => work.status === "queued" && !work.assignee);
+        for (const work of queuedUnassigned) await this.maybeEmitClaudeWake(feedId, work, thread);
+      }
+      return thread;
+    });
+  }
+
   async bindMindContextPublisher(threadId: string, replace = false): Promise<MindContextBinding> {
     const publisherThreadId = requiredMindText(threadId, "On Your Mind publisher thread", 180);
     return this.store.serialize(async () => {
@@ -901,7 +983,7 @@ export class AttentionDomain {
     return target;
   }
 
-  async submitVoiceInstruction(anchorFeedId: string, requested: VoiceTarget, instruction: string) {
+  async submitVoiceInstruction(anchorFeedId: string, requested: VoiceTarget, instruction: string, options: { assignee?: WorkAgent } = {}) {
     if (!instruction.trim()) throw new Error("Instruction is required.");
     const target = await this.store.validateVoiceTarget(requested);
     return this.store.serializeAtomic(async () => {
@@ -932,6 +1014,7 @@ export class AttentionDomain {
           feedbackId: trace.id,
           startingBatchId: target.batchId ?? null,
           previousSweepState: feed.sweep,
+          ...(options.assignee ? { assignee: options.assignee } : {}),
         });
         await this.store.writeSweepFeedback(trace);
         await this.store.writeWork(work);
@@ -944,12 +1027,18 @@ export class AttentionDomain {
         await this.store.appendEvent({ feedId: target.feedId, workId: work.id, type: "sweep.feedback_recorded", detail: { feedbackId: trace.id, batchId: trace.batchId, instruction: trace.instruction } });
         await this.store.appendEvent({ feedId: target.feedId, workId: work.id, type: "voice.intent_queued", detail: { target, intent: work.intent } });
         await this.store.appendEvent({ feedId: anchorFeedId, workId: work.id, type: "voice.instruction_submitted", detail: { target, instruction: instruction.trim() } });
+        await this.maybeEmitClaudeWake(target.feedId, work);
         return { kind: "scoped_work" as const, target, work, trace };
       }
 
       const feedId = "feedId" in target ? target.feedId : anchorFeedId;
       const cardId = target.kind === "card" ? target.cardId : "__feed__";
-      const work = queuedWork(feedId, cardId, instruction, { kind: "scoped_instruction", target, intent: "voice_instruction" });
+      const work = queuedWork(feedId, cardId, instruction, {
+        kind: "scoped_instruction",
+        target,
+        intent: "voice_instruction",
+        ...(options.assignee ? { assignee: options.assignee } : {}),
+      });
       if (target.kind === "card") {
         const card = await this.store.readCard(feedId, target.cardId);
         if (card.status === "done") throw new Error("Done cards cannot be queued.");
@@ -960,6 +1049,7 @@ export class AttentionDomain {
       await this.store.writeWork(work);
       await this.store.appendEvent({ feedId, cardId, workId: work.id, type: "voice.intent_queued", detail: { target, intent: work.intent } });
       await this.store.appendEvent({ feedId: anchorFeedId, cardId: target.kind === "card" ? target.cardId : undefined, workId: work.id, type: "voice.instruction_submitted", detail: { target, instruction: instruction.trim() } });
+      await this.maybeEmitClaudeWake(feedId, work);
       return { kind: "scoped_work" as const, target, work };
     });
   }
@@ -1027,6 +1117,7 @@ export class AttentionDomain {
       await this.store.writeWork(work);
       await this.store.writeSweepState(feedId, { ...sweep, recollectionOffered: false, statusMessage: "Source search queued" });
       await this.store.appendEvent({ feedId, workId: work.id, type: "sweep.recollection_requested", detail: { feedbackId: sweep.lastFeedbackId } });
+      await this.maybeEmitClaudeWake(feedId, work);
       return work;
     });
   }
@@ -1161,6 +1252,7 @@ export class AttentionDomain {
       type: "work.queued",
       detail: { instruction: work.instruction, sourceMobileCommandId },
     });
+    await this.maybeEmitClaudeWake(feedId, work);
     return work;
   }
 
@@ -1237,6 +1329,7 @@ export class AttentionDomain {
       type: "action.approved",
       detail: { approvalDigest, sourceMobileCommandId },
     });
+    await this.maybeEmitClaudeWake(feedId, work);
     return work;
   }
 
@@ -1311,6 +1404,7 @@ export class AttentionDomain {
       type: "cleanup.queued",
       detail: { cleanup: config.defaultCleanup, sourceMobileCommandId },
     });
+    await this.maybeEmitClaudeWake(feedId, work);
     return work;
   }
 
@@ -1325,6 +1419,7 @@ export class AttentionDomain {
       const work = queuedWork(feedId, "__feed__", instruction, { kind: "instruction" });
       await this.store.writeWork(work);
       await this.store.appendEvent({ feedId, workId: work.id, type: "feed.instruction_queued", detail: { instruction: work.instruction } });
+      await this.maybeEmitClaudeWake(feedId, work);
       return work;
     });
   }
@@ -1453,6 +1548,7 @@ export class AttentionDomain {
       type: "routine_action.approved",
       detail: { groupId: group.id, approvalDigest, items: group.items.length, sourceMobileCommandId },
     });
+    await this.maybeEmitClaudeWake(feedId, work);
     return work;
   }
 
@@ -1738,6 +1834,7 @@ export class AttentionDomain {
       };
       await this.store.writeWork(work);
       await this.store.appendEvent({ feedId, workId: work.id, type: "learning.compound_queued" });
+      await this.maybeEmitClaudeWake(feedId, work);
       return work;
     });
   }
@@ -1830,6 +1927,7 @@ export class AttentionDomain {
         type: "work.released",
         detail: { threadId: releasedBy.threadId, agent: releasedBy.agent, ...(sessionId ? { sessionId } : {}) },
       });
+      await this.maybeEmitClaudeWake(feedId, work);
       return work;
     });
   }
@@ -2209,6 +2307,7 @@ export class AttentionDomain {
       await this.store.writeWork(work);
       await this.store.writeCard(card);
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.approved_action_retry_queued" });
+      await this.maybeEmitClaudeWake(feedId, work);
       return work;
     });
   }
