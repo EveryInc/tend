@@ -1046,7 +1046,7 @@ export class AttentionDomain {
   async submitVoiceInstruction(anchorFeedId: string, requested: VoiceTarget, instruction: string, options: { assignee?: WorkAgent } = {}) {
     if (!instruction.trim()) throw new Error("Instruction is required.");
     const target = await this.store.validateVoiceTarget(requested);
-    const targetFeedId = target.kind === "sweep" || "feedId" in target ? target.feedId : anchorFeedId;
+    const targetFeedId = "feedId" in target ? target.feedId : anchorFeedId;
     await this.assertClaudeRoutingAllowed(targetFeedId, options.assignee);
     return this.store.serializeAtomic(async () => {
       if (target.kind === "sweep") {
@@ -2166,6 +2166,7 @@ export class AttentionDomain {
             type: "work.post_action_cleanup_blocked",
             detail: { response: work.response, postAction: result.postAction },
           });
+          if (work.claimedBy?.agent !== "claude") await this.maybeEmitClaudeWake(feedId, work, undefined, { includeDropped: true });
           return work;
         }
         const config = await this.store.readConfig(feedId);

@@ -30,6 +30,7 @@ export async function body(c: any): Promise<Record<string, unknown>> {
 function isAllowedLocalOrigin(origin: string): boolean {
   try {
     const url = new URL(origin);
+    // Require an explicit dev-server port so ambient localhost origins do not get mutation rights.
     return (url.hostname === "127.0.0.1" || url.hostname === "localhost") && Boolean(url.port);
   } catch {
     return false;

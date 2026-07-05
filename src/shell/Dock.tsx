@@ -38,10 +38,10 @@ export function Dock({
   target: VoiceTarget;
   ladder: VoiceTarget[];
   targetVersion: number;
-  routeToClaude?: boolean;
-  canRouteToClaude?: boolean;
+  routeToClaude: boolean;
+  canRouteToClaude: boolean;
   onTarget: (target: VoiceTarget) => void;
-  onRouteToClaude?: (enabled: boolean) => void;
+  onRouteToClaude: (enabled: boolean) => void;
   onSubmit: (instruction: string) => void;
   onRecollect: () => void;
 }) {
@@ -86,7 +86,7 @@ export function Dock({
               className={`agent-toggle ${routeToClaude ? "active" : ""}`}
               aria-pressed={routeToClaude ? "true" : "false"}
               onPointerDown={(event) => event.preventDefault()}
-              onClick={() => onRouteToClaude?.(!routeToClaude)}
+              onClick={() => onRouteToClaude(!routeToClaude)}
             >
               Claude
             </button>

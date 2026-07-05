@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { threadBinding } from "../server/templates";
 import { AGENT_PRESENCE_OFFLINE_AFTER_MS, AGENT_PRESENCE_STALE_AFTER_MS, MAX_AGENT_WAKE_LEDGER_BYTES, AttentionStore } from "../server/store";
-import type { AgentWakeLine, ThreadBinding, WorkItem } from "../shared/types";
+import type { AgentWakeLine, ThreadBinding } from "../shared/types";
+import { readClaudeWakeLines } from "./support/agents";
 
 const roots: string[] = [];
 
@@ -32,11 +34,6 @@ function wakeLine(overrides: Partial<Omit<AgentWakeLine, "seq">> = {}): Omit<Age
   };
 }
 
-async function wakeLines(root: string): Promise<AgentWakeLine[]> {
-  const text = await readFile(path.join(root, "agents", "claude", "wake.jsonl"), "utf8");
-  return text.split("\n").filter(Boolean).map((line) => JSON.parse(line) as AgentWakeLine);
-}
-
 describe("agent state foundations", () => {
   test("wake seq is monotonic across store instances and forced rotation", async () => {
     const { root, store } = await setup();
@@ -60,7 +57,7 @@ describe("agent state foundations", () => {
 
     expect(next.seq).toBe(2);
     expect((await stat(path.join(root, "agents", "claude", "wake.jsonl.1"))).size).toBeGreaterThan(MAX_AGENT_WAKE_LEDGER_BYTES);
-    expect(await wakeLines(root)).toEqual([next]);
+    expect(await readClaudeWakeLines(root)).toEqual([next]);
   });
 
   test("wake entries with hostile strings stay one parseable physical line each", async () => {
@@ -78,39 +75,8 @@ describe("agent state foundations", () => {
     expect((JSON.parse(physicalLines[1]) as AgentWakeLine).threadId).toBe(hostile);
   });
 
-  test("wake ledger bytes omit capability tokens and instruction text", async () => {
-    const { root, store } = await setup();
-    const now = new Date("2026-07-05T12:00:00.000Z").toISOString();
-    const work: WorkItem = {
-      id: "work-secure",
-      feedId: "inbox",
-      cardId: "card-secure",
-      kind: "instruction",
-      instruction: "Draft from this private instruction\nwith control text.",
-      status: "queued",
-      capabilityToken: "capabilityToken-secret-123",
-      createdAt: now,
-      updatedAt: now,
-    };
-    const cardText = "Private card body that must not enter the wake ledger.";
-
-    await store.appendAgentWake("claude", wakeLine({
-      feedId: work.feedId,
-      workId: work.id,
-      kind: work.kind,
-      queued: 1,
-      threadId: "claude-thread-secure",
-    }));
-
-    const bytes = await readFile(path.join(root, "agents", "claude", "wake.jsonl"), "utf8");
-    expect(bytes).not.toContain("capabilityToken");
-    expect(bytes).not.toContain(work.capabilityToken);
-    expect(bytes).not.toContain(work.instruction);
-    expect(bytes).not.toContain(cardText);
-  });
-
   test("presence defaults offline and derives live stale offline liveness", async () => {
-    const { store } = await setup();
+    const { root, store } = await setup();
 
     expect(await store.readAgentPresence("claude")).toBeNull();
     expect((await store.readWorkspace()).agents?.claude).toMatchObject({ liveness: "offline", lastSeenAt: null });
@@ -121,6 +87,7 @@ describe("agent state foundations", () => {
       label: "Claude\npreview",
       lastSeenAt: new Date().toISOString(),
     });
+    expect((await stat(path.join(root, "agents", "claude", "wake.jsonl"))).size).toBe(0);
     expect((await store.readWorkspace()).agents?.claude).toMatchObject({ liveness: "live", sessionId: "session-live", label: "Claude\npreview" });
 
     await store.writeAgentPresence("claude", {
@@ -181,16 +148,8 @@ describe("agent state foundations", () => {
   });
 });
 
-async function bashPath(): Promise<string | null> {
-  for (const candidate of ["/bin/bash", "/usr/bin/bash"]) {
-    try {
-      await access(candidate);
-      return candidate;
-    } catch {
-      // Try the next common bash location.
-    }
-  }
-  return null;
+function bashPath(): string | null {
+  return ["/bin/bash", "/usr/bin/bash"].find((candidate) => existsSync(candidate)) ?? null;
 }
 
 function normalizeText(value: string): string {
@@ -198,11 +157,12 @@ function normalizeText(value: string): string {
 }
 
 describe("Claude wake monitor script", () => {
-  test("fails closed with usage when --session is missing", async () => {
-    const bash = await bashPath();
-    if (!bash) return;
+  const bash = bashPath();
 
-    const proc = Bun.spawn([bash, "scripts/claude-wake-monitor.sh"], {
+  test.skipIf(!bash)("fails closed with usage when --session is missing", async () => {
+    const bashExecutable = bash!;
+
+    const proc = Bun.spawn([bashExecutable, "scripts/claude-wake-monitor.sh"], {
       cwd: process.cwd(),
       stdout: "pipe",
       stderr: "pipe",
@@ -219,16 +179,15 @@ describe("Claude wake monitor script", () => {
     expect(stderr).toContain("Usage:");
   });
 
-  test("fails closed when presence succeeds but the server has not created the ledger", async () => {
-    const bash = await bashPath();
-    if (!bash) return;
+  test.skipIf(!bash)("fails closed when presence succeeds but the server has not created the ledger", async () => {
+    const bashExecutable = bash!;
 
     const { root } = await setup();
     const fakeBin = path.join(root, "fake-bin");
     await mkdir(fakeBin, { recursive: true });
     await writeFile(path.join(fakeBin, "curl"), "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
     const proc = Bun.spawn([
-      bash,
+      bashExecutable,
       "scripts/claude-wake-monitor.sh",
       "--session",
       "session-test",

@@ -17,8 +17,9 @@ import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/re
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
-import type { AgentWakeLine, Card, WorkItem } from "../shared/types";
+import type { Card, WorkClaimedByReport, WorkItem } from "../shared/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
+import { readClaudeWakeLines } from "./support/agents";
 
 const roots: string[] = [];
 
@@ -59,16 +60,6 @@ async function setup() {
   const store = new AttentionStore(root);
   await store.init();
   return { root, store, domain: new AttentionDomain(store) };
-}
-
-async function readClaudeWakeLines(root: string): Promise<AgentWakeLine[]> {
-  try {
-    const text = await readFile(path.join(root, "agents", "claude", "wake.jsonl"), "utf8");
-    return text.split("\n").filter(Boolean).map((line) => JSON.parse(line) as AgentWakeLine);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
 }
 
 async function bindClaudeLane(store: AttentionStore, feedId: string, threadId = `thread-${feedId}-claude`): Promise<void> {
@@ -981,10 +972,7 @@ describe("thread-owned work drain", () => {
   test("filters list and claim by Codex and Claude lanes", async () => {
     const { store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-codex");
-    await store.writeThread("inbox", {
-      ...await store.readThread("inbox"),
-      agents: { claude: { threadId: "thread-claude", boundAt: "2026-07-05T00:00:00.000Z" } },
-    });
+    await bindClaudeLane(store, "inbox", "thread-claude");
     const codex = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Codex lane work.");
     const claude = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Claude lane work.");
     claude.assignee = "claude";
@@ -999,10 +987,7 @@ describe("thread-owned work drain", () => {
   test("cross-feed guest sees only unassigned codex-lane work", async () => {
     const { store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-codex");
-    await store.writeThread("inbox", {
-      ...await store.readThread("inbox"),
-      agents: { claude: { threadId: "thread-claude", boundAt: "2026-07-05T00:00:00.000Z" } },
-    });
+    await bindClaudeLane(store, "inbox", "thread-claude");
     const codex = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Unassigned codex work.");
     const claude = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Assigned claude work.");
     claude.assignee = "claude";
@@ -1011,13 +996,9 @@ describe("thread-owned work drain", () => {
 
     await domain.releaseWork("inbox", (await domain.claimWork("inbox", "thread-guest", true) as WorkItem).id, (await store.readWork("inbox", codex.id)).capabilityToken);
     const drainClaude = await domain.queueInstruction("company-attention", "company-source-confirmation", "Default Claude-drain work.");
-    await store.writeThread("company-attention", {
-      ...await store.readThread("company-attention"),
-      homeThreadId: "thread-company",
-      boundAt: "2026-07-05T00:00:00.000Z",
-      agents: { claude: { threadId: "thread-company-claude", boundAt: "2026-07-05T00:00:00.000Z" } },
-      drainAgent: "claude",
-    });
+    await domain.bindFeed("company-attention", "thread-company");
+    await bindClaudeLane(store, "company-attention", "thread-company-claude");
+    await domain.setFeedDrainAgent("company-attention", "claude");
     expect(drainClaude.assignee).toBeUndefined();
     expect(await domain.listPendingWork("company-attention", "thread-guest", true)).toEqual([]);
     expect(await domain.claimWork("company-attention", "thread-guest", true)).toBeNull();
@@ -1029,7 +1010,7 @@ describe("thread-owned work drain", () => {
     const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Collect this once.");
     const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
 
-    const conflict = await domain.claimWork("inbox", "thread-other", true) as any;
+    const conflict = await domain.claimWork("inbox", "thread-other", true) as WorkClaimedByReport;
     expect(conflict).toMatchObject({
       claim: "claimed_by_other",
       workId: queued.id,
@@ -1070,10 +1051,7 @@ describe("thread-owned work drain", () => {
   test("session handoff keeps authorization on lane id, not session id", async () => {
     const { store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-codex");
-    await store.writeThread("inbox", {
-      ...await store.readThread("inbox"),
-      agents: { claude: { threadId: "thread-claude", boundAt: "2026-07-05T00:00:00.000Z" } },
-    });
+    await bindClaudeLane(store, "inbox", "thread-claude");
     const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Claude session handoff.");
     queued.assignee = "claude";
     await store.writeWork(queued);
@@ -1088,10 +1066,7 @@ describe("thread-owned work drain", () => {
 
   test("Claude-only bound feeds are claimable by Claude, while unbound or wrong-agent feeds reject with agent-aware copy", async () => {
     const { store, domain } = await setup();
-    await store.writeThread("inbox", {
-      ...await store.readThread("inbox"),
-      agents: { claude: { threadId: "thread-claude", boundAt: "2026-07-05T00:00:00.000Z" } },
-    });
+    await bindClaudeLane(store, "inbox", "thread-claude");
     const claudeOnly = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Claude-only feed work.");
     claudeOnly.assignee = "claude";
     await store.writeWork(claudeOnly);
@@ -1170,24 +1145,35 @@ describe("Claude wake emission", () => {
       actions: [{ id: "draft", label: "Draft", behavior: "queue_instruction", instruction: "Draft a short pass." }],
     });
 
-    const queued = [
-      await domain.queueInstruction("inbox", "wake-instruction", "Queue path private instruction."),
-      await domain.queueFeedInstruction("inbox", "Feed-level private instruction."),
-      await domain.approveAction("inbox", "wake-approval", "send"),
-      await domain.dismissCard("inbox", "wake-cleanup"),
-      await domain.approveRoutineActionGroup("inbox", (await domain.upsertRoutineActionGroup("inbox", {
+    const queueEvents = [
+      { type: "card_instruction", work: await domain.queueInstruction("inbox", "wake-instruction", "Queue path private instruction.") },
+      { type: "feed_instruction", work: await domain.queueFeedInstruction("inbox", "Feed-level private instruction.") },
+      { type: "approved_action", work: await domain.approveAction("inbox", "wake-approval", "send") },
+      { type: "default_cleanup", work: await domain.dismissCard("inbox", "wake-cleanup") },
+      { type: "routine_action_batch", work: await domain.approveRoutineActionGroup("inbox", (await domain.upsertRoutineActionGroup("inbox", {
         id: "wake-routine",
         label: "Archive batch",
         summary: "Batch summary.",
         proposedAction: { label: "Archive all", instruction: "Archive all listed items.", externalMutation: true },
         items: [{ id: "item-1", title: "Notice", reason: "Routine." }],
-      })).id),
-      (await domain.submitVoiceInstruction("inbox", { kind: "feed", feedId: "inbox" }, "Scoped voice instruction.")).work,
-      await domain.queueCompound("inbox"),
-      await domain.runCardAction("inbox", "wake-card-action", "draft"),
+      })).id) },
+      { type: "scoped_voice_instruction", work: (await domain.submitVoiceInstruction("inbox", { kind: "feed", feedId: "inbox" }, "Scoped voice instruction.")).work },
+      { type: "compound_learnings", work: await domain.queueCompound("inbox") },
+      { type: "card_action_instruction", work: await domain.runCardAction("inbox", "wake-card-action", "draft") },
     ];
+    const queued = queueEvents.map((event) => event.work);
 
     const lines = await readClaudeWakeLines(root);
+    expect(queueEvents.map((event) => event.type)).toEqual([
+      "card_instruction",
+      "feed_instruction",
+      "approved_action",
+      "default_cleanup",
+      "routine_action_batch",
+      "scoped_voice_instruction",
+      "compound_learnings",
+      "card_action_instruction",
+    ]);
     expect(lines).toHaveLength(queued.length);
     expect(lines.map((line) => line.workId)).toEqual(queued.map((work) => work.id));
     expect(lines.map((line) => line.kind)).toEqual(queued.map((work) => work.kind));
@@ -1356,6 +1342,39 @@ describe("Claude wake emission", () => {
     expect(lines.map((line) => line.kind)).toEqual(["execute_approved_action", "execute_approved_action", "execute_approved_action"]);
   });
 
+  test("post-action cleanup blocked wakes unless Claude blocked its own claim", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+    await domain.upsertCard("inbox", {
+      id: "codex-blocks-claude-cleanup",
+      title: "Codex sent but cleanup blocked.",
+      why: "The main mutation can succeed before cleanup blocks.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved body.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" }],
+    });
+    const approved = await domain.approveAction("inbox", "codex-blocks-claude-cleanup", "send");
+    const codexWorking = await store.readWork("inbox", approved.id);
+    codexWorking.status = "working";
+    codexWorking.claimedBy = { agent: "codex", threadId: "thread-codex" };
+    await store.writeWork(codexWorking);
+    await domain.verifyApprovedAction("inbox", approved.id, codexWorking.capabilityToken, "dan@every.to");
+
+    await domain.completeWork("inbox", approved.id, codexWorking.capabilityToken, {
+      response: "Sent once; cleanup blocked.",
+      postAction: {
+        cleanup: { status: "blocked", detail: "One source row remained visible after the archive attempt." },
+        disposition: "review",
+      },
+    });
+
+    const lines = await readClaudeWakeLines(root);
+    expect(lines.map((line) => line.workId)).toEqual([approved.id, approved.id]);
+    expect(lines.map((line) => line.kind)).toEqual(["execute_approved_action", "execute_approved_action"]);
+  });
+
   test("presence registration replays parked Claude work only on liveness transitions", async () => {
     const { root, store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-codex");
@@ -1447,6 +1466,26 @@ describe("Claude wake emission", () => {
 
     const claimed = await domain.claimWork("inbox", "thread-codex") as WorkItem;
     await expect(domain.reassignQueuedWork("inbox", claimed.id, "codex")).rejects.toThrow("Only queued work can be reassigned");
+  });
+
+  test("warns when reassigning approved external mutation work to Claude", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.upsertCard("inbox", {
+      id: "external-mutation-warning",
+      title: "Approved external action.",
+      why: "Claude may not have connector capability.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved body.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" }],
+    });
+    const approved = await domain.approveAction("inbox", "external-mutation-warning", "send");
+
+    const reassigned = await domain.reassignQueuedWork("inbox", approved.id, "claude");
+
+    expect(reassigned).toMatchObject({ assignee: "claude", warning: expect.stringContaining("external mutation") });
+    expect(JSON.stringify(reassigned)).not.toContain((await store.readWork("inbox", approved.id)).capabilityToken);
   });
 
   test("wake ledger bytes omit instruction text and capability tokens from domain emissions", async () => {

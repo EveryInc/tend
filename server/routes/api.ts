@@ -1,16 +1,11 @@
 import { Hono } from "hono";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import type { PostActionCompletion, VoiceTarget, WorkAgent } from "../../shared/types";
+import { parseOptionalWorkAgent } from "../../shared/lanes";
+import type { PostActionCompletion, VoiceTarget } from "../../shared/types";
 import { mindContextPublicationReceipt } from "../domain";
 import { versionInfo } from "../version";
 import { body, mutation, mutationAccessError, type LocalRouteContext } from "./shared";
-
-function optionalAgent(value: unknown): WorkAgent | undefined {
-  if (value === undefined || value === null || value === "") return undefined;
-  if (value === "codex" || value === "claude") return value;
-  throw new Error(`Unsupported agent: ${String(value)}`);
-}
 
 export function apiRoutes(context: LocalRouteContext): Hono {
   const { artifactsDir, dataDir, domain, mobileStatus, mutationToken, notify, sqlite, store } = context;
@@ -85,7 +80,7 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   });
   app.post("/api/feeds/:feed/drain-agent", async (c) => mutation(c, notify, async () => {
     const input = await body(c);
-    return domain.setFeedDrainAgent(c.req.param("feed"), optionalAgent(input.agent) ?? "codex");
+    return domain.setFeedDrainAgent(c.req.param("feed"), parseOptionalWorkAgent(input.agent) ?? "codex");
   }));
   app.post("/api/feeds/:feed/heartbeat", async (c) => mutation(c, notify, async () => domain.proposeHeartbeat(c.req.param("feed"), String((await body(c)).cadence ?? ""))));
   app.post("/api/feeds/:feed/sources", async (c) => mutation(c, notify, async () => domain.addSourceFromBrief(c.req.param("feed"), String((await body(c)).brief ?? ""))));
@@ -107,7 +102,7 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   app.post("/api/voice/instructions", async (c) => mutation(c, notify, async () => {
     const input = await body(c);
     return domain.submitVoiceInstruction(String(input.feedId ?? "inbox"), input.target as VoiceTarget, String(input.instruction ?? ""), {
-      assignee: optionalAgent(input.assignee),
+      assignee: parseOptionalWorkAgent(input.assignee),
     });
   }));
   app.post("/api/revision-proposals/:proposal/apply", async (c) => mutation(c, notify, async () => domain.applyRevisionProposal(c.req.param("proposal"))));
@@ -117,17 +112,17 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   app.post("/api/feeds/:feed/recollect", async (c) => mutation(c, notify, async () => domain.requestSweepRecollection(c.req.param("feed"))));
   app.post("/api/feeds/:feed/instructions", async (c) => mutation(c, notify, async () => {
     const input = await body(c);
-    return domain.queueFeedInstruction(c.req.param("feed"), String(input.instruction ?? ""), { assignee: optionalAgent(input.assignee) });
+    return domain.queueFeedInstruction(c.req.param("feed"), String(input.instruction ?? ""), { assignee: parseOptionalWorkAgent(input.assignee) });
   }));
   app.post("/api/feeds/:feed/cards/:card/instructions", async (c) => mutation(c, notify, async () => {
     const input = await body(c);
-    return domain.queueInstruction(c.req.param("feed"), c.req.param("card"), String(input.instruction ?? ""), { assignee: optionalAgent(input.assignee) });
+    return domain.queueInstruction(c.req.param("feed"), c.req.param("card"), String(input.instruction ?? ""), { assignee: parseOptionalWorkAgent(input.assignee) });
   }));
   app.post("/api/feeds/:feed/work/:work/cancel", async (c) => mutation(c, notify, async () => domain.cancelQueuedWork(c.req.param("feed"), c.req.param("work"), String((await body(c)).reason ?? "Cancelled from the browser before Codex started work."))));
   app.post("/api/feeds/:feed/work/:work/instruction", async (c) => mutation(c, notify, async () => domain.updateQueuedWorkInstruction(c.req.param("feed"), c.req.param("work"), String((await body(c)).instruction ?? ""))));
   app.post("/api/feeds/:feed/work/:work/assignee", async (c) => mutation(c, notify, async () => {
     const input = await body(c);
-    return domain.reassignQueuedWork(c.req.param("feed"), c.req.param("work"), optionalAgent(input.agent) ?? "codex");
+    return domain.reassignQueuedWork(c.req.param("feed"), c.req.param("work"), parseOptionalWorkAgent(input.agent) ?? "codex");
   }));
   app.post("/api/feeds/:feed/work/:work/reconcile-approved", async (c) => mutation(c, notify, async () => {
     const input = await body(c);

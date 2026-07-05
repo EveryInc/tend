@@ -1,6 +1,7 @@
 import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
-import type { DrainState, ThreadBinding, WorkAgent, WorkItem } from "../shared/types";
+import { effectiveWorkLane } from "../shared/lanes";
+import type { DrainState, ThreadBinding, WorkItem } from "../shared/types";
 import { runAppServerDrain } from "./codexAppServer";
 import type { AttentionStore } from "./store";
 import { isoNow } from "./util";
@@ -32,10 +33,6 @@ function age(now: number, iso: string | undefined): number {
   if (!iso) return 0;
   const at = Date.parse(iso);
   return Number.isFinite(at) ? now - at : 0;
-}
-
-function effectiveWorkLane(work: Pick<WorkItem, "assignee">, thread: ThreadBinding): WorkAgent {
-  return work.assignee ?? thread.drainAgent ?? "codex";
 }
 
 export function drainPrompt(feedId: string, threadId: string): string {

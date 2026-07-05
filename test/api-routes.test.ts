@@ -137,6 +137,29 @@ describe("API routing and mutation hardening", () => {
     expect(bytes).not.toContain(queued.capabilityToken);
   });
 
+  test("returns a warning when browser reassignment sends approved external mutation work to Claude", async () => {
+    const { app, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await domain.bindAgentFeed("inbox", "claude");
+    await domain.upsertCard("inbox", {
+      id: "api-external-mutation-warning",
+      title: "Approved external action.",
+      why: "Claude may not have connector capability.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved body.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" }],
+    });
+    const approved = await domain.runCardAction("inbox", "api-external-mutation-warning", "send");
+
+    const response = await app.request(`/api/feeds/inbox/work/${approved.id}/assignee`, jsonPost({ agent: "claude" }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      assignee: "claude",
+      warning: expect.stringContaining("external mutation"),
+    });
+  });
+
   test("redacts capability tokens from browser approved-action retry responses", async () => {
     const { app, domain } = await setup();
     await domain.bindFeed("inbox", "thread-codex");

@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type React
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { api, post } from "./app/api";
+import { agentLabel, effectiveWorkLane } from "../shared/lanes";
 import type { AttentionScreen, Inspector, Tab, WorkspaceTab } from "./app/types";
 import { CardView } from "./feed/CardView";
 import { RoutineActionGroupView } from "./feed/RoutineActionGroupView";
@@ -16,6 +17,10 @@ import type { Card, CardAction, RevisionProposal, RoutineActionGroup, VoiceTarge
 import { FormattedText } from "./ui/FormattedText";
 import { LearningReview, RevisionProposals } from "./workspace/LearningReview";
 import { PromptWorkspace } from "./workspace/PromptWorkspace";
+
+type VoiceInstructionResult =
+  | { kind: "scoped_work"; work: WorkItemView }
+  | { kind: "revision_proposal"; proposal: RevisionProposal };
 
 export default function App({ feedId, screen, workspaceTab }: { feedId: string; screen: AttentionScreen; workspaceTab: WorkspaceTab }) {
   const queryClient = useQueryClient();
@@ -194,12 +199,12 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     void (async () => {
       try {
         const assignee = canRouteDockToClaude && routeDockToClaude ? "claude" : undefined;
-        const result = await post<any>("/api/voice/instructions", { feedId: feed.config.id, target: dockTarget, instruction, assignee });
+        const result = await post<VoiceInstructionResult>("/api/voice/instructions", { feedId: feed.config.id, target: dockTarget, instruction, assignee });
         if (result.kind === "scoped_work") {
           const queued = { feedId: feed.config.id, workId: result.work.id };
           setUndoQueuedWork(queued);
           window.setTimeout(() => setUndoQueuedWork((current) => current?.workId === queued.workId ? null : current), 5_000);
-          const agentName = result.work.assignee === "claude" ? "Claude" : "Codex";
+          const agentName = agentLabel(effectiveWorkLane(result.work, feed.thread));
           showToast(result.work.intent === "sweep_rejudge" ? `Feedback queued for ${agentName}` : `Queued for ${agentName}`);
         } else {
           showToast("Revision proposal ready for approval");
@@ -334,8 +339,8 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   if (!state || !feed) return withRealtime(<main className="loading">Loading attention…</main>);
   const resolvedDockTarget = dockTarget ?? ladder[0];
   const compoundProposals = state.proposals.filter((proposal) => proposal.anchorFeedId === feed.config.id && proposal.source === "compound");
-  const workAgent = (work: WorkItemView) => work.assignee ?? feed.thread.drainAgent ?? "codex";
-  const workAgentLabel = (work: WorkItemView) => workAgent(work) === "claude" ? "Claude" : "Codex";
+  const workAgent = (work: WorkItemView) => effectiveWorkLane(work, feed.thread);
+  const workAgentLabel = (work: WorkItemView) => agentLabel(workAgent(work));
 
   if (screen === "workspace") return withRealtime(
     <>
