@@ -271,6 +271,7 @@ export function CardView({
   onChanged,
   onAction,
   onReturnToReview,
+  queuedFor,
 }: {
   card: Card;
   queuedNote?: WorkItemView;
@@ -279,6 +280,7 @@ export function CardView({
   onChanged: () => void;
   onAction: (action: CardAction) => void;
   onReturnToReview: () => void;
+  queuedFor?: string;
 }) {
   const actions = visibleCardActions(card);
   const nextThing = card.proposedAction?.label === "Decide disposition"
@@ -336,8 +338,8 @@ export function CardView({
       {(card.status === "queued" || card.status === "done") && (
         <footer className="card-action">
           <div>
-            <span className="action-label">{card.status === "queued" ? "Queued for Codex" : "Done"}</span>
-            <b>{card.status === "queued" ? "Waiting for the feed thread" : "Completed"}</b>
+            <span className="action-label">{card.status === "queued" ? `Queued for ${queuedFor ?? "Codex"}` : "Done"}</span>
+            <b>{card.status === "queued" ? `Waiting for ${queuedFor ?? "the feed thread"}` : "Completed"}</b>
           </div>
           <div className="action-buttons">
             <button className="button ghost" onClick={(event) => { event.stopPropagation(); onReturnToReview(); }}>

@@ -161,3 +161,26 @@ test("parked Claude notice includes card-scoped queued work with reassign afford
   expect(html).toContain("Feed instruction");
   expect((html.match(/Reassign to Codex/g) ?? [])).toHaveLength(2);
 });
+
+test("queued card footer attributes the lane it waits on", () => {
+  const { CardView } = require("../src/feed/CardView");
+  const card: Card = {
+    id: "card-queued",
+    feedId: "inbox",
+    kind: "attention",
+    status: "queued",
+    title: "Reply to the payroll thread.",
+    eyebrow: "Inbox",
+    why: "Queued for the Claude lane.",
+    blocks: [],
+    history: [],
+    createdAt: "2026-07-05T12:00:00.000Z",
+    updatedAt: "2026-07-05T12:00:00.000Z",
+  } as unknown as Card;
+  const base = { card, active: false, onActivate: () => {}, onChanged: () => {}, onAction: () => {}, onReturnToReview: () => {} };
+  const claudeHtml = renderToStaticMarkup(<CardView {...base} queuedFor="Claude" />);
+  expect(claudeHtml).toContain("Queued for Claude");
+  expect(claudeHtml).toContain("Waiting for Claude");
+  const legacyHtml = renderToStaticMarkup(<CardView {...base} />);
+  expect(legacyHtml).toContain("Queued for Codex");
+});

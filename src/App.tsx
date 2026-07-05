@@ -373,6 +373,12 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const compoundProposals = state.proposals.filter((proposal) => proposal.anchorFeedId === feed.config.id && proposal.source === "compound");
   const workAgent = (work: WorkItemView) => effectiveWorkLane(work, feed.thread);
   const workAgentLabel = (work: WorkItemView) => agentLabel(workAgent(work));
+  const cardQueuedFor = (cardId: string) => {
+    const queued = feed.work.find((work) => work.cardId === cardId && work.status === "queued");
+    return queued ? workAgentLabel(queued) : undefined;
+  };
+  const queuedLanes = new Set(feed.work.filter((work) => work.status === "queued").map(workAgent));
+  const queuedTabLabel = queuedLanes.size > 1 ? "Queued" : queuedLanes.has("claude") ? "Queued for Claude" : "Queued for Codex";
 
   if (screen === "workspace") return withRealtime(
     <>
@@ -405,7 +411,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
       <nav className="tabs">
         {(["review", "queued", "working", "done"] as Tab[]).map((item) => (
           <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>
-            {item === "review" ? "To review" : item === "queued" ? "Queued for Codex" : item === "working" ? "Working" : "Done"}
+            {item === "review" ? "To review" : item === "queued" ? queuedTabLabel : item === "working" ? "Working" : "Done"}
             <span>{countFor(feed, item)}</span>
           </button>
         ))}
@@ -419,7 +425,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
         {cards.map((card, index) => (
           <Fragment key={card.id}>
             {tab === "review" && index === updated.length && fresh.length > 0 && <div className="section-label" key={`${card.id}-label`}>New <span>{fresh.length}</span></div>}
-            <CardView key={card.id} card={card} queuedNote={editableQueuedNote(card)} active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()} onAction={(action) => runCardAction(card, action)} onReturnToReview={() => returnToReview(card)} />
+            <CardView key={card.id} card={card} queuedFor={cardQueuedFor(card.id)} queuedNote={editableQueuedNote(card)} active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()} onAction={(action) => runCardAction(card, action)} onReturnToReview={() => returnToReview(card)} />
           </Fragment>
         ))}
         {feedWork.map((work) => (
