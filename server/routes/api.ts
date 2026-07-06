@@ -6,6 +6,12 @@ import type { PostActionCompletion, VoiceTarget } from "../../shared/types";
 import { mindContextPublicationReceipt } from "../domain";
 import { versionInfo } from "../version";
 import { body, mutation, mutationAccessError, type LocalRouteContext } from "./shared";
+import { workItemView } from "../store";
+
+function redactQueuedWorkResult(result: any): any {
+  if (result?.kind !== "scoped_work" || !result.work) return result;
+  return { ...result, work: workItemView(result.work) };
+}
 
 export function apiRoutes(context: LocalRouteContext): Hono {
   const { artifactsDir, dataDir, domain, mobileStatus, mutationToken, notify, sqlite, store } = context;
@@ -101,9 +107,9 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   }));
   app.post("/api/voice/instructions", async (c) => mutation(c, notify, async () => {
     const input = await body(c);
-    return domain.submitVoiceInstruction(String(input.feedId ?? "inbox"), input.target as VoiceTarget, String(input.instruction ?? ""), {
+    return redactQueuedWorkResult(await domain.submitVoiceInstruction(String(input.feedId ?? "inbox"), input.target as VoiceTarget, String(input.instruction ?? ""), {
       assignee: parseOptionalWorkAgent(input.assignee),
-    });
+    }));
   }));
   app.post("/api/revision-proposals/:proposal/apply", async (c) => mutation(c, notify, async () => domain.applyRevisionProposal(c.req.param("proposal"))));
   app.post("/api/revision-proposals/:proposal/reject", async (c) => mutation(c, notify, async () => domain.rejectRevisionProposal(c.req.param("proposal"))));
@@ -112,11 +118,11 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   app.post("/api/feeds/:feed/recollect", async (c) => mutation(c, notify, async () => domain.requestSweepRecollection(c.req.param("feed"))));
   app.post("/api/feeds/:feed/instructions", async (c) => mutation(c, notify, async () => {
     const input = await body(c);
-    return domain.queueFeedInstruction(c.req.param("feed"), String(input.instruction ?? ""), { assignee: parseOptionalWorkAgent(input.assignee) });
+    return workItemView(await domain.queueFeedInstruction(c.req.param("feed"), String(input.instruction ?? ""), { assignee: parseOptionalWorkAgent(input.assignee) }));
   }));
   app.post("/api/feeds/:feed/cards/:card/instructions", async (c) => mutation(c, notify, async () => {
     const input = await body(c);
-    return domain.queueInstruction(c.req.param("feed"), c.req.param("card"), String(input.instruction ?? ""), { assignee: parseOptionalWorkAgent(input.assignee) });
+    return workItemView(await domain.queueInstruction(c.req.param("feed"), c.req.param("card"), String(input.instruction ?? ""), { assignee: parseOptionalWorkAgent(input.assignee) }));
   }));
   app.post("/api/feeds/:feed/work/:work/cancel", async (c) => mutation(c, notify, async () => domain.cancelQueuedWork(c.req.param("feed"), c.req.param("work"), String((await body(c)).reason ?? "Cancelled from the browser before Codex started work."))));
   app.post("/api/feeds/:feed/work/:work/instruction", async (c) => mutation(c, notify, async () => domain.updateQueuedWorkInstruction(c.req.param("feed"), c.req.param("work"), String((await body(c)).instruction ?? ""))));

@@ -118,9 +118,11 @@ describe("API routing and mutation hardening", () => {
       instruction: "Send this to Claude.",
       assignee: "claude",
     }));
+    const bytes = await response.text();
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ work: { assignee: "claude" } });
+    expect(bytes).not.toContain("capabilityToken");
+    expect(JSON.parse(bytes)).toMatchObject({ work: { assignee: "claude" } });
   });
 
   test("redacts capability tokens from browser work reassignment responses", async () => {
