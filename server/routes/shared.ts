@@ -45,10 +45,22 @@ export async function mutation(c: any, notify: Notify, callback: () => Promise<u
   try {
     const result = await callback();
     if (shouldNotify(result)) notify({ changedAt: new Date().toISOString() });
-    return c.json(result);
+    return c.json(redactBrowserMutationResult(result));
   } catch (error) {
     return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
   }
+}
+
+function redactBrowserMutationResult(value: unknown): unknown {
+  if (!value || typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map(redactBrowserMutationResult);
+
+  const output: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "capabilityToken") continue;
+    output[key] = redactBrowserMutationResult(item);
+  }
+  return output;
 }
 
 export function mutationAccessError(c: any, expectedToken: string): Response | null {

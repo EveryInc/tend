@@ -139,6 +139,29 @@ describe("API routing and mutation hardening", () => {
     expect(bytes).not.toContain(queued.capabilityToken);
   });
 
+  test("redacts capability tokens from browser card-action queue responses", async () => {
+    const { app, domain, store } = await setup();
+    await domain.upsertCard("inbox", {
+      id: "api-card-action-redaction",
+      title: "Queue a visible action.",
+      why: "The browser should never receive the queue token.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [
+        { id: "send", label: "Send", behavior: "approve_action", instruction: "Send the exact draft.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" },
+      ],
+    });
+
+    const response = await app.request("/api/feeds/inbox/cards/api-card-action-redaction/actions/send", jsonPost({}));
+    const bytes = await response.text();
+    const result = JSON.parse(bytes) as { id: string };
+    const persisted = await store.readWork("inbox", result.id);
+
+    expect(response.status).toBe(200);
+    expect(bytes).not.toContain("capabilityToken");
+    expect(bytes).not.toContain(persisted.capabilityToken);
+  });
+
   test("returns a warning when browser reassignment sends approved external mutation work to Claude", async () => {
     const { app, domain } = await setup();
     await domain.bindFeed("inbox", "thread-codex");
