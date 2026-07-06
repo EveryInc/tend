@@ -32,7 +32,7 @@ feed; read `docs/AGENT_CONTRACT.md` for the command surface.
   (cancelled or edited work) or replayed (rotation, presence replay); dedupe by `seq` and ignore
   lines older than your arming time.
 
-## Before draining
+## Health First Before Draining
 
 1. Run `tend health`. If unhealthy, report that and stop. This is mandatory: the CLI
    runtime guard silently passes when the live server is down, so a stale wake after a crash

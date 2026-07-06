@@ -58,6 +58,7 @@ export function mutationAccessError(c: any, expectedToken: string): Response | n
     return c.json({ error: "Mutation requests require application/json." }, 415);
   }
   const origin = c.req.header("origin");
+  if (!origin) return null;
   if (origin && !isLoopbackOrigin(origin)) {
     return c.json({ error: "Cross-origin mutation requests are not allowed." }, 403);
   }
@@ -79,6 +80,7 @@ function isLoopbackOrigin(origin: string): boolean {
 }
 
 function tokensMatch(left: string, right: string): boolean {
+  if (!right) return false;
   const leftBytes = Buffer.from(left);
   const rightBytes = Buffer.from(right);
   return leftBytes.length === rightBytes.length && timingSafeEqual(leftBytes, rightBytes);

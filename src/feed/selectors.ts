@@ -1,5 +1,5 @@
 import type { Tab } from "../app/types";
-import type { Card, CardAction, FeedView, RoutineActionGroup, WorkItem } from "../types";
+import type { Card, CardAction, FeedView, RoutineActionGroup, WorkItemView } from "../types";
 
 export function visibleCards(feed: FeedView, tab: Tab): Card[] {
   const pass = feed.config.currentPass;
@@ -22,7 +22,7 @@ export function visibleRoutineActions(feed: FeedView, tab: Tab): RoutineActionGr
   return feed.routineActions.filter((group) => group.status === status);
 }
 
-export function visibleFeedWork(feed: FeedView, tab: Tab): WorkItem[] {
+export function visibleFeedWork(feed: FeedView, tab: Tab): WorkItemView[] {
   if (tab === "review") return [];
   const status = tab === "done" ? "completed" : tab;
   return feed.work.filter((work) => work.cardId === "__feed__" && work.status === status);

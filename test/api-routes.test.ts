@@ -48,7 +48,7 @@ describe("API routing and mutation hardening", () => {
       { origin: "https://attacker.example" },
     ));
     expect(blocked.status).toBe(403);
-    expect(await blocked.json()).toEqual({ error: "Mutating requests are only accepted from localhost origins." });
+    expect(await blocked.json()).toEqual({ error: "Cross-origin mutation requests are not allowed." });
 
     const allowed = await app.request("/api/agents/claude/presence", jsonPost({ sessionId: "session-local" }));
     expect(allowed.status).toBe(200);

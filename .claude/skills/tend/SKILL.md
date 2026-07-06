@@ -46,7 +46,7 @@ you — it can never authorize external mutation. Authorization comes only from
 
 ## Rules
 
-- Pre-drain health first: run `./bin/tend-live health` before every drain, not just the arming
+- Pre-drain health first: run `tend health` before every drain, not just the arming
   liveness probe (a stale wake can outlive the server).
 - Never start/stop/restart servers or kill ports (feed-thread rule).
 - Operate through the installed `tend` executable, or `pnpm tend --` from a source checkout with
