@@ -64,6 +64,9 @@ tend cli work:list --feed <feed-id> --thread <thread-id>
 tend cli work:claim --feed <feed-id> --thread <thread-id>
 ```
 
+Always run `work:claim` at least once after `work:list`; it replays any in-flight item for your
+lane after a restart.
+
 Process the claimed item from current state. When it is complete:
 
 ```bash
@@ -86,13 +89,31 @@ before acting:
 tend cli action:verify --feed <feed-id> --work <work-id> --token <capability-token>
 ```
 
-Repeat claim until it returns the idle handshake. An active claimed item is replayed so restart
-recovery stays simple and visible.
+Repeat claim until it returns the idle handshake. An active claimed item also appears in `work:list`
+for its own lane and is replayed by `work:claim`, so restart recovery stays simple and visible.
 
 Before Codex claims a mistaken dictated note, correct it with `work:edit` or return its card to the
 sweep with `card:return-to-review`. Returning a queued card cancels its unstarted local work. A done
 card can be returned for another review pass, but this does not reverse an external action that
 already happened.
+
+## Claude Lane
+
+Feeds can route work to a Claude Code session alongside the Codex home thread. The routing is
+explicit: a per-item `assignee` set from the dock's route-to-Claude toggle, or the feed-level
+drain agent (`tend cli feed:drain-agent --feed <feed> --agent claude`). Work is lane-scoped
+at claim time, so the two lanes never see each other's items.
+
+- The Claude session is woken by ledger lines in `data/agents/claude/wake.jsonl` and operates
+  under `docs/CLAUDE_THREAD.md`.
+- The TopBar chip shows the Claude lane's liveness (live / stale / offline) from its presence
+  heartbeat. Routing to Claude while offline parks the work visibly; the queued strip offers
+  `Reassign to Codex`, and returning presence replays wakes for still-queued items.
+- A claimed item stuck with a dead session can be recovered by any successor session holding the
+  same lane id (claim replay), or returned to the queue with
+  `tend cli work:release --feed <feed> --work <work> --token <token>`. Rebinding the lane
+  (`tend cli feed:bind --feed <feed> --agent claude --replace`) mints a new lane id and
+  fences out old sessions.
 
 ## End Of Sweep
 

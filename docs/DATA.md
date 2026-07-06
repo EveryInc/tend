@@ -30,6 +30,7 @@ ATTENTION_HOME=/path/to/attention tend start
 - `data/feeds/*/events.jsonl` mirrors feed audit events for backup compatibility and readable local debugging.
 - `data/feeds/*/work/*.json` mirrors work items for backup compatibility and readable local debugging.
 - `data/feeds/*/feed.md` stores a readable feed description. `data/feeds/*/raw/**` stores immutable raw evidence snapshots.
+- `data/agents/claude/presence.json`, `data/agents/claude/wake-state.json`, and `data/agents/claude/wake.jsonl` store Claude-lane operational state. Wake lines contain only server-controlled ids/counts and never source text, instructions, or capability tokens.
 - `data/mind-context/binding.json` mirrors the one bound Chronicle publisher.
 - `data/mind-context/updates/*.json` mirrors recent privacy-filtered On Your Mind publications and
   retains older records while a card references them for provenance.

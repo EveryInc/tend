@@ -15,6 +15,11 @@
 | Tune a feed | Open `Prompts & sources` → `This feed` | Edit feed policy and source recipes directly; `inspect --feed ...` remains available to Codex |
 | Edit shared judgment | Open `Prompts & sources` → `Global prompts` | Edit `global-policy.md` and the allowlisted prompt files directly |
 | Bind a home thread | Guided Codex setup | `feed:bind --feed ... --thread ...` |
+| Bind the Claude lane | `/tend` skill in a Claude Code session | `feed:bind --feed ... --agent claude` mints the lane id; `--replace` rotates it |
+| Route one instruction to Claude | Dock route-to-Claude toggle (visible when the feed has a Claude binding) | Instruction endpoints accept `assignee: claude`; work is lane-scoped at claim time |
+| Route a whole feed to Claude | — | `feed:drain-agent --feed ... --agent claude` |
+| See whether Claude is listening | TopBar liveness chip (live / stale / offline) | `agent:presence --agent claude --session ...` heartbeats; presence is informational only |
+| Recover parked or stuck Claude work | Parked notice → `Reassign to Codex` | Queued/parked items use `work:assign --feed ... --work ... --agent codex`; claimed/stuck items use claim replay by the Claude lane or `work:release --feed ... --work ... --token ...` to re-queue and rotate the token |
 | Schedule refresh and drain | Approve proposed cadence | `feed:heartbeat:propose`, then host `automation_update`, then `feed:heartbeat:installed` |
 | Verify an approved external action or cleanup | Choose the exact visible mutation, cleanup, or routine group | `action:verify` rereads the selected card-action ID, current artifact, cleanup, or batch digest immediately before mutation and records verification durably; Inbox replies additionally require `--mailbox <authenticated-gmail-email>` to match the source message's received-at mailbox |
 | Collect evidence | Render the resulting cards | `source:record-run` or `source:import-json-file` writes immutable snapshots and checkpoints; `sweep:record-batch` records the judged batch separately |

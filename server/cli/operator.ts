@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { AttentionDomain, mindContextPublicationReceipt } from "../domain";
+import { AttentionDomain, isClaimedWorkItem, mindContextPublicationReceipt } from "../domain";
 import { formatWorkClaimOutput, formatWorkListOutput } from "../operator";
+import { parseAgentPresence, parseWorkAgent } from "../../shared/lanes";
 import {
   createLocalRuntime,
   resolveArtifactsDir,
@@ -83,6 +84,12 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
       case "context:for-feed":
         output = await domain.readMindContextForFeed(required("feed"));
         break;
+      case "agent:presence":
+        output = await domain.registerAgentPresence(parseAgentPresence(required("agent")), {
+          sessionId: required("session"),
+          ...(value("label") ? { label: value("label") } : {}),
+        });
+        break;
       case "feed:create":
         output = await domain.createFeedFromBrief(
           required("brief"),
@@ -90,7 +97,15 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
         );
         break;
       case "feed:bind":
-        output = await domain.bindFeed(required("feed"), required("thread"));
+        if (value("agent")) {
+          if (value("thread")) throw new Error("feed:bind accepts either --agent or --thread, not both.");
+          output = await domain.bindAgentFeed(required("feed"), parseAgentPresence(required("agent")), flag("replace"));
+        } else {
+          output = await domain.bindFeed(required("feed"), required("thread"));
+        }
+        break;
+      case "feed:drain-agent":
+        output = await domain.setFeedDrainAgent(required("feed"), parseWorkAgent(required("agent")));
         break;
       case "feed:archive":
         await domain.archiveFeed(required("feed"));
@@ -230,24 +245,26 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
             feedId,
             required("thread"),
             flag("cross-feed"),
+            value("session"),
           );
+          const claimed = isClaimedWorkItem(work) ? work : null;
           const card =
-            work && !work.cardId.startsWith("__")
-              ? await store.readCard(feedId, work.cardId)
+            claimed && !claimed.cardId.startsWith("__")
+              ? await store.readCard(feedId, claimed.cardId)
               : undefined;
           const sweepFeedback =
-            work?.intent === "sweep_rejudge" && work.feedbackId
-              ? await store.readSweepFeedback(feedId, work.feedbackId)
+            claimed?.intent === "sweep_rejudge" && claimed.feedbackId
+              ? await store.readSweepFeedback(feedId, claimed.feedbackId)
               : undefined;
-          const routineActionGroup = work?.routineActionGroupId
+          const routineActionGroup = claimed?.routineActionGroupId
             ? await store.readRoutineActionGroup(
                 feedId,
-                work.routineActionGroupId,
+                claimed.routineActionGroupId,
               )
             : undefined;
           const feedConfig =
-            work?.kind === "default_cleanup" ||
-            work?.kind === "execute_approved_action"
+            claimed?.kind === "default_cleanup" ||
+            claimed?.kind === "execute_approved_action"
               ? await store.readConfig(feedId)
               : undefined;
           output = formatWorkClaimOutput(feedId, work, {
@@ -257,6 +274,17 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
             sweepFeedback,
           });
         }
+        break;
+      case "work:assign":
+        output = await domain.reassignQueuedWork(required("feed"), required("work"), parseWorkAgent(required("agent")));
+        break;
+      case "work:release":
+        output = await domain.releaseWork(
+          required("feed"),
+          required("work"),
+          required("token"),
+          value("session"),
+        );
         break;
       case "work:cancel":
         output = await domain.cancelQueuedWork(

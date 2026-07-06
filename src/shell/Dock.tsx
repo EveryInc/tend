@@ -26,7 +26,10 @@ export function Dock({
   target,
   ladder,
   targetVersion,
+  routeToClaude,
+  canRouteToClaude,
   onTarget,
+  onRouteToClaude,
   onSubmit,
   onRecollect,
 }: {
@@ -35,7 +38,10 @@ export function Dock({
   target: VoiceTarget;
   ladder: VoiceTarget[];
   targetVersion: number;
+  routeToClaude: boolean;
+  canRouteToClaude: boolean;
   onTarget: (target: VoiceTarget) => void;
+  onRouteToClaude: (enabled: boolean) => void;
   onSubmit: (instruction: string) => void;
   onRecollect: () => void;
 }) {
@@ -54,6 +60,7 @@ export function Dock({
   };
   const { isPushingToTalk } = usePushToTalk(inputRef, submit, state.dictation.activationCode);
   const scopeTone = targetScopeTone(target);
+  const routedAgent = routeToClaude ? "Claude" : "Codex";
   const onDockKeyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -73,13 +80,24 @@ export function Dock({
           {isPushingToTalk && <span className="listening-dot" />}
           <span>Talking to:</span>
           <b className="dock-target" key={targetVersion}>{targetLabel(target, state)}</b>
+          {canRouteToClaude && (
+            <button
+              type="button"
+              className={`agent-toggle ${routeToClaude ? "active" : ""}`}
+              aria-pressed={routeToClaude ? "true" : "false"}
+              onPointerDown={(event) => event.preventDefault()}
+              onClick={() => onRouteToClaude(!routeToClaude)}
+            >
+              Claude
+            </button>
+          )}
           <div className="scope-buttons" aria-label="Change scope">
             <button type="button" aria-label="Broader scope" title="Broader scope" disabled={targetIndex >= ladder.length - 1} onPointerDown={(event) => event.preventDefault()} onClick={() => zoom(1)}><b>↑</b><span>Broader</span></button>
             <button type="button" aria-label="Narrower scope" title="Narrower scope" disabled={targetIndex <= 0} onPointerDown={(event) => event.preventDefault()} onClick={() => zoom(-1)}><b>↓</b><span>Narrower</span></button>
           </div>
         </div>
         <div className="dock-row">
-          <textarea aria-label="Instruction for Codex" ref={inputRef} value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={onDockKeyDown} rows={1} placeholder="Tell Codex what to notice, change, or do…" />
+          <textarea aria-label={`Instruction for ${routedAgent}`} ref={inputRef} value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={onDockKeyDown} rows={1} placeholder={`Tell ${routedAgent} what to notice, change, or do…`} />
           <button className="button primary" type="submit" disabled={!value.trim()}>Send</button>
         </div>
         <div className="dock-footer">

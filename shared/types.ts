@@ -2,6 +2,7 @@ export type FeedId = string;
 export type CardStatus = "to_review_new" | "to_review_updated" | "queued" | "working" | "approved_blocked" | "done";
 export type CardKind = "attention" | "feed_improvement";
 export type WorkStatus = "queued" | "working" | "approved_blocked" | "completed" | "failed" | "stale" | "cancelled";
+export type WorkAgent = "codex" | "claude";
 export type RoutineActionStatus = "proposed" | "queued" | "working" | "completed" | "failed" | "stale";
 export type MindContextPublicationState = "fresh" | "stale" | "unavailable";
 export type MindContextHealth = MindContextPublicationState | "never_published";
@@ -51,6 +52,42 @@ export interface ThreadBinding {
   autoDrain?: {
     enabled: boolean;
     updatedAt: string;
+  };
+  agents?: {
+    claude?: {
+      threadId: string;
+      boundAt: string;
+    };
+  };
+  drainAgent?: WorkAgent;
+}
+
+export interface AgentPresence {
+  agent: "claude";
+  sessionId: string;
+  label?: string;
+  lastSeenAt: string;
+}
+
+export interface AgentWakeLine {
+  seq: number;
+  at: string;
+  feedId: string;
+  workId: string;
+  kind: WorkItem["kind"];
+  queued: number;
+  threadId: string;
+}
+
+export type AgentPresenceLiveness = "live" | "stale" | "offline";
+
+export interface WorkspaceAgentSummary {
+  claude: {
+    liveness: AgentPresenceLiveness;
+    lastSeenAt: string | null;
+    label?: string;
+    // Agent-facing state so operators can see which Claude session last presented.
+    sessionId?: string;
   };
 }
 
@@ -307,12 +344,20 @@ export interface RoutineActionGroup {
   error?: string;
 }
 
+export interface WorkClaimant {
+  agent: WorkAgent;
+  threadId: string;
+  sessionId?: string;
+}
+
 export interface WorkItem {
   id: string;
   feedId: FeedId;
   cardId: string;
   kind: "instruction" | "scoped_instruction" | "execute_approved_action" | "default_cleanup" | "routine_action_batch" | "compound_learnings";
   instruction: string;
+  assignee?: WorkAgent;
+  claimedBy?: WorkClaimant;
   target?: VoiceTarget;
   intent?: "voice_instruction" | "sweep_rejudge" | "recollect_sources";
   feedbackId?: string;
@@ -336,6 +381,23 @@ export interface WorkItem {
   verifiedMailbox?: string;
   sourceMobileCommandId?: string;
 }
+
+export type WorkItemView = Omit<WorkItem, "capabilityToken">;
+
+export interface WorkClaimedByReport {
+  claim: "claimed_by_other";
+  workId: string;
+  feedId: FeedId;
+  cardId: string;
+  kind: WorkItem["kind"];
+  status: "working";
+  assignee?: WorkAgent;
+  claimedAt?: string;
+  claimedBy: WorkClaimant;
+  message: string;
+}
+
+export type WorkClaimResult = WorkItem | WorkClaimedByReport | null;
 
 export interface PostActionCompletion {
   cleanup: {
@@ -456,7 +518,7 @@ export interface FeedView {
   cards: Card[];
   runs: SourceRun[];
   routineActions: RoutineActionGroup[];
-  work: WorkItem[];
+  work: WorkItemView[];
   sweep: SweepState;
   drain: DrainState;
   readyNextPass: number;
@@ -465,6 +527,7 @@ export interface FeedView {
 export interface WorkspaceView {
   feeds: Array<{ id: string; name: string; purpose: string }>;
   active: FeedView;
+  agents?: WorkspaceAgentSummary;
   dictation: DictationCapability;
   proposals: RevisionProposal[];
 }

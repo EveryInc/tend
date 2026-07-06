@@ -1,7 +1,8 @@
 # Agent Contract
 
-Tend is designed for Codex Desktop threads. The v0 agent interface is a local binary plus a
-JSON CLI command contract.
+Tend is designed for agent threads operating through a local binary plus a JSON CLI command
+contract. Codex Desktop threads are the primary lane; a Claude Code session can operate a second,
+explicitly-routed lane per feed (see `docs/CLAUDE_THREAD.md` for that lane's protocol).
 
 The CLI contract version is reported by `tend version` and `/api/status`. Treat new commands as
 additive by default, and document breaking command or response changes in `CHANGELOG.md`.
@@ -22,9 +23,20 @@ the user wants an immediate sweep.
 
 ## Runner Rules
 
-- Always pass the local Codex `threadId`.
-- Treat `homeThreadId` as the owner of the feed.
-- List queued work before using connectors.
+- Always pass your own thread identity: the local Codex `threadId` for the Codex lane, or the
+  feed's server-minted Claude lane id (`thread.agents.claude.threadId`) for the Claude lane.
+- Treat `homeThreadId` as the Codex owner of the feed. Work is lane-scoped: `work:list` returns
+  queued items plus working items for your effective lane (item `assignee`, else the feed's
+  `drainAgent`, else codex), and `work:claim` only offers that lane's items. Never attempt to
+  claim another agent's work.
+- Claims record the claimant. An in-flight item (and its capability token) is replayed only to
+  its recorded claimant; other callers receive a token-less claimed-by report. Fresh claims rotate
+  the capability token, and capability tokens appear only in the claim result — never in workspace
+  reads, `work:list` output, release/reassign/retry responses, or events.
+- Return a claimed item you cannot finish with `tend cli work:release --feed <feed> --work <work> --token <token>`
+  (re-queues without card churn and rotates the token), or use `work:fail` / `work:block`.
+- List queued/working lane work before using connectors, then run `work:claim` at least once so
+  restarted runners replay any in-flight item.
 - Claim work before connector-backed execution.
 - Upsert cards only after holding the relevant claim.
 - Call `action:verify` immediately before approved external mutations. When `work:claim` returns `operatorGuidance.userAuthorization.riskConfirmation`, treat that app click as the user's risk confirmation for the named recipients while the verified digest still matches.
@@ -69,6 +81,9 @@ Run `tend cli help` for the full command surface. Core feed-runner commands are:
 | Inspect context health | `tend cli context:status` |
 | Read prompt-safe feed context | `tend cli context:for-feed --feed <feed>` |
 | Bind feed thread | `tend cli feed:bind --feed <feed> --thread <thread>` |
+| Bind the Claude lane (server-minted id; `--replace` fences prior sessions) | `tend cli feed:bind --feed <feed> --agent claude [--replace]` |
+| Set a feed's drain agent | `tend cli feed:drain-agent --feed <feed> --agent <codex\|claude>` |
+| Register agent presence (heartbeat) | `tend cli agent:presence --agent claude --session <id> [--label <text>]` |
 | Propose heartbeat | `tend cli feed:heartbeat:propose --feed <feed> --cadence <cadence>` |
 | Record heartbeat install | `tend cli feed:heartbeat:installed --feed <feed> --automation <id>` |
 | Add source | `tend cli source:add --feed <feed> --brief <brief>` |
@@ -81,7 +96,9 @@ Run `tend cli help` for the full command surface. Core feed-runner commands are:
 | Undo dismiss | `tend cli card:undo-dismiss --feed <feed> --card <card>` |
 | Return card to review | `tend cli card:return-to-review --feed <feed> --card <card>` |
 | List work | `tend cli work:list --feed <feed> --thread <thread>` |
-| Claim work | `tend cli work:claim --feed <feed> --thread <thread>` |
+| Claim work | `tend cli work:claim --feed <feed> --thread <thread> [--session <id>]` |
+| Reassign queued work between lanes | `tend cli work:assign --feed <feed> --work <work> --agent <codex\|claude>` |
+| Release a claimed item back to the queue | `tend cli work:release --feed <feed> --work <work> --token <token> [--session <id>]` |
 | Edit queued work | `tend cli work:edit --feed <feed> --work <work> --instruction <text>` |
 | Cancel work | `tend cli work:cancel --feed <feed> --work <work>` |
 | Verify approved action | `tend cli action:verify --feed <feed> --work <work> --token <token>` |

@@ -17,8 +17,9 @@ import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/re
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
-import type { Card, WorkItem } from "../shared/types";
+import type { Card, WorkClaimedByReport, WorkItem } from "../shared/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
+import { readClaudeWakeLines } from "./support/agents";
 
 const roots: string[] = [];
 
@@ -59,6 +60,17 @@ async function setup() {
   const store = new AttentionStore(root);
   await store.init();
   return { root, store, domain: new AttentionDomain(store) };
+}
+
+async function bindClaudeLane(store: AttentionStore, feedId: string, threadId = `thread-${feedId}-claude`): Promise<void> {
+  const thread = await store.readThread(feedId);
+  await store.writeThread(feedId, {
+    ...thread,
+    agents: {
+      ...thread.agents,
+      claude: { threadId, boundAt: "2026-07-05T12:00:00.000Z" },
+    },
+  });
 }
 
 afterEach(async () => {
@@ -127,7 +139,7 @@ describe("feed thread operator handshake", () => {
     });
 
     const approved = await domain.runCardAction("inbox", "approval-receipt", "send-reply");
-    const claimed = await domain.claimWork("inbox", "thread-inbox");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
     const card = await store.readCard("inbox", "approval-receipt");
     const output = formatWorkClaimOutput("inbox", claimed, { card }) as any;
 
@@ -175,7 +187,7 @@ describe("feed thread operator handshake", () => {
     });
 
     await domain.runCardAction("inbox", "wethos-forward", "forward-sydney");
-    const claimed = await domain.claimWork("inbox", "thread-inbox");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
     const card = await store.readCard("inbox", "wethos-forward");
     const output = formatWorkClaimOutput("inbox", claimed, { card }) as any;
 
@@ -207,13 +219,13 @@ describe("feed thread operator handshake", () => {
     });
 
     const approved = await domain.runCardAction("inbox", "stale-approval-receipt", "send-reply");
-    const claimed = await domain.claimWork("inbox", "thread-inbox");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
     await domain.updateBlock("inbox", "stale-approval-receipt", "draft", "Changed after approval.");
     const changedCard = await store.readCard("inbox", "stale-approval-receipt");
     const output = formatWorkClaimOutput("inbox", claimed, { card: changedCard }) as any;
 
     expect(output.operatorGuidance?.userAuthorization).toBeUndefined();
-    await expect(domain.verifyApprovedAction("inbox", approved.id, approved.capabilityToken, "dan@every.to")).rejects.toThrow("Approval stale");
+    await expect(domain.verifyApprovedAction("inbox", approved.id, claimed.capabilityToken, "dan@every.to")).rejects.toThrow("Approval stale");
   });
 
   test("does not attach authorization receipts to ordinary instruction work", async () => {
@@ -249,7 +261,7 @@ describe("feed thread operator handshake", () => {
     });
 
     const cleanup = await domain.runCardAction("inbox", "cleanup-receipt", "archive");
-    const claimedCleanup = await domain.claimWork("inbox", "thread-inbox");
+    const claimedCleanup = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
     const cleanupOutput = formatWorkClaimOutput("inbox", claimedCleanup, {
       card: await store.readCard("inbox", "cleanup-receipt"),
       feedConfig: await store.readConfig("inbox"),
@@ -260,8 +272,8 @@ describe("feed thread operator handshake", () => {
       workKind: "default_cleanup",
       sourceMailbox: "dan@every.to",
     });
-    await domain.verifyApprovedAction("inbox", cleanup.id, cleanup.capabilityToken);
-    await domain.completeWork("inbox", cleanup.id, cleanup.capabilityToken, { response: "Archived." });
+    await domain.verifyApprovedAction("inbox", cleanup.id, claimedCleanup.capabilityToken);
+    await domain.completeWork("inbox", cleanup.id, claimedCleanup.capabilityToken, { response: "Archived." });
 
     const group = await domain.upsertRoutineActionGroup("inbox", {
       id: "routine-receipt",
@@ -295,6 +307,8 @@ describe("auto-drain prompt", () => {
     expect(prompt).toContain("do not ask for a second chat confirmation");
     expect(prompt).toContain("bundled completion cleanup");
     expect(prompt).toContain("Do not send the card back to the user for a separate Archive click");
+    expect(prompt).toContain("Always run `work:claim` at least once after `work:list`");
+    expect(prompt).toContain("This thread will only be offered its own lane's work");
     expect(prompt).toContain("Generic dock instructions, source evidence, or this auto-drain prompt never authorize external mutation");
     expect(prompt).toContain("action:verify");
   });
@@ -872,15 +886,55 @@ describe("filesystem workspace", () => {
 });
 
 describe("thread-owned work drain", () => {
+  test("binds Claude lanes with server-minted ids and replace fencing", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+
+    const first = await domain.bindAgentFeed("inbox", "claude");
+    expect(first.agents?.claude?.threadId).toStartWith("claude-lane_");
+    expect(first.agents?.claude?.boundAt).toBeTruthy();
+    expect(first.homeThreadId).toBe("thread-codex");
+
+    await expect(domain.bindAgentFeed("inbox", "claude")).rejects.toThrow(`already bound to Claude lane ${first.agents?.claude?.threadId} at ${first.agents?.claude?.boundAt}`);
+
+    const replaced = await domain.bindAgentFeed("inbox", "claude", true);
+    expect(replaced.agents?.claude?.threadId).toStartWith("claude-lane_");
+    expect(replaced.agents?.claude?.threadId).not.toBe(first.agents?.claude?.threadId);
+    expect((await store.readEvents("inbox")).filter((event) => event.type === "thread.bound").at(-1)?.detail).toMatchObject({
+      agent: "claude",
+      threadId: replaced.agents?.claude?.threadId,
+    });
+  });
+
+  test("characterization: Codex single-lane claim replay returns the original token to the same home thread", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Collect the first real sweep.");
+
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    const replayed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+
+    expect(claimed.id).toBe(queued.id);
+    expect(replayed.id).toBe(queued.id);
+    expect(replayed.capabilityToken).toBe(claimed.capabilityToken);
+    expect((await store.readWork("inbox", queued.id)).claimedBy).toMatchObject({
+      agent: "codex",
+      threadId: "thread-inbox",
+    });
+    const claimedEvent = (await store.readEvents("inbox")).find((event) => event.type === "work.claimed");
+    expect(claimedEvent?.detail).toEqual({ threadId: "thread-inbox", agent: "codex" });
+    expect(JSON.stringify(claimedEvent)).not.toContain(claimed.capabilityToken);
+  });
+
   test("queues, claims, completes, and buffers finished work for the next pass", async () => {
     const { store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-inbox");
     const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Collect the first real sweep.");
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("queued");
-    const claimed = await domain.claimWork("inbox", "thread-inbox");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
     expect(claimed?.id).toBe(queued.id);
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("working");
-    await domain.completeWork("inbox", queued.id, queued.capabilityToken, { response: "Collection complete." });
+    await domain.completeWork("inbox", queued.id, claimed.capabilityToken, { response: "Collection complete." });
     const workspace = await store.readWorkspace("inbox");
     expect(workspace.active.cards.find((card) => card.id === "inbox-ready-to-collect")?.status).toBe("to_review_updated");
     expect(workspace.active.readyNextPass).toBe(1);
@@ -894,7 +948,7 @@ describe("thread-owned work drain", () => {
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("queued");
     expect((await domain.cancelQueuedWork("inbox", queued.id, "Accidental dictation.")).status).toBe("cancelled");
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("to_review_updated");
-    await expect(domain.claimWork("inbox", "thread-inbox")).rejects.toThrow("no bound home thread");
+    await expect(domain.claimWork("inbox", "thread-inbox")).rejects.toThrow("no bound agent thread");
   });
 
   test("requires the home thread unless cross-feed work is explicit", async () => {
@@ -913,6 +967,540 @@ describe("thread-owned work drain", () => {
     await domain.queueInstruction("company-attention", "demo-company-models", "Draft the feed recipe.");
     expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(first.id);
     expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(first.id);
+  });
+
+  test("filters list and claim by Codex and Claude lanes", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    const codex = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Codex lane work.");
+    const claude = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Claude lane work.");
+    claude.assignee = "claude";
+    await store.writeWork(claude);
+
+    expect((await domain.listPendingWork("inbox", "thread-codex")).map((work) => work.id)).toEqual([codex.id]);
+    expect((await domain.listPendingWork("inbox", "thread-claude")).map((work) => work.id)).toEqual([claude.id]);
+    expect((await domain.claimWork("inbox", "thread-codex") as WorkItem).id).toBe(codex.id);
+    expect((await domain.claimWork("inbox", "thread-claude") as WorkItem).id).toBe(claude.id);
+  });
+
+  test("cross-feed guest sees only unassigned codex-lane work", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    const codex = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Unassigned codex work.");
+    const claude = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Assigned claude work.");
+    claude.assignee = "claude";
+    await store.writeWork(claude);
+    expect((await domain.listPendingWork("inbox", "thread-guest", true)).map((work) => work.id)).toEqual([codex.id]);
+
+    await domain.releaseWork("inbox", (await domain.claimWork("inbox", "thread-guest", true) as WorkItem).id, (await store.readWork("inbox", codex.id)).capabilityToken);
+    const drainClaude = await domain.queueInstruction("company-attention", "company-source-confirmation", "Default Claude-drain work.");
+    await domain.bindFeed("company-attention", "thread-company");
+    await bindClaudeLane(store, "company-attention", "thread-company-claude");
+    await domain.setFeedDrainAgent("company-attention", "claude");
+    expect(drainClaude.assignee).toBeUndefined();
+    expect(await domain.listPendingWork("company-attention", "thread-guest", true)).toEqual([]);
+    expect(await domain.claimWork("company-attention", "thread-guest", true)).toBeNull();
+  });
+
+  test("second same-lane claimer receives a tokenless claimed-by report while the original claimant replays the token", async () => {
+    const { domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Collect this once.");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+
+    const conflict = await domain.claimWork("inbox", "thread-other", true) as WorkClaimedByReport;
+    expect(conflict).toMatchObject({
+      claim: "claimed_by_other",
+      workId: queued.id,
+      claimedBy: { agent: "codex", threadId: "thread-inbox" },
+    });
+    expect(JSON.stringify(conflict)).not.toContain(claimed.capabilityToken);
+
+    const replayed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    expect(replayed.capabilityToken).toBe(claimed.capabilityToken);
+  });
+
+  test("work release requeues without card churn, rotates token, and records claimant attribution", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Collect and release.");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    const cardAfterClaim = await store.readCard("inbox", "inbox-ready-to-collect");
+
+    await expect(domain.releaseWork("inbox", queued.id, "not-the-token")).rejects.toThrow("Invalid scoped work capability token");
+    const released = await domain.releaseWork("inbox", queued.id, claimed.capabilityToken, "session-release");
+
+    expect(released.status).toBe("queued");
+    expect(released.claimedBy).toBeUndefined();
+    expect(released.claimedAt).toBeUndefined();
+    expect(JSON.stringify(released)).not.toContain("capabilityToken");
+    expect(JSON.stringify(released)).not.toContain(claimed.capabilityToken);
+    expect((await store.readWork("inbox", queued.id)).capabilityToken).not.toBe(claimed.capabilityToken);
+    expect(await store.readCard("inbox", "inbox-ready-to-collect")).toEqual(cardAfterClaim);
+    await expect(domain.completeWork("inbox", queued.id, claimed.capabilityToken, { response: "Old token should fail." })).rejects.toThrow("not currently claimed");
+    const otherClaim = await domain.claimWork("inbox", "thread-other", true) as WorkItem;
+    expect(otherClaim.id).toBe(queued.id);
+    await expect(domain.completeWork("inbox", queued.id, claimed.capabilityToken, { response: "Old token should still fail." })).rejects.toThrow("Invalid scoped work capability token");
+    const releaseEvent = (await store.readEvents("inbox")).find((event) => event.type === "work.released");
+    expect(releaseEvent?.detail).toEqual({ threadId: "thread-inbox", agent: "codex", sessionId: "session-release" });
+    expect(JSON.stringify(releaseEvent)).not.toContain(claimed.capabilityToken);
+  });
+
+  test("session handoff keeps authorization on lane id, not session id", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Claude session handoff.");
+    queued.assignee = "claude";
+    await store.writeWork(queued);
+
+    const sessionA = await domain.claimWork("inbox", "thread-claude", false, "session-a") as WorkItem;
+    const sessionB = await domain.claimWork("inbox", "thread-claude", false, "session-b") as WorkItem;
+    expect(sessionB.capabilityToken).toBe(sessionA.capabilityToken);
+    expect((await store.readWork("inbox", queued.id)).claimedBy).toEqual({ agent: "claude", threadId: "thread-claude", sessionId: "session-b" });
+    await domain.releaseWork("inbox", queued.id, sessionB.capabilityToken, "session-b");
+    expect((await store.readWork("inbox", queued.id)).status).toBe("queued");
+  });
+
+  test("Claude-only bound feeds are claimable by Claude, while unbound or wrong-agent feeds reject with agent-aware copy", async () => {
+    const { store, domain } = await setup();
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    const claudeOnly = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Claude-only feed work.");
+    claudeOnly.assignee = "claude";
+    await store.writeWork(claudeOnly);
+    expect((await domain.claimWork("inbox", "thread-claude") as WorkItem).id).toBe(claudeOnly.id);
+
+    await domain.queueInstruction("company-attention", "company-source-confirmation", "Unbound feed work.");
+    await expect(domain.claimWork("company-attention", "thread-any")).rejects.toThrow("no bound agent thread");
+
+    await domain.bindFeed("company-attention", "thread-codex");
+    await expect(domain.claimWork("company-attention", "thread-claude")).rejects.toThrow("Bound agents: codex:thread-codex");
+  });
+
+  test("workspace reads and work:list output redact capability tokens", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Do not leak token.");
+
+    const workspaceBytes = JSON.stringify(await store.readWorkspace("inbox"));
+    const listBytes = JSON.stringify(formatWorkListOutput("inbox", await domain.listPendingWork("inbox", "thread-inbox")));
+
+    expect(workspaceBytes).not.toContain("capabilityToken");
+    expect(workspaceBytes).not.toContain(queued.capabilityToken);
+    expect(listBytes).not.toContain("capabilityToken");
+    expect(listBytes).not.toContain(queued.capabilityToken);
+  });
+
+  test("work:list shows the caller lane's working item so restarted runners can replay their claim", async () => {
+    const { domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Recover after restart.");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+
+    const listed = await domain.listPendingWork("inbox", "thread-inbox");
+    const replayed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+
+    expect(listed).toEqual([expect.objectContaining({ id: queued.id, status: "working" })]);
+    expect(JSON.stringify(listed)).not.toContain("capabilityToken");
+    expect(JSON.stringify(listed)).not.toContain(claimed.capabilityToken);
+    expect(replayed.id).toBe(queued.id);
+    expect(replayed.capabilityToken).toBe(claimed.capabilityToken);
+  });
+});
+
+describe("Claude wake emission", () => {
+  test("emits exactly one wake for each queue path on a Claude-drained feed", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    await domain.upsertCard("inbox", {
+      id: "wake-instruction",
+      title: "Instruction card",
+      why: "Needs a note.",
+      blocks: [{ id: "brief", type: "memo", text: "Instruction brief." }],
+    });
+    await domain.upsertCard("inbox", {
+      id: "wake-approval",
+      title: "Approval card",
+      why: "Needs an exact approved action.",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the exact approved body.", artifactBlockId: "draft" }],
+    });
+    await domain.upsertCard("inbox", {
+      id: "wake-cleanup",
+      title: "Cleanup card",
+      why: "No response needed.",
+      blocks: [{ id: "brief", type: "memo", text: "Archive this." }],
+      actions: [{ id: "archive", label: "Archive", behavior: "default_cleanup" }],
+    });
+    await domain.upsertCard("inbox", {
+      id: "wake-card-action",
+      title: "Preparation card",
+      why: "Needs prep.",
+      blocks: [{ id: "brief", type: "memo", text: "Prep this." }],
+      actions: [{ id: "draft", label: "Draft", behavior: "queue_instruction", instruction: "Draft a short pass." }],
+    });
+
+    const queueEvents = [
+      { type: "card_instruction", work: await domain.queueInstruction("inbox", "wake-instruction", "Queue path private instruction.") },
+      { type: "feed_instruction", work: await domain.queueFeedInstruction("inbox", "Feed-level private instruction.") },
+      { type: "approved_action", work: await domain.approveAction("inbox", "wake-approval", "send") },
+      { type: "default_cleanup", work: await domain.dismissCard("inbox", "wake-cleanup") },
+      { type: "routine_action_batch", work: await domain.approveRoutineActionGroup("inbox", (await domain.upsertRoutineActionGroup("inbox", {
+        id: "wake-routine",
+        label: "Archive batch",
+        summary: "Batch summary.",
+        proposedAction: { label: "Archive all", instruction: "Archive all listed items.", externalMutation: true },
+        items: [{ id: "item-1", title: "Notice", reason: "Routine." }],
+      })).id) },
+      { type: "scoped_voice_instruction", work: (await domain.submitVoiceInstruction("inbox", { kind: "feed", feedId: "inbox" }, "Scoped voice instruction.")).work },
+      { type: "compound_learnings", work: await domain.queueCompound("inbox") },
+      { type: "card_action_instruction", work: await domain.runCardAction("inbox", "wake-card-action", "draft") },
+    ];
+    const queued = queueEvents.map((event) => event.work);
+
+    const lines = await readClaudeWakeLines(root);
+    expect(queueEvents.map((event) => event.type)).toEqual([
+      "card_instruction",
+      "feed_instruction",
+      "approved_action",
+      "default_cleanup",
+      "routine_action_batch",
+      "scoped_voice_instruction",
+      "compound_learnings",
+      "card_action_instruction",
+    ]);
+    expect(lines).toHaveLength(queued.length);
+    expect(lines.map((line) => line.workId)).toEqual(queued.map((work) => work.id));
+    expect(lines.map((line) => line.kind)).toEqual(queued.map((work) => work.kind));
+    expect(lines.every((line) => line.feedId === "inbox")).toBe(true);
+    expect(lines.every((line) => line.threadId === "thread-claude")).toBe(true);
+    expect(lines.map((line) => line.queued)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  });
+
+  test("dock-style Claude assignment wakes on a Codex-drained feed, while Codex-lane work does not", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+
+    const plain = await domain.submitVoiceInstruction("inbox", { kind: "card", feedId: "inbox", cardId: "inbox-ready-to-collect" }, "Plain dock instruction.");
+    const routed = await domain.submitVoiceInstruction("inbox", { kind: "feed", feedId: "inbox" }, "Claude dock instruction.", { assignee: "claude" });
+
+    const lines = await readClaudeWakeLines(root);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      feedId: "inbox",
+      workId: routed.work.id,
+      kind: "scoped_instruction",
+      queued: 1,
+      threadId: "thread-claude",
+    });
+    expect(lines[0].workId).not.toBe(plain.work.id);
+  });
+
+  test("Claude assignment without a Claude binding is rejected before queueing", async () => {
+    const { root, domain } = await setup();
+
+    await expect(domain.submitVoiceInstruction("inbox", { kind: "feed", feedId: "inbox" }, "Parked without binding.", { assignee: "claude" })).rejects.toThrow("has no Claude binding");
+    expect(await readClaudeWakeLines(root)).toEqual([]);
+  });
+
+  test("Claude-routed sweep feedback persists an agent-aware status message", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+
+    await domain.submitVoiceInstruction("inbox", { kind: "sweep", feedId: "inbox" }, "Claude sweep feedback.", { assignee: "claude" });
+
+    expect((await store.readSweepState("inbox")).statusMessage).toBe("Feedback queued for Claude");
+  });
+
+  test("wake append failures are logged without failing the queue mutation", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+    const originalAppend = store.appendAgentWake.bind(store);
+    const originalError = console.error;
+    const logged: unknown[] = [];
+    store.appendAgentWake = async () => {
+      throw new Error("simulated wake ledger failure");
+    };
+    console.error = (...args: unknown[]) => {
+      logged.push(args);
+    };
+    try {
+      const work = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Queue despite wake failure.");
+      expect(work.status).toBe("queued");
+      expect((await store.readWork("inbox", work.id)).status).toBe("queued");
+      expect(logged.length).toBe(1);
+    } finally {
+      store.appendAgentWake = originalAppend;
+      console.error = originalError;
+    }
+  });
+
+  test("sweep and dismiss mutations that are not Claude-lane queues emit nothing", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+
+    await domain.queueFeedInstruction("inbox", "Codex feed instruction.");
+    await domain.dismissCard("inbox", "inbox-ready-to-collect");
+    await domain.submitVoiceInstruction("inbox", { kind: "sweep", feedId: "inbox" }, "Codex sweep feedback.");
+
+    expect(await readClaudeWakeLines(root)).toEqual([]);
+  });
+
+  test("release and approved-action retry re-emit Claude-lane wakes with new seq values", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Release this Claude item.");
+    const claimed = await domain.claimWork("inbox", "thread-claude") as WorkItem;
+    await domain.releaseWork("inbox", queued.id, claimed.capabilityToken, "session-release");
+    await domain.cancelQueuedWork("inbox", queued.id, "Release wake verified; clear queue for retry coverage.");
+
+    await domain.upsertCard("inbox", {
+      id: "wake-retry",
+      title: "Retry approved action.",
+      why: "Connector can retry.",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved retry body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved retry body.", artifactBlockId: "draft" }],
+    });
+    const approved = await domain.approveAction("inbox", "wake-retry", "send");
+    const claimedApproved = await domain.claimWork("inbox", "thread-claude") as WorkItem;
+    await domain.blockApprovedWork("inbox", approved.id, claimedApproved.capabilityToken, "Connector temporarily refused.");
+    await domain.retryApprovedWork("inbox", approved.id);
+
+    const lines = await readClaudeWakeLines(root);
+    expect(lines.map((line) => line.seq)).toEqual([1, 2, 3, 4]);
+    expect(lines.map((line) => line.workId)).toEqual([queued.id, queued.id, approved.id, approved.id]);
+  });
+
+  test("failed Claude-lane work wakes unless Claude failed its own claim", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    const codexDropped = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Codex drops this Claude-lane item.");
+    const codexWorking = await store.readWork("inbox", codexDropped.id);
+    codexWorking.status = "working";
+    codexWorking.claimedBy = { agent: "codex", threadId: "thread-codex" };
+    await store.writeWork(codexWorking);
+    await domain.failWork("inbox", codexDropped.id, codexWorking.capabilityToken, "Codex cannot complete the handed-off item.");
+
+    const claudeDropped = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Claude drops its own item.");
+    const claudeClaimed = await domain.claimWork("inbox", "thread-claude") as WorkItem;
+    await domain.failWork("inbox", claudeDropped.id, claudeClaimed.capabilityToken, "Claude cannot complete its own item.");
+
+    const lines = await readClaudeWakeLines(root);
+    expect(lines.map((line) => line.workId)).toEqual([codexDropped.id, codexDropped.id, claudeDropped.id]);
+    expect(lines.map((line) => line.kind)).toEqual(["instruction", "instruction", "instruction"]);
+  });
+
+  test("blocked Claude-lane approved work wakes unless Claude blocked its own claim", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    await domain.upsertCard("inbox", {
+      id: "codex-blocks-claude-action",
+      title: "Codex blocked action.",
+      why: "Connector can fail before handoff.",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved body.", artifactBlockId: "draft" }],
+    });
+    const codexBlocked = await domain.approveAction("inbox", "codex-blocks-claude-action", "send");
+    const codexWorking = await store.readWork("inbox", codexBlocked.id);
+    codexWorking.status = "working";
+    codexWorking.claimedBy = { agent: "codex", threadId: "thread-codex" };
+    await store.writeWork(codexWorking);
+    await domain.blockApprovedWork("inbox", codexBlocked.id, codexWorking.capabilityToken, "Codex connector refused.");
+
+    await domain.upsertCard("inbox", {
+      id: "claude-blocks-own-action",
+      title: "Claude blocked action.",
+      why: "Claude connector can fail too.",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved body.", artifactBlockId: "draft" }],
+    });
+    const claudeBlocked = await domain.approveAction("inbox", "claude-blocks-own-action", "send");
+    const claudeClaimed = await domain.claimWork("inbox", "thread-claude") as WorkItem;
+    await domain.blockApprovedWork("inbox", claudeBlocked.id, claudeClaimed.capabilityToken, "Claude connector refused.");
+
+    const lines = await readClaudeWakeLines(root);
+    expect(lines.map((line) => line.workId)).toEqual([codexBlocked.id, codexBlocked.id, claudeBlocked.id]);
+    expect(lines.map((line) => line.kind)).toEqual(["execute_approved_action", "execute_approved_action", "execute_approved_action"]);
+  });
+
+  test("post-action cleanup blocked wakes unless Claude blocked its own claim", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+    await domain.upsertCard("inbox", {
+      id: "codex-blocks-claude-cleanup",
+      title: "Codex sent but cleanup blocked.",
+      why: "The main mutation can succeed before cleanup blocks.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved body.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" }],
+    });
+    const approved = await domain.approveAction("inbox", "codex-blocks-claude-cleanup", "send");
+    const codexWorking = await store.readWork("inbox", approved.id);
+    codexWorking.status = "working";
+    codexWorking.claimedBy = { agent: "codex", threadId: "thread-codex" };
+    await store.writeWork(codexWorking);
+    await domain.verifyApprovedAction("inbox", approved.id, codexWorking.capabilityToken, "dan@every.to");
+
+    await domain.completeWork("inbox", approved.id, codexWorking.capabilityToken, {
+      response: "Sent once; cleanup blocked.",
+      postAction: {
+        cleanup: { status: "blocked", detail: "One source row remained visible after the archive attempt." },
+        disposition: "review",
+      },
+    });
+
+    const lines = await readClaudeWakeLines(root);
+    expect(lines.map((line) => line.workId)).toEqual([approved.id, approved.id]);
+    expect(lines.map((line) => line.kind)).toEqual(["execute_approved_action", "execute_approved_action"]);
+  });
+
+  test("presence registration replays parked Claude work only on liveness transitions", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    const parked = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Replay this parked item.");
+    const cancelled = await domain.queueFeedInstruction("inbox", "Cancel before replay.");
+    await domain.cancelQueuedWork("inbox", cancelled.id, "Cancelled before presence replay.");
+    const beforePresence = await readClaudeWakeLines(root);
+
+    const first = await domain.registerAgentPresence("claude", { sessionId: "session-a", label: "Claude Preview" });
+    const heartbeat = await domain.registerAgentPresence("claude", { sessionId: "session-a", label: "Claude Preview" });
+    const sessionChanged = await domain.registerAgentPresence("claude", { sessionId: "session-b" });
+    await store.writeAgentPresence("claude", {
+      agent: "claude",
+      sessionId: "session-b",
+      lastSeenAt: new Date(Date.now() - 120_000).toISOString(),
+    });
+    const staleReplay = await domain.registerAgentPresence("claude", { sessionId: "session-b" });
+
+    const replayLines = (await readClaudeWakeLines(root)).slice(beforePresence.length);
+    expect(first).toMatchObject({ changed: true, replayed: 1, presence: { sessionId: "session-a", label: "Claude Preview" } });
+    expect(heartbeat.changed).toBe(false);
+    expect(heartbeat.replayed).toBe(0);
+    expect(sessionChanged.changed).toBe(true);
+    expect(sessionChanged.replayed).toBe(0);
+    expect(staleReplay.changed).toBe(true);
+    expect(staleReplay.replayed).toBe(1);
+    expect(replayLines.map((line) => line.workId)).toEqual([parked.id, parked.id]);
+    expect(replayLines.map((line) => line.workId)).not.toContain(cancelled.id);
+  });
+
+  test("presence registration strips control bytes and caps session ids", async () => {
+    const { domain } = await setup();
+    const oversized = "s".repeat(65);
+
+    const registered = await domain.registerAgentPresence("claude", {
+      sessionId: "session-\u001B[31mlive\u0000",
+      label: "Claude\nPreview\u001B",
+    });
+
+    expect(registered.presence.sessionId).toBe("session-[31mlive");
+    expect(registered.presence.label).toBe("ClaudePreview");
+    await expect(domain.registerAgentPresence("claude", { sessionId: oversized })).rejects.toThrow("sessionId must be 64 characters or fewer");
+  });
+
+  test("setting drainAgent to Claude wakes already queued unassigned work and rejects unbound feeds", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.upsertCard("inbox", {
+      id: "wake-drain-one",
+      title: "First queued item.",
+      why: "Already queued.",
+      blocks: [{ id: "brief", type: "memo", text: "First." }],
+    });
+    await domain.upsertCard("inbox", {
+      id: "wake-drain-two",
+      title: "Second queued item.",
+      why: "Already queued.",
+      blocks: [{ id: "brief", type: "memo", text: "Second." }],
+    });
+    const first = await domain.queueInstruction("inbox", "wake-drain-one", "First parked item.");
+    const second = await domain.queueInstruction("inbox", "wake-drain-two", "Second parked item.");
+    expect(await readClaudeWakeLines(root)).toEqual([]);
+
+    const thread = await domain.setFeedDrainAgent("inbox", "claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    expect(thread.drainAgent).toBe("claude");
+    const lines = await readClaudeWakeLines(root);
+    expect(lines.map((line) => line.workId).sort()).toEqual([first.id, second.id].sort());
+    expect(lines.map((line) => line.queued)).toEqual([2, 2]);
+    await expect(domain.setFeedDrainAgent("company-attention", "claude")).rejects.toThrow("has no Claude binding");
+  });
+
+  test("reassigns queued work to Codex and rejects working reassignment", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    const queued = await domain.submitVoiceInstruction("inbox", { kind: "feed", feedId: "inbox" }, "Park this for Claude.", { assignee: "claude" });
+
+    const reassigned = await domain.reassignQueuedWork("inbox", queued.work.id, "codex");
+    expect(reassigned.assignee).toBeUndefined();
+    expect(JSON.stringify(reassigned)).not.toContain("capabilityToken");
+    expect(JSON.stringify(reassigned)).not.toContain(queued.work.capabilityToken);
+    expect((await domain.listPendingWork("inbox", "thread-codex")).map((work) => work.id)).toContain(queued.work.id);
+
+    const claimed = await domain.claimWork("inbox", "thread-codex") as WorkItem;
+    await expect(domain.reassignQueuedWork("inbox", claimed.id, "codex")).rejects.toThrow("Only queued work can be reassigned");
+  });
+
+  test("warns when reassigning approved external mutation work to Claude", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.upsertCard("inbox", {
+      id: "external-mutation-warning",
+      title: "Approved external action.",
+      why: "Claude may not have connector capability.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved body.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" }],
+    });
+    const approved = await domain.approveAction("inbox", "external-mutation-warning", "send");
+
+    const reassigned = await domain.reassignQueuedWork("inbox", approved.id, "claude");
+
+    expect(reassigned).toMatchObject({ assignee: "claude", warning: expect.stringContaining("external mutation") });
+    expect(JSON.stringify(reassigned)).not.toContain((await store.readWork("inbox", approved.id)).capabilityToken);
+  });
+
+  test("wake ledger bytes omit instruction text and capability tokens from domain emissions", async () => {
+    const { root, store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-codex");
+    await bindClaudeLane(store, "inbox", "thread-claude");
+    await domain.setFeedDrainAgent("inbox", "claude");
+
+    const work = await domain.queueFeedInstruction("inbox", "SECRET_WAKE_TEXT_DO_NOT_LEAK");
+    const bytes = await readFile(path.join(root, "agents", "claude", "wake.jsonl"), "utf8");
+
+    expect(bytes).not.toContain("SECRET_WAKE_TEXT_DO_NOT_LEAK");
+    expect(bytes).not.toContain(work.instruction);
+    expect(bytes).not.toContain(work.capabilityToken);
+    expect(bytes).not.toContain("capabilityToken");
   });
 });
 
@@ -940,11 +1528,11 @@ describe("approval, learning, and heartbeat safety", () => {
     });
     await domain.bindFeed("inbox", "thread-inbox");
     const work = await domain.approveAction("inbox", "external-reply-safety-fixture");
-    await domain.claimWork("inbox", "thread-inbox");
-    expect((await domain.verifyApprovedAction("inbox", work.id, work.capabilityToken, "dan@every.to")).action.label).toBe("Send this reply");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    expect((await domain.verifyApprovedAction("inbox", work.id, claimed.capabilityToken, "dan@every.to")).action.label).toBe("Send this reply");
     await domain.updateBlock("inbox", "external-reply-safety-fixture", "draft", "A different draft.");
-    await expect(domain.verifyApprovedAction("inbox", work.id, work.capabilityToken)).rejects.toThrow("Approval stale");
-    await expect(domain.completeWork("inbox", work.id, work.capabilityToken, { response: "Sent." })).rejects.toThrow("Approval stale");
+    await expect(domain.verifyApprovedAction("inbox", work.id, claimed.capabilityToken)).rejects.toThrow("Approval stale");
+    await expect(domain.completeWork("inbox", work.id, claimed.capabilityToken, { response: "Sent." })).rejects.toThrow("Approval stale");
     expect((await store.readWork("inbox", work.id)).status).toBe("stale");
     expect((await store.readCard("inbox", "external-reply-safety-fixture")).status).toBe("to_review_updated");
   });
@@ -993,12 +1581,12 @@ describe("approval, learning, and heartbeat safety", () => {
       ],
     });
     const work = await domain.runCardAction("inbox", "reply-with-source-mailbox", "send-reply");
-    await domain.claimWork("inbox", "thread-inbox");
-    await expect(domain.completeWork("inbox", work.id, work.capabilityToken, { response: "Sent." })).rejects.toThrow("must pass action:verify");
-    await expect(domain.verifyApprovedAction("inbox", work.id, work.capabilityToken)).rejects.toThrow("requires the authenticated Gmail mailbox");
-    await expect(domain.verifyApprovedAction("inbox", work.id, work.capabilityToken, "dshipper@gmail.com")).rejects.toThrow("mailbox mismatch");
-    expect((await domain.verifyApprovedAction("inbox", work.id, work.capabilityToken, "DAN@EVERY.TO")).verifiedMailbox).toBe("dan@every.to");
-    expect((await domain.completeWork("inbox", work.id, work.capabilityToken, {
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    await expect(domain.completeWork("inbox", work.id, claimed.capabilityToken, { response: "Sent." })).rejects.toThrow("must pass action:verify");
+    await expect(domain.verifyApprovedAction("inbox", work.id, claimed.capabilityToken)).rejects.toThrow("requires the authenticated Gmail mailbox");
+    await expect(domain.verifyApprovedAction("inbox", work.id, claimed.capabilityToken, "dshipper@gmail.com")).rejects.toThrow("mailbox mismatch");
+    expect((await domain.verifyApprovedAction("inbox", work.id, claimed.capabilityToken, "DAN@EVERY.TO")).verifiedMailbox).toBe("dan@every.to");
+    expect((await domain.completeWork("inbox", work.id, claimed.capabilityToken, {
       response: "Sent and archived.",
       postAction: {
         cleanup: { status: "completed", detail: "Fresh Inbox read found no current rows for the handled thread." },
@@ -1021,12 +1609,14 @@ describe("approval, learning, and heartbeat safety", () => {
       ],
     });
     const approved = await domain.runCardAction("inbox", "blocked-send", "send-reply");
-    await domain.claimWork("inbox", "thread-inbox");
-    await domain.blockApprovedWork("inbox", approved.id, approved.capabilityToken, "Connector temporarily refused the approved send.");
+    const blockedClaim = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    await domain.blockApprovedWork("inbox", approved.id, blockedClaim.capabilityToken, "Connector temporarily refused the approved send.");
     expect((await store.readWork("inbox", approved.id)).status).toBe("approved_blocked");
     expect((await store.readCard("inbox", "blocked-send")).status).toBe("approved_blocked");
     const retry = await domain.retryApprovedWork("inbox", approved.id);
     expect(retry.status).toBe("queued");
+    expect(JSON.stringify(retry)).not.toContain("capabilityToken");
+    expect(JSON.stringify(retry)).not.toContain(blockedClaim.capabilityToken);
     expect((await store.readCard("inbox", "blocked-send")).status).toBe("queued");
     const claimed = await domain.claimWork("inbox", "thread-inbox");
     expect(claimed?.id).toBe(approved.id);
@@ -1047,12 +1637,12 @@ describe("approval, learning, and heartbeat safety", () => {
       ],
     });
     const approved = await domain.runCardAction("inbox", "blocked-forward-later-succeeded", "forward");
-    await domain.claimWork("inbox", "thread-inbox");
-    await domain.verifyApprovedAction("inbox", approved.id, approved.capabilityToken, "dan@every.to");
-    await domain.blockApprovedWork("inbox", approved.id, approved.capabilityToken, "Connector required external-recipient confirmation.");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    await domain.verifyApprovedAction("inbox", approved.id, claimed.capabilityToken, "dan@every.to");
+    await domain.blockApprovedWork("inbox", approved.id, claimed.capabilityToken, "Connector required external-recipient confirmation.");
     await domain.updateBlock("inbox", "blocked-forward-later-succeeded", "draft", "Edited after the connector succeeded.");
 
-    const reconciled = await domain.reconcileApprovedWork("inbox", approved.id, approved.capabilityToken, {
+    const reconciled = await domain.reconcileApprovedWork("inbox", approved.id, claimed.capabilityToken, {
       response: "Forward succeeded after connector risk confirmation and the source was archived.",
       postAction: {
         cleanup: { status: "completed", detail: "Fresh Inbox read found no remaining source rows." },
@@ -1081,10 +1671,10 @@ describe("approval, learning, and heartbeat safety", () => {
       ],
     });
     const approved = await domain.runCardAction("inbox", "blocked-unverified-send", "send-reply");
-    await domain.claimWork("inbox", "thread-inbox");
-    await domain.blockApprovedWork("inbox", approved.id, approved.capabilityToken, "Connector refused before verification.");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    await domain.blockApprovedWork("inbox", approved.id, claimed.capabilityToken, "Connector refused before verification.");
 
-    await expect(domain.reconcileApprovedWork("inbox", approved.id, approved.capabilityToken, { response: "Sent." })).rejects.toThrow("must have passed action:verify");
+    await expect(domain.reconcileApprovedWork("inbox", approved.id, claimed.capabilityToken, { response: "Sent." })).rejects.toThrow("must have passed action:verify");
   });
 
   test("bundles source cleanup into a completed email action without another Archive click", async () => {
@@ -1101,14 +1691,14 @@ describe("approval, learning, and heartbeat safety", () => {
       ],
     });
     const approved = await domain.runCardAction("inbox", "approved-and-completed", "send-reply");
-    await domain.claimWork("inbox", "thread-inbox");
-    const verified = await domain.verifyApprovedAction("inbox", approved.id, approved.capabilityToken, "dan@every.to");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    const verified = await domain.verifyApprovedAction("inbox", approved.id, claimed.capabilityToken, "dan@every.to");
     expect(verified.completionCleanup).toBe("Archive the email thread.");
-    await expect(domain.completeWork("inbox", approved.id, approved.capabilityToken, {
+    await expect(domain.completeWork("inbox", approved.id, claimed.capabilityToken, {
       response: "Sent the verified reply.",
     })).rejects.toThrow("must report the bundled cleanup outcome");
 
-    await domain.completeWork("inbox", approved.id, approved.capabilityToken, {
+    await domain.completeWork("inbox", approved.id, claimed.capabilityToken, {
       response: "Sent the verified reply and archived every remaining source row.",
       postAction: {
         cleanup: { status: "completed", detail: "Fresh in:inbox verification found no remaining rows." },
@@ -1136,10 +1726,10 @@ describe("approval, learning, and heartbeat safety", () => {
       ],
     });
     const approved = await domain.runCardAction("inbox", "send-with-blocked-cleanup", "send-reply");
-    await domain.claimWork("inbox", "thread-inbox");
-    await domain.verifyApprovedAction("inbox", approved.id, approved.capabilityToken, "dan@every.to");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    await domain.verifyApprovedAction("inbox", approved.id, claimed.capabilityToken, "dan@every.to");
 
-    const blocked = await domain.completeWork("inbox", approved.id, approved.capabilityToken, {
+    const blocked = await domain.completeWork("inbox", approved.id, claimed.capabilityToken, {
       response: "The reply was sent once.",
       postAction: {
         cleanup: { status: "blocked", detail: "Cora still exposed one current source row after the archive attempt." },
@@ -1185,9 +1775,9 @@ describe("approval, learning, and heartbeat safety", () => {
       ],
     });
     const approved = await domain.runCardAction("inbox", "explicitly-terminal-action", "complete");
-    await domain.claimWork("inbox", "thread-inbox");
-    await domain.verifyApprovedAction("inbox", approved.id, approved.capabilityToken);
-    await domain.completeWork("inbox", approved.id, approved.capabilityToken, {
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    await domain.verifyApprovedAction("inbox", approved.id, claimed.capabilityToken);
+    await domain.completeWork("inbox", approved.id, claimed.capabilityToken, {
       response: "Completed.",
       postAction: {
         cleanup: { status: "not_required", detail: "This action had no external source row to clean up." },
@@ -1216,16 +1806,18 @@ describe("approval, learning, and heartbeat safety", () => {
     const preparation = await domain.runCardAction("inbox", "custom-actions", "draft-pass");
     expect(preparation.kind).toBe("instruction");
     expect(preparation.instruction).toBe("Draft a polite pass for review.");
-    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(preparation.id);
-    await domain.completeWork("inbox", preparation.id, preparation.capabilityToken, { response: "Prepared a pass for review." });
+    const claimedPreparation = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    expect(claimedPreparation.id).toBe(preparation.id);
+    await domain.completeWork("inbox", preparation.id, claimedPreparation.capabilityToken, { response: "Prepared a pass for review." });
 
     const send = await domain.runCardAction("inbox", "custom-actions", "send-reply");
     expect(send.kind).toBe("execute_approved_action");
     expect(send.cardActionId).toBe("send-reply");
-    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(send.id);
-    expect((await domain.verifyApprovedAction("inbox", send.id, send.capabilityToken, "dan@every.to")).action.label).toBe("Send reply");
+    const claimedSend = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    expect(claimedSend.id).toBe(send.id);
+    expect((await domain.verifyApprovedAction("inbox", send.id, claimedSend.capabilityToken, "dan@every.to")).action.label).toBe("Send reply");
     await domain.updateBlock("inbox", "custom-actions", "draft", "Changed after approval.");
-    await expect(domain.verifyApprovedAction("inbox", send.id, send.capabilityToken)).rejects.toThrow("Approval stale");
+    await expect(domain.verifyApprovedAction("inbox", send.id, claimedSend.capabilityToken)).rejects.toThrow("Approval stale");
 
     await domain.upsertCard("inbox", {
       id: "custom-cleanup",
@@ -1248,9 +1840,9 @@ describe("approval, learning, and heartbeat safety", () => {
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("to_review_updated");
     await domain.bindFeed("inbox", "thread-inbox");
     const secondCleanup = await domain.dismissCard("inbox", "inbox-ready-to-collect");
-    await domain.claimWork("inbox", "thread-inbox");
-    expect((await domain.verifyApprovedAction("inbox", secondCleanup.id, secondCleanup.capabilityToken)).action.instruction).toBe("Archive the email thread.");
-    await domain.completeWork("inbox", secondCleanup.id, secondCleanup.capabilityToken, { response: "Archived the authoritative email thread." });
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    expect((await domain.verifyApprovedAction("inbox", secondCleanup.id, claimed.capabilityToken)).action.instruction).toBe("Archive the email thread.");
+    await domain.completeWork("inbox", secondCleanup.id, claimed.capabilityToken, { response: "Archived the authoritative email thread." });
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("done");
   });
 
@@ -1270,10 +1862,11 @@ describe("approval, learning, and heartbeat safety", () => {
       domain.approveRoutineActionGroup("inbox", group.id),
     ]);
     expect(second.id).toBe(first.id);
-    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(first.id);
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    expect(claimed.id).toBe(first.id);
     expect((await store.readRoutineActionGroup("inbox", group.id)).status).toBe("working");
-    expect((await domain.verifyApprovedAction("inbox", first.id, first.capabilityToken)).action.label).toBe("Archive all");
-    await domain.completeWork("inbox", first.id, first.capabilityToken, { response: "Archived the authoritative threads." });
+    expect((await domain.verifyApprovedAction("inbox", first.id, claimed.capabilityToken)).action.label).toBe("Archive all");
+    await domain.completeWork("inbox", first.id, claimed.capabilityToken, { response: "Archived the authoritative threads." });
     expect((await store.readRoutineActionGroup("inbox", group.id)).status).toBe("completed");
     const card = await store.readCard("inbox", "inbox-ready-to-collect");
     expect(card.status).toBe("done");
@@ -1366,12 +1959,13 @@ describe("approval, learning, and heartbeat safety", () => {
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).routineActionGroupId).toBe("likely-archive");
 
     const work = await domain.approveRoutineActionGroup("inbox", "likely-archive");
-    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(work.id);
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    expect(claimed.id).toBe(work.id);
     const changed = await store.readRoutineActionGroup("inbox", "likely-archive");
     changed.summary = "The visible approved snapshot changed.";
     await store.writeRoutineActionGroup(changed);
-    await expect(domain.verifyApprovedAction("inbox", work.id, work.capabilityToken)).rejects.toThrow("Approval stale");
-    await expect(domain.completeWork("inbox", work.id, work.capabilityToken, { response: "Archived." })).rejects.toThrow("Approval stale");
+    await expect(domain.verifyApprovedAction("inbox", work.id, claimed.capabilityToken)).rejects.toThrow("Approval stale");
+    await expect(domain.completeWork("inbox", work.id, claimed.capabilityToken, { response: "Archived." })).rejects.toThrow("Approval stale");
     expect((await store.readRoutineActionGroup("inbox", "likely-archive")).status).toBe("stale");
     const card = await store.readCard("inbox", "inbox-ready-to-collect");
     expect(card.status).toBe("to_review_updated");
@@ -1389,8 +1983,9 @@ describe("approval, learning, and heartbeat safety", () => {
       items: [{ id: "setup-noise", cardId: "inbox-ready-to-collect", title: "Routine notice", reason: "No reply or decision is needed." }],
     });
     const work = await domain.approveRoutineActionGroup("inbox", "likely-archive");
-    expect((await domain.claimWork("inbox", "thread-inbox"))?.id).toBe(work.id);
-    await domain.failWork("inbox", work.id, work.capabilityToken, "One source item changed before cleanup.");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    expect(claimed.id).toBe(work.id);
+    await domain.failWork("inbox", work.id, claimed.capabilityToken, "One source item changed before cleanup.");
     expect((await store.readRoutineActionGroup("inbox", "likely-archive")).status).toBe("failed");
     const card = await store.readCard("inbox", "inbox-ready-to-collect");
     expect(card.status).toBe("to_review_updated");
@@ -1406,12 +2001,12 @@ describe("approval, learning, and heartbeat safety", () => {
     ]);
     expect(second.id).toBe(first.id);
     expect((await store.readFeed("inbox")).work.filter((work) => work.kind === "default_cleanup" && (work.status === "queued" || work.status === "working"))).toHaveLength(1);
-    await domain.claimWork("inbox", "thread-inbox");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
     const config = await store.readConfig("inbox");
     config.defaultCleanup = "Archive the email thread and add a label.";
     await store.writeConfig(config);
-    await expect(domain.verifyApprovedAction("inbox", first.id, first.capabilityToken)).rejects.toThrow("Approval stale");
-    await expect(domain.completeWork("inbox", first.id, first.capabilityToken, { response: "Archived." })).rejects.toThrow("Approval stale");
+    await expect(domain.verifyApprovedAction("inbox", first.id, claimed.capabilityToken)).rejects.toThrow("Approval stale");
+    await expect(domain.completeWork("inbox", first.id, claimed.capabilityToken, { response: "Archived." })).rejects.toThrow("Approval stale");
     expect((await store.readWork("inbox", first.id)).status).toBe("stale");
   });
 
@@ -1420,6 +2015,7 @@ describe("approval, learning, and heartbeat safety", () => {
     await domain.bindFeed("inbox", "thread-inbox");
     const legacy = await domain.dismissCard("inbox", "inbox-ready-to-collect");
     legacy.approvalDigest = undefined;
+    legacy.createdAt = new Date(Date.now() - 60_000).toISOString();
     await store.writeWork(legacy);
     const next = await domain.queueFeedInstruction("inbox", "Process the next safe item.");
 
@@ -1461,6 +2057,7 @@ describe("approval, learning, and heartbeat safety", () => {
     });
     const legacy = await domain.approveRoutineActionGroup("inbox", "legacy-routine-cleanup");
     legacy.approvalDigest = undefined;
+    legacy.createdAt = new Date(Date.now() - 60_000).toISOString();
     await store.writeWork(legacy);
     const next = await domain.queueFeedInstruction("inbox", "Process the next safe item.");
 
@@ -1606,9 +2203,10 @@ describe("scoped persistent voice dock routing", () => {
     await domain.bindFeed("company-attention", "thread-company");
     const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Search again after this correction.");
     if (!("trace" in result)) throw new Error("Expected sweep trace");
-    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(result.work.id);
+    const claimed = await domain.claimWork("company-attention", "thread-company") as WorkItem;
+    expect(claimed.id).toBe(result.work.id);
     await domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, []);
-    await domain.completeWork("company-attention", result.work.id, result.work.capabilityToken, { response: "Rejudged." });
+    await domain.completeWork("company-attention", result.work.id, claimed.capabilityToken, { response: "Rejudged." });
     const [first, second] = await Promise.all([
       domain.requestSweepRecollection("company-attention"),
       domain.requestSweepRecollection("company-attention"),
@@ -1630,8 +2228,9 @@ describe("scoped persistent voice dock routing", () => {
     await domain.bindFeed("company-attention", "thread-company");
     const failed = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "This review will fail.");
     if (!("trace" in failed)) throw new Error("Expected sweep trace");
-    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(failed.work.id);
-    await domain.failWork("company-attention", failed.work.id, failed.work.capabilityToken, "Could not rejudge.");
+    const claimedFailed = await domain.claimWork("company-attention", "thread-company") as WorkItem;
+    expect(claimedFailed.id).toBe(failed.work.id);
+    await domain.failWork("company-attention", failed.work.id, claimedFailed.capabilityToken, "Could not rejudge.");
     expect(await store.readSweepState("company-attention")).toEqual(previous);
     await expect(domain.recordSweepRejudgment("company-attention", failed.trace.id, failed.trace.visibleCardIds, [])).rejects.toThrow("must be claimed");
     expect((await store.readEvents("company-attention")).map((event) => event.type)).toEqual(expect.arrayContaining([
@@ -1655,10 +2254,11 @@ describe("scoped persistent voice dock routing", () => {
     await domain.bindFeed("company-attention", "thread-company");
     const failed = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Claimed correction that fails.");
     if (!("trace" in failed)) throw new Error("Expected sweep trace");
-    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(failed.work.id);
+    const claimedFailed = await domain.claimWork("company-attention", "thread-company") as WorkItem;
+    expect(claimedFailed.id).toBe(failed.work.id);
     const pending = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Newer pending correction.");
     if (!("trace" in pending)) throw new Error("Expected sweep trace");
-    await domain.failWork("company-attention", failed.work.id, failed.work.capabilityToken, "Could not rejudge.");
+    await domain.failWork("company-attention", failed.work.id, claimedFailed.capabilityToken, "Could not rejudge.");
     expect((await store.readSweepState("company-attention")).lastFeedbackId).toBe(pending.trace.id);
     await domain.cancelQueuedWork("company-attention", pending.work.id, "Undo newer correction.");
     expect(await store.readSweepState("company-attention")).toEqual(previous);
@@ -1697,26 +2297,28 @@ describe("scoped persistent voice dock routing", () => {
     const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Prefer more product evidence.");
     if (!("trace" in result)) throw new Error("Expected sweep trace");
 
-    const claimedRejudge = await domain.claimWork("company-attention", "thread-company");
-    expect(claimedRejudge?.id).toBe(result.work.id);
-    await expect(domain.completeWork("company-attention", result.work.id, result.work.capabilityToken, { response: "Rejudged." })).rejects.toThrow("must be recorded");
+    const claimedRejudge = await domain.claimWork("company-attention", "thread-company") as WorkItem;
+    expect(claimedRejudge.id).toBe(result.work.id);
+    await expect(domain.completeWork("company-attention", result.work.id, claimedRejudge.capabilityToken, { response: "Rejudged." })).rejects.toThrow("must be recorded");
     await domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, []);
-    expect((await domain.completeWork("company-attention", result.work.id, result.work.capabilityToken, { response: "Rejudged." })).status).toBe("completed");
+    expect((await domain.completeWork("company-attention", result.work.id, claimedRejudge.capabilityToken, { response: "Rejudged." })).status).toBe("completed");
 
     const firstRecollection = await domain.requestSweepRecollection("company-attention");
     expect(firstRecollection.feedbackId).toBe(result.trace.id);
     expect(firstRecollection.startingBatchId).toBe(null);
-    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(firstRecollection.id);
-    await expect(domain.completeWork("company-attention", firstRecollection.id, firstRecollection.capabilityToken, { response: "Collected." })).rejects.toThrow("new sweep batch");
-    await domain.failWork("company-attention", firstRecollection.id, firstRecollection.capabilityToken, "Transient connector failure.");
+    const claimedFirstRecollection = await domain.claimWork("company-attention", "thread-company") as WorkItem;
+    expect(claimedFirstRecollection.id).toBe(firstRecollection.id);
+    await expect(domain.completeWork("company-attention", firstRecollection.id, claimedFirstRecollection.capabilityToken, { response: "Collected." })).rejects.toThrow("new sweep batch");
+    await domain.failWork("company-attention", firstRecollection.id, claimedFirstRecollection.capabilityToken, "Transient connector failure.");
     expect((await store.readSweepState("company-attention")).recollectionOffered).toBe(true);
 
     const retry = await domain.requestSweepRecollection("company-attention");
     expect(retry.id).not.toBe(firstRecollection.id);
-    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(retry.id);
+    const claimedRetry = await domain.claimWork("company-attention", "thread-company") as WorkItem;
+    expect(claimedRetry.id).toBe(retry.id);
     const run = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "retry" }, retry.id);
     await domain.recordSweepBatch("company-attention", [run], retry.id);
-    expect((await domain.completeWork("company-attention", retry.id, retry.capabilityToken, { response: "Collected and judged." })).status).toBe("completed");
+    expect((await domain.completeWork("company-attention", retry.id, claimedRetry.capabilityToken, { response: "Collected and judged." })).status).toBe("completed");
   });
 
   test("requires recollection batches to contain source runs recorded for the claimed recollection", async () => {
@@ -1727,16 +2329,18 @@ describe("scoped persistent voice dock routing", () => {
     await domain.recordSweepBatch("company-attention", [oldRun]);
     const result = await domain.submitVoiceInstruction("company-attention", { kind: "sweep", feedId: "company-attention" }, "Search again with this correction.");
     if (!("trace" in result)) throw new Error("Expected sweep trace");
-    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(result.work.id);
+    const claimed = await domain.claimWork("company-attention", "thread-company") as WorkItem;
+    expect(claimed.id).toBe(result.work.id);
     await domain.recordSweepRejudgment("company-attention", result.trace.id, result.trace.visibleCardIds, []);
-    await domain.completeWork("company-attention", result.work.id, result.work.capabilityToken, { response: "Rejudged." });
+    await domain.completeWork("company-attention", result.work.id, claimed.capabilityToken, { response: "Rejudged." });
     const recollection = await domain.requestSweepRecollection("company-attention");
-    expect((await domain.claimWork("company-attention", "thread-company"))?.id).toBe(recollection.id);
+    const claimedRecollection = await domain.claimWork("company-attention", "thread-company") as WorkItem;
+    expect(claimedRecollection.id).toBe(recollection.id);
     await expect(domain.recordSweepBatch("company-attention", [oldRun], recollection.id)).rejects.toThrow("not recorded for this recollection");
     const newRun = await domain.recordSourceRun("company-attention", "company-attention", [], [], { cursor: "new" }, recollection.id);
     const batchId = await domain.recordSweepBatch("company-attention", [newRun], recollection.id);
     expect((await store.readSweepBatch("company-attention", batchId)).triggerWorkId).toBe(recollection.id);
-    expect((await domain.completeWork("company-attention", recollection.id, recollection.capabilityToken, { response: "Collected." })).status).toBe("completed");
+    expect((await domain.completeWork("company-attention", recollection.id, claimedRecollection.capabilityToken, { response: "Collected." })).status).toBe("completed");
   });
 
   test("rejects sweep batches that reference missing source runs", async () => {

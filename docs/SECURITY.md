@@ -16,6 +16,20 @@ require JSON, a loopback same-origin request, and a per-process mutation token f
 UI. These checks prevent an unrelated website from silently posting to a running Tend server;
 they are not a substitute for keeping the listener on loopback.
 
+## Agent Lanes
+
+- Capability tokens appear exactly once: in the `work:claim` result returned to the recorded
+  claimant. Workspace reads (`/api/state`, the `state` CLI), `work:list` output, events, wake
+  lines, presence records, and logs never carry them.
+- Lane thread ids exposed in `/api/state` are bearer credentials inside the trusted-local
+  localhost boundary. The capability-token invariant prevents accidental transcript/API leakage;
+  it is not a cryptographic defense against a local process that can already read the app state.
+- Claude wake-ledger lines (`data/agents/claude/wake.jsonl`) contain only server-controlled
+  ids and counts — never card text, instructions, or tokens. The notification channel that
+  activates an agent session must not carry source-derived bytes.
+- Agent presence is informational only. It lights the UI chip and triggers wake replay for
+  parked work; it never authorizes claims, completions, or external mutations.
+
 ## On Your Mind
 
 Chronicle context may include privacy-filtered OCR. Tend stores the full filtered windows only in
