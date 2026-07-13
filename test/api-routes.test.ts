@@ -5,6 +5,7 @@ import path from "node:path";
 import { AttentionDomain } from "../server/domain";
 import { apiRoutes } from "../server/routes/api";
 import { AttentionStore } from "../server/store";
+import { inboxThreadFixture, recordInboxCollection } from "./support/inboxSweep";
 
 const roots: string[] = [];
 
@@ -40,6 +41,35 @@ afterEach(async () => {
 });
 
 describe("API routing and mutation hardening", () => {
+  test("serves authoritative Inbox thread snapshots without browser caching", async () => {
+    const { app, domain } = await setup();
+    const fixture = inboxThreadFixture("thread-api");
+    const result = await domain.finalizeInboxSweep(
+      "inbox",
+      "gmail-inbox",
+      [fixture.snapshot],
+      [fixture.card],
+      {},
+      await recordInboxCollection(domain, ["thread-api"]),
+    );
+
+    const response = await app.request(`/api/feeds/inbox/runs/${result.runId}/sources/gmail-inbox/snapshots/snapshot-1/thread`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await response.json()).toEqual({ text: fixture.snapshot.threadText, truncated: false });
+
+    const foreignSource = await app.request(`/api/feeds/inbox/runs/${result.runId}/sources/other-source/snapshots/snapshot-1/thread`);
+    expect(foreignSource.status).toBe(404);
+    expect(await foreignSource.json()).toEqual({ error: "Source snapshot does not belong to this run." });
+
+    const readSnapshot = domain.readInboxThreadSnapshot.bind(domain);
+    domain.readInboxThreadSnapshot = async () => { throw new Error("simulated storage outage"); };
+    const storageFailure = await app.request(`/api/feeds/inbox/runs/${result.runId}/sources/gmail-inbox/snapshots/snapshot-1/thread`);
+    expect(storageFailure.status).toBe(500);
+    expect(await storageFailure.json()).toEqual({ error: "simulated storage outage" });
+    domain.readInboxThreadSnapshot = readSnapshot;
+  });
+
   test("rejects foreign Origin mutations and allows no-Origin CLI-style mutations", async () => {
     const { app } = await setup();
 

@@ -54,6 +54,23 @@ export function ParkedClaudeWorkNotice({ items, onReassign }: { items: ParkedCla
   );
 }
 
+export function InboxSweepStatus({ feed }: { feed: FeedView }) {
+  const collection = feed.inboxStatus?.latestCollection;
+  const coverage = feed.inboxStatus?.coverage;
+  if (feed.config.id !== "inbox" || (!collection && !coverage)) return null;
+  const threadCount = collection?.pages.reduce((sum, page) => sum + page.threadIds.length, 0) ?? coverage?.threadCount ?? 0;
+  const finalized = Boolean(collection && coverage?.collection.id === collection.id);
+  return (
+    <section className="inbox-sweep-status" aria-label="Inbox sweep receipt">
+      <div>
+        <span>{finalized ? "Inbox coverage verified" : "Inbox collection in progress"}</span>
+        <b>{threadCount} thread{threadCount === 1 ? "" : "s"} across {collection?.pages.length ?? coverage?.collection.pages.length ?? 0} page{(collection?.pages.length ?? coverage?.collection.pages.length ?? 0) === 1 ? "" : "s"}</b>
+      </div>
+      <small>{finalized ? `Batch ${feed.sweep.currentBatchId}` : `Collection ${collection?.id}`}</small>
+    </section>
+  );
+}
+
 export default function App({ feedId, screen, workspaceTab }: { feedId: string; screen: AttentionScreen; workspaceTab: WorkspaceTab }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -418,6 +435,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
         <button className="tab-quiet" onClick={() => openWorkspace("feed")}>Prompts & sources</button>
       </nav>
       <main className="page" ref={pageRef}>
+        <InboxSweepStatus feed={feed} />
         <RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} />
         {routineActions.map((group) => <RoutineActionGroupView key={group.id} group={group} onApprove={() => approveRoutineAction(group)} />)}
         <ParkedClaudeWorkNotice items={parkedClaudeWork} onReassign={reassignQueuedWork} />

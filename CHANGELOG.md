@@ -5,6 +5,13 @@ a promise of ongoing maintenance.
 
 ## Unreleased
 
+- Add exhaustive Inbox Sweep: immutable per-page provider receipts, one actionable card per current
+  Inbox thread, deterministic reconciliation, source-backed lazy email rendering, and atomic coverage.
+- Advance the CLI contract to `0.4` with `sweep:record-inbox-page` and
+  `sweep:finalize-inbox`, including recollection-work lineage and single-use collection receipts.
+- Advance the SQLite schema to `15`, making immutable raw source snapshots authoritative in SQLite
+  with readable best-effort filesystem mirrors and legacy-file migration.
+
 ## 0.2.0 - 2026-07-06
 
 - Fix the public product name as Tend, consolidate runtime and agent operations under one `tend`

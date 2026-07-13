@@ -29,7 +29,8 @@ ATTENTION_HOME=/path/to/attention tend start
 - `data/revision-proposals/*.json`, `data/workspace-revisions/*.json`, and `data/feeds/*/policy-revisions/*.json` mirror revision records.
 - `data/feeds/*/events.jsonl` mirrors feed audit events for backup compatibility and readable local debugging.
 - `data/feeds/*/work/*.json` mirrors work items for backup compatibility and readable local debugging.
-- `data/feeds/*/feed.md` stores a readable feed description. `data/feeds/*/raw/**` stores immutable raw evidence snapshots.
+- `data/feeds/*/feed.md` stores a readable feed description. `data/feeds/*/raw/**` mirrors immutable
+  raw evidence snapshots whose runtime authority lives in SQLite.
 - `data/agents/claude/presence.json`, `data/agents/claude/wake-state.json`, and `data/agents/claude/wake.jsonl` store Claude-lane operational state. Wake lines contain only server-controlled ids/counts and never source text, instructions, or capability tokens.
 - `data/mind-context/binding.json` mirrors the one bound Chronicle publisher.
 - `data/mind-context/updates/*.json` mirrors recent privacy-filtered On Your Mind publications and
@@ -59,8 +60,8 @@ tend-backup/
   manifest.json
 ```
 
-`attention.db` is a consistent SQLite snapshot of the runtime authority. `data/` contains readable
-file mirrors and immutable raw evidence snapshots. Export writes through a temporary staging
+`attention.db` is a consistent SQLite snapshot of the runtime authority, including immutable raw
+evidence snapshots. `data/` contains readable file mirrors. Export writes through a temporary staging
 directory and refuses to overwrite or delete an existing destination.
 
 Import first copies the backup into a temporary staging directory. Tend refuses to import while

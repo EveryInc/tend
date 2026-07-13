@@ -38,7 +38,6 @@ import type {
   WorkspaceRevision,
 } from "../shared/types";
 import type { MobileActionProjection, MobileCommand, MobileCommandResult, MobileCommandReceipt } from "../shared/mobile";
-import { containsFullEmail } from "../shared/emailThread";
 import { agentLabel, effectiveWorkLane } from "../shared/lanes";
 import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, workItemView } from "./store";
 import { demoCards, feedConfig } from "./templates";
@@ -47,6 +46,8 @@ import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./ut
 import { actionDigest, cleanupDigest, configuredApprovalAction, requiredSourceMailbox, routineActionDigest, verifySourceMailbox } from "./workflow/approvals";
 import { queuedWork } from "./workflow/workItems";
 import { mobileActionConfirmation, projectMobileCard, projectMobileRoutineAction } from "./mobile/projection";
+import { validateCardActions, validateCardBlocks } from "./cardBlocks";
+import { InboxSweepService, type InboxSweepResult } from "./inboxSweep";
 
 function appendHistory(card: Card, type: string, detail?: string): void {
   card.history.push({ at: isoNow(), type, detail });
@@ -151,181 +152,12 @@ function revisionLabel(target: VoiceTarget): string {
   return "Tend policy";
 }
 
-const CARD_BLOCK_TYPES = new Set<CardBlock["type"]>([
-  "rich_text",
-  "evidence",
-  "editable_text",
-  "memo",
-  "options",
-  "checklist",
-  "diff",
-  "clarification",
-  "email_thread",
-  "profile",
-  "video",
-  "chart",
-  "receipt",
-]);
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function hasText(value: unknown): value is string {
   return typeof value === "string" && Boolean(value.trim());
-}
-
-function isSafeCardHref(value: string): boolean {
-  if (value.startsWith("/api/artifacts/")) return true;
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
-function blockDescription(block: Record<string, unknown>, index: number): string {
-  const type = typeof block.type === "string" ? block.type : "unknown type";
-  const id = typeof block.id === "string" && block.id.trim() ? ` "${block.id}"` : "";
-  return `Card block ${index + 1} (${type}${id})`;
-}
-
-function validateTextBlock(block: Record<string, unknown>, index: number, hint?: string): void {
-  if (hasText(block.text)) return;
-  throw new Error(`${blockDescription(block, index)} needs a non-empty \`text\` string.${hint ? ` ${hint}` : ""}`);
-}
-
-function validateListBlock(block: Record<string, unknown>, index: number): void {
-  if (!Array.isArray(block.items) || !block.items.length) {
-    throw new Error(`${blockDescription(block, index)} needs a non-empty \`items\` array.`);
-  }
-  for (const [itemIndex, item] of block.items.entries()) {
-    if (hasText(item)) continue;
-    if (!isRecord(item) || !hasText(item.label)) {
-      throw new Error(`${blockDescription(block, index)} item ${itemIndex + 1} must be a non-empty string or an object with a non-empty \`label\`.`);
-    }
-    if (item.detail !== undefined && typeof item.detail !== "string") {
-      throw new Error(`${blockDescription(block, index)} item ${itemIndex + 1} has a non-string \`detail\`.`);
-    }
-    if (item.checked !== undefined && typeof item.checked !== "boolean") {
-      throw new Error(`${blockDescription(block, index)} item ${itemIndex + 1} has a non-boolean \`checked\`.`);
-    }
-    if (item.href !== undefined) {
-      if (block.type !== "evidence") {
-        throw new Error(`${blockDescription(block, index)} item ${itemIndex + 1} may use \`href\` only in an evidence block.`);
-      }
-      if (!hasText(item.href) || !isSafeCardHref(item.href)) {
-        throw new Error(`${blockDescription(block, index)} item ${itemIndex + 1} needs an http(s) or local artifact \`href\`.`);
-      }
-    }
-  }
-}
-
-function validateCardBlocks(blocks: unknown): asserts blocks is CardBlock[] {
-  if (!Array.isArray(blocks)) throw new Error("Card blocks must be an array.");
-  const ids = new Set<string>();
-  for (const [index, block] of blocks.entries()) {
-    if (!isRecord(block)) throw new Error(`Card block ${index + 1} must be an object.`);
-    if (!hasText(block.id)) throw new Error(`${blockDescription(block, index)} needs a non-empty \`id\` string.`);
-    if (ids.has(block.id)) throw new Error(`${blockDescription(block, index)} repeats block id "${block.id}". Block ids must be unique within a card.`);
-    ids.add(block.id);
-    if (typeof block.type !== "string" || !CARD_BLOCK_TYPES.has(block.type as CardBlock["type"])) {
-      throw new Error(`${blockDescription(block, index)} has an unsupported \`type\`.`);
-    }
-    if (block.label !== undefined && typeof block.label !== "string") {
-      throw new Error(`${blockDescription(block, index)} has a non-string \`label\`.`);
-    }
-    switch (block.type) {
-      case "memo":
-        validateTextBlock(block, index, "Use `text`, not `title` or `body`.");
-        break;
-      case "receipt":
-        validateTextBlock(block, index, "Put source links in `text` using Markdown link syntax, not a loose `url` field.");
-        break;
-      case "rich_text":
-      case "clarification":
-        validateTextBlock(block, index);
-        break;
-      case "email_thread":
-        validateTextBlock(block, index);
-        if (typeof block.text !== "string" || !containsFullEmail(block.text)) {
-          throw new Error(
-            `${blockDescription(block, index)} must contain the full source email with From, To, and Subject headers. Use a memo block for summaries.`,
-          );
-        }
-        break;
-      case "evidence":
-      case "options":
-      case "checklist":
-        validateListBlock(block, index);
-        break;
-      case "editable_text":
-        if (typeof block.value !== "string") throw new Error(`${blockDescription(block, index)} needs a string \`value\`.`);
-        break;
-      case "diff":
-        if (typeof block.before !== "string" || typeof block.after !== "string") {
-          throw new Error(`${blockDescription(block, index)} needs string \`before\` and \`after\` values.`);
-        }
-        break;
-      case "profile":
-        if (
-          !isRecord(block.profile) ||
-          !hasText(block.profile.name) ||
-          !hasText(block.profile.href) ||
-          !hasText(block.profile.imageUrl)
-        ) {
-          throw new Error(`${blockDescription(block, index)} needs \`profile.name\`, \`profile.href\`, and \`profile.imageUrl\` strings.`);
-        }
-        if (block.profile.links !== undefined) {
-          if (!Array.isArray(block.profile.links) || block.profile.links.some((link) => !isRecord(link) || !hasText(link.label) || !hasText(link.href))) {
-            throw new Error(`${blockDescription(block, index)} profile links need non-empty \`label\` and \`href\` strings.`);
-          }
-        }
-        break;
-      case "video":
-        if (!isRecord(block.video) || !hasText(block.video.title) || !hasText(block.video.href)) {
-          throw new Error(`${blockDescription(block, index)} needs \`video.title\` and \`video.href\` strings.`);
-        }
-        break;
-      case "chart":
-        if (!isRecord(block.chart) || typeof block.chart.max !== "number" || !Number.isFinite(block.chart.max) || block.chart.max <= 0) {
-          throw new Error(`${blockDescription(block, index)} needs a positive numeric \`chart.max\`.`);
-        }
-        const max = block.chart.max;
-        if (
-          !Array.isArray(block.chart.series) ||
-          block.chart.series.length !== 2 ||
-          block.chart.series.some((series) => !isRecord(series) || !hasText(series.label))
-        ) {
-          throw new Error(`${blockDescription(block, index)} needs exactly two \`chart.series\` entries with non-empty \`label\` strings.`);
-        }
-        if (!Array.isArray(block.chart.rows) || !block.chart.rows.length) {
-          throw new Error(`${blockDescription(block, index)} needs a non-empty \`chart.rows\` array.`);
-        }
-        for (const [rowIndex, row] of block.chart.rows.entries()) {
-          if (
-            !isRecord(row) ||
-            !hasText(row.label) ||
-            !Array.isArray(row.values) ||
-            row.values.length !== 2 ||
-            row.values.some((value) => typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > max)
-          ) {
-            throw new Error(`${blockDescription(block, index)} chart row ${rowIndex + 1} needs a non-empty \`label\` and exactly two numeric \`values\` between 0 and \`chart.max\`.`);
-          }
-          if (row.detail !== undefined && typeof row.detail !== "string") {
-            throw new Error(`${blockDescription(block, index)} chart row ${rowIndex + 1} has a non-string \`detail\`.`);
-          }
-        }
-        if (block.chart.unit !== undefined && typeof block.chart.unit !== "string") {
-          throw new Error(`${blockDescription(block, index)} has a non-string \`chart.unit\`.`);
-        }
-        if (block.chart.note !== undefined && typeof block.chart.note !== "string") {
-          throw new Error(`${blockDescription(block, index)} has a non-string \`chart.note\`.`);
-        }
-        break;
-    }
-  }
 }
 
 function validateSourceRunIds(sourceRunIds: unknown): string[] | undefined {
@@ -643,7 +475,15 @@ function verifyMobileRiskConfirmation(
 }
 
 export class AttentionDomain {
-  constructor(readonly store: AttentionStore) {}
+  private readonly inboxSweeps: InboxSweepService;
+
+  constructor(readonly store: AttentionStore) {
+    this.inboxSweeps = new InboxSweepService(store, {
+      assertRecollectionWork: (feedId, workId) => this.assertClaimedRecollectionWork(feedId, workId),
+      assertAbandonableRecollectionWork: (feedId, workId) => this.assertAbandonableRecollectionWork(feedId, workId),
+      supersedeRoutineGroups: (feedId, reason) => this.supersedeInboxRoutineActionGroups(feedId, reason),
+    });
+  }
 
   private async maybeEmitClaudeWake(
     feedId: string,
@@ -977,6 +817,24 @@ export class AttentionDomain {
     return staleGroups.map((group) => group.id);
   }
 
+  private async supersedeInboxRoutineActionGroups(feedId: string, reason: string): Promise<string[]> {
+    const feed = await this.store.readFeed(feedId);
+    const activeGroups = feed.routineActions.filter((group) => group.status === "proposed" || group.status === "queued" || group.status === "working");
+    const workingGroup = activeGroups.find((group) => group.status === "working");
+    if (workingGroup) throw new Error(`Inbox sweep cannot advance while routine action group ${workingGroup.id} is working.`);
+    for (const group of activeGroups) {
+      for (const work of feed.work.filter((item) => item.routineActionGroupId === group.id && item.status === "queued")) {
+        const staleWork = await this.store.readWork(feedId, work.id);
+        staleWork.status = "stale";
+        staleWork.error = reason;
+        staleWork.updatedAt = isoNow();
+        await this.store.writeWork(staleWork);
+      }
+      await this.staleRoutineActionGroup(group, reason);
+    }
+    return activeGroups.map((group) => group.id);
+  }
+
   private async assertSourceRunIdsCurrent(feedId: string, sourceRunIds: string[], cardId?: string): Promise<void> {
     for (const runId of sourceRunIds) {
       let run: { id: string; feedId: string };
@@ -989,8 +847,14 @@ export class AttentionDomain {
     }
 
     const sweep = await this.store.readSweepState(feedId);
-    if (!sweep.currentBatchId) return;
+    if (!sweep.currentBatchId) {
+      if (feedId === "inbox") throw new Error("Inbox source evidence is not actionable until an exhaustive sweep is finalized.");
+      return;
+    }
     const batch = await this.store.readSweepBatch(feedId, sweep.currentBatchId);
+    if (feedId === "inbox" && !batch.inboxCoverage) {
+      throw new Error("Inbox source evidence is not actionable until the page ledger and one-card-per-thread coverage are verified.");
+    }
     const currentRunIds = new Set(batch.sourceRunIds);
     const staleRunIds = sourceRunIds.filter((runId) => !currentRunIds.has(runId));
     if (staleRunIds.length === 0) return;
@@ -2056,7 +1920,8 @@ export class AttentionDomain {
 
   async completeWork(feedId: string, workId: string, token: string, result: { response: string; blocks?: CardBlock[]; proposedAction?: ProposedAction; actions?: CardAction[]; done?: boolean; postAction?: PostActionCompletion }): Promise<WorkItem> {
     if (result.blocks) validateCardBlocks(result.blocks);
-    return this.store.serialize(async () => {
+    validateCardActions(result.actions);
+    return this.store.serializeAtomic(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "working") throw new Error("Work item is not currently claimed.");
       if (work.capabilityToken !== token) throw new Error("Invalid scoped work capability token.");
@@ -2075,6 +1940,7 @@ export class AttentionDomain {
         const batch = await this.store.readSweepBatch(feedId, sweep.currentBatchId);
         if (batch.createdAt < work.createdAt) throw new Error("Source recollection completed with a sweep batch that predates the request.");
         if (batch.triggerWorkId !== work.id) throw new Error("Source recollection must complete with a sweep batch recorded for this work item.");
+        if (feedId === "inbox" && !batch.inboxCoverage) throw new Error("Inbox recollection must complete with verified one-card-per-thread coverage.");
       }
       if (work.kind === "routine_action_batch") {
         if (!work.routineActionGroupId || !work.approvalDigest) throw new Error("Routine action work is missing its approved snapshot.");
@@ -2143,7 +2009,10 @@ export class AttentionDomain {
             this.validatePostActionCompletion(result.postAction);
           }
         }
-        if (result.blocks) card.blocks = result.blocks;
+        if (result.blocks) {
+          await this.inboxSweeps.assertReferencedBlocks(feedId, card.id, card.sourceItemId, card.sourceRunIds, result.blocks);
+          card.blocks = result.blocks;
+        }
         if (result.proposedAction) card.proposedAction = result.proposedAction;
         if (result.actions) card.actions = result.actions;
         if (
@@ -2151,14 +2020,17 @@ export class AttentionDomain {
           && work.completionCleanup
           && result.postAction?.cleanup.status === "blocked"
         ) {
+          const mutationAt = isoNow();
           work.status = "approved_blocked";
           work.response = result.response.trim();
           work.postAction = result.postAction;
           work.error = result.postAction.cleanup.detail.trim();
+          work.updatedAt = mutationAt;
           card.status = "approved_blocked";
           appendHistory(card, "codex.post_action_cleanup_blocked", work.error);
           await this.store.writeWork(work);
           await this.store.writeCard(card);
+          await this.invalidateInboxCollectionAfterMutation(feedId, work.id, mutationAt);
           await this.store.appendEvent({
             feedId,
             cardId: work.cardId,
@@ -2183,9 +2055,13 @@ export class AttentionDomain {
       }
       work.status = "completed";
       work.completedAt = isoNow();
+      work.updatedAt = work.completedAt;
       work.response = result.response.trim();
       work.postAction = result.postAction;
       await this.store.writeWork(work);
+      if (work.kind === "execute_approved_action" || work.kind === "default_cleanup" || work.kind === "routine_action_batch") {
+        await this.invalidateInboxCollectionAfterMutation(feedId, work.id, work.completedAt);
+      }
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.completed", detail: { response: work.response, postAction: result.postAction } });
       return work;
     });
@@ -2309,7 +2185,7 @@ export class AttentionDomain {
   }
 
   async reconcileApprovedWork(feedId: string, workId: string, token: string, result: { response: string; done?: boolean; postAction?: PostActionCompletion }): Promise<WorkItem> {
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "approved_blocked" || work.kind !== "execute_approved_action" || !work.approvalDigest) {
         throw new Error("Only a blocked approved action can be reconciled.");
@@ -2341,8 +2217,34 @@ export class AttentionDomain {
       work.error = undefined;
       await this.store.writeWork(work);
       await this.store.writeCard(card);
+      await this.invalidateInboxCollectionAfterMutation(feedId, work.id, completedAt);
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.approved_action_reconciled", detail: { response: work.response, postAction: result.postAction } });
       return work;
+    });
+  }
+
+  private async invalidateInboxCollectionAfterMutation(feedId: string, workId: string, mutationAt: string): Promise<void> {
+    if (feedId !== "inbox") return;
+    const sweep = await this.store.readSweepState(feedId);
+    const collection = sweep.inboxCollection;
+    if (!collection || Date.parse(collection.collectedAt) > Date.parse(mutationAt)) return;
+    const finalizedCollectionId = sweep.currentBatchId
+      ? (await this.store.readSweepBatch(feedId, sweep.currentBatchId)).inboxCoverage?.collection.id
+      : undefined;
+    if (finalizedCollectionId === collection.id) return;
+
+    const { inboxCollection: _invalidated, ...nextSweep } = sweep;
+    await this.store.writeSweepState(feedId, nextSweep);
+    await this.store.appendEvent({
+      feedId,
+      workId,
+      type: "inbox.collection_invalidated",
+      detail: {
+        collectionId: collection.id,
+        workId,
+        mutationAt,
+        reason: "A successful email mutation occurred after this collection began; recollect every Inbox page before finalization.",
+      },
     });
   }
 
@@ -2447,12 +2349,20 @@ export class AttentionDomain {
     safeIdentifier(feedId, "Feed id");
     safeIdentifier(input.id, "Card id");
     validateCardBlocks(input.blocks);
+    validateCardActions(input.actions);
     const sourceRunIds = validateSourceRunIds(input.sourceRunIds);
     return this.store.serialize(async () => {
       const config = await this.store.readConfig(feedId);
       const now = isoNow();
       const existing = (await this.store.hasCard(feedId, input.id)) ? await this.store.readCard(feedId, input.id) : null;
       if (sourceRunIds) await this.assertSourceRunIdsCurrent(feedId, sourceRunIds, input.id);
+      await this.inboxSweeps.assertReferencedBlocks(
+        feedId,
+        input.id,
+        input.sourceItemId ?? existing?.sourceItemId,
+        sourceRunIds ?? existing?.sourceRunIds,
+        input.blocks,
+      );
       const contextInfluence = await this.normalizeCardContextInfluence(feedId, sourceRunIds, input.contextInfluence);
       const resurfaced = input.status === "to_review_new" || input.status === "to_review_updated";
       const card: Card = {
@@ -2465,6 +2375,7 @@ export class AttentionDomain {
         why: input.why,
         sourceMailbox: input.sourceMailbox ?? existing?.sourceMailbox,
         sourceRunIds: sourceRunIds ?? existing?.sourceRunIds,
+        sourceItemId: input.sourceItemId ?? existing?.sourceItemId,
         contextInfluence,
         blocks: input.blocks,
         proposedAction: input.proposedAction,
@@ -2593,7 +2504,48 @@ export class AttentionDomain {
     }));
   }
 
+  async finalizeInboxSweep(
+    feedId: string,
+    sourceId: string,
+    snapshots: unknown,
+    cards: unknown,
+    checkpoint: unknown,
+    collection: unknown,
+    triggerWorkId?: string,
+  ): Promise<InboxSweepResult> {
+    return this.inboxSweeps.finalize({ feedId, sourceId, snapshots, cards, checkpoint, collection, triggerWorkId });
+  }
+
+  async recordInboxPage(
+    feedId: string,
+    sourceId: string,
+    collectionId: string | undefined,
+    triggerWorkId: string | undefined,
+    requestPageToken: string | null,
+    nextPageToken: string | null,
+    threadIds: unknown,
+  ) {
+    return this.inboxSweeps.recordPage({ feedId, sourceId, collectionId, triggerWorkId, requestPageToken, nextPageToken, threadIds });
+  }
+
+  async abandonInboxCollection(
+    feedId: string,
+    sourceId: string,
+    collectionId: string,
+    triggerWorkId: string | undefined,
+    reason: string,
+  ) {
+    return this.inboxSweeps.abandonCollection({ feedId, sourceId, collectionId, triggerWorkId, reason });
+  }
+
+  async readInboxThreadSnapshot(feedId: string, runId: string, sourceId: string, snapshotId: string): Promise<{ text: string; truncated: boolean }> {
+    return this.inboxSweeps.readThreadSnapshot(feedId, runId, sourceId, snapshotId);
+  }
+
   async recordSourceRun(feedId: string, sourceId: string, snapshots: unknown[], judgments: unknown[], checkpoint: unknown, triggerWorkId?: string, contextUse?: SourceRunContextUse): Promise<string> {
+    if (feedId === "inbox") {
+      throw new Error("Inbox runs must use sweep:finalize-inbox so snapshots, cards, checkpoint, page ledger, and coverage activate together.");
+    }
     return this.store.serialize(async () => {
       const feed = await this.store.readFeed(feedId);
       if (!feed.sources.some((source) => source.id === sourceId)) throw new Error(`Source recipe not found: ${sourceId}`);
@@ -2611,6 +2563,9 @@ export class AttentionDomain {
   }
 
   async recordSweepBatch(feedId: string, sourceRunIds: string[], triggerWorkId?: string, contextUpdateId?: string): Promise<string> {
+    if (feedId === "inbox") {
+      throw new Error("Inbox sweeps must use sweep:finalize-inbox so the page ledger and one-card-per-thread coverage are verified atomically.");
+    }
     return this.store.serialize(async () => {
       if (!Array.isArray(sourceRunIds) || sourceRunIds.some((runId) => typeof runId !== "string" || !runId.trim())) {
         throw new Error("Sweep batch source run IDs must be non-empty strings.");
@@ -2623,7 +2578,7 @@ export class AttentionDomain {
         : undefined;
       const researchQuestions = new Set<string>();
       for (const runId of sourceRunIds) {
-        let run: { id: string; feedId: string; triggerWorkId?: string; completedAt?: string; contextUse?: SourceRunContextUse };
+        let run: { id: string; feedId: string; sourceId: string; triggerWorkId?: string; completedAt?: string; contextUse?: SourceRunContextUse };
         try {
           run = await this.store.readRun(feedId, runId);
         } catch {
@@ -2656,6 +2611,18 @@ export class AttentionDomain {
     const work = await this.store.readWork(feedId, workId);
     if (work.feedId !== feedId || work.intent !== "recollect_sources" || work.status !== "working") {
       throw new Error("Source recollection must be recorded for the claimed same-feed recollection work item.");
+    }
+    return work;
+  }
+
+  private async assertAbandonableRecollectionWork(feedId: string, workId: string): Promise<WorkItem> {
+    const work = await this.store.readWork(feedId, workId);
+    if (
+      work.feedId !== feedId
+      || work.intent !== "recollect_sources"
+      || (work.status !== "working" && work.status !== "failed")
+    ) {
+      throw new Error("Inbox collection abandonment requires its same-feed working or failed recollection work item.");
     }
     return work;
   }

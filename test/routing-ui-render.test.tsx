@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ParkedClaudeWorkNotice, parkedClaudeWorkItems } from "../src/App";
+import { InboxSweepStatus, ParkedClaudeWorkNotice, parkedClaudeWorkItems } from "../src/App";
 import { Dock } from "../src/shell/Dock";
 import { TopBar } from "../src/shell/TopBar";
 import type { Card, FeedView, WorkItemView, WorkspaceView } from "../shared/types";
@@ -68,6 +68,39 @@ test("TopBar renders Claude presence liveness and label", () => {
 
   expect(html).toContain("Claude live · Preview");
   expect(html).toContain("tend-agent-live");
+});
+
+test("Inbox sweep status renders page progress and verified coverage", () => {
+  const collection = {
+    id: "collection-1",
+    sourceId: "gmail-inbox",
+    query: "in:inbox" as const,
+    collectedAt: "2026-07-05T12:00:00.000Z",
+    pages: [
+      { receiptId: "page-1", requestPageToken: null, nextPageToken: "next", threadIds: ["one"] },
+      { receiptId: "page-2", requestPageToken: "next", nextPageToken: null, threadIds: ["two"] },
+    ],
+  };
+  const active = feed({
+    sweep: { currentBatchId: "batch-1", lastFeedbackId: null, recollectionOffered: false, statusMessage: null },
+    inboxStatus: {
+      latestCollection: collection,
+      coverage: {
+        sourceId: "gmail-inbox",
+        threadCount: 2,
+        cardCount: 2,
+        removedCardIds: [],
+        threadCardMap: [{ threadId: "one", cardId: "inbox-thread-one" }, { threadId: "two", cardId: "inbox-thread-two" }],
+        collection,
+        verifiedAt: "2026-07-05T12:01:00.000Z",
+      },
+    },
+  });
+
+  const html = renderToStaticMarkup(<InboxSweepStatus feed={active} />);
+  expect(html).toContain("Inbox coverage verified");
+  expect(html).toContain("2 threads across 2 pages");
+  expect(html).toContain("Batch batch-1");
 });
 
 test("Dock renders Claude routing toggle and agent-aware placeholder", () => {

@@ -50,7 +50,7 @@ kbd { font: 11px/1 var(--mono); color: var(--ink-3); }
 .section-label { display: flex; align-items: center; gap: 8px; margin: 14px 2px 11px; }
 .section-label span { display: grid; place-items: center; min-width: 19px; height: 19px; border-radius: 99px; background: var(--sand); font-size: 11px; letter-spacing: 0; }
 
-.attention-card { position: relative; margin: 0 0 18px; padding: 27px 29px 0; overflow: hidden; background: rgba(255,254,250,.68); border: 1px solid var(--line); border-radius: 11px; transition: background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+.attention-card { position: relative; margin: 0 0 18px; padding: 27px 29px 0; overflow: hidden; background: rgba(255,254,250,.68); border: 1px solid var(--line); border-radius: 11px; content-visibility: auto; contain-intrinsic-size: auto 620px; transition: background .18s ease, border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
 .attention-card:hover, .attention-card.is-active { background: var(--paper); border-color: #c9c7be; box-shadow: var(--shadow); transform: translateY(-1px); }
 .card-rule { position: absolute; inset: 0 auto 0 0; width: 3px; background: transparent; transition: background .18s ease; }
 .attention-card.is-active .card-rule { background: var(--blue); }
@@ -167,6 +167,10 @@ h2 { margin: 0; font: 500 26px/1.12 var(--serif); letter-spacing: -.02em; }
 .empty { margin: 60px 0; text-align: center; color: var(--ink-3); }
 .empty h2 { color: var(--ink-2); }
 .empty p { max-width: 520px; margin: 8px auto; }
+.inbox-sweep-status { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0 0 18px; padding: 12px 14px; border: 1px solid #d7dfd2; border-radius: 9px; background: var(--sage-soft); color: #586a51; }
+.inbox-sweep-status > div { display: grid; gap: 2px; }
+.inbox-sweep-status span, .inbox-sweep-status small { font-size: 11px; }
+.inbox-sweep-status b { color: var(--ink-2); font-size: 13px; }
 .end-cap { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-top: 28px; padding: 20px 2px; border-top: 1px solid var(--line-2); }
 .end-cap span { color: var(--ink-3); font-size: 12px; }
 .end-cap h2 { margin-top: 3px; font-size: 21px; }

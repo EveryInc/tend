@@ -10,6 +10,7 @@ import { defaultMindContextBinding, type MindContextRepository } from "./reposit
 import type { MobileCommandReceiptRepository } from "./repositories/mobileCommandReceipts";
 import type { RevisionRepository } from "./repositories/revisions";
 import type { RoutineActionGroupRepository } from "./repositories/routineActionGroups";
+import type { RawSnapshot, RawSnapshotKey, RawSnapshotRepository } from "./repositories/rawSnapshots";
 import type { SourceRunRepository } from "./repositories/sourceRuns";
 import { defaultCheckpoint, type SourceRecord, type SourceRepository } from "./repositories/sources";
 import { defaultSweepState, type SweepRepository } from "./repositories/sweeps";
@@ -17,7 +18,7 @@ import type { TextDocumentRepository, TextDocumentSeed } from "./repositories/te
 import type { WorkItemRepository } from "./repositories/workItems";
 import type { WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 
-export const SQLITE_SCHEMA_VERSION = 14;
+export const SQLITE_SCHEMA_VERSION = 15;
 
 export type LocalRuntimeStatus = {
   dbPath: string;
@@ -112,6 +113,15 @@ export class LocalSqliteStore {
       );
       CREATE INDEX IF NOT EXISTS idx_source_runs_feed_source ON source_runs (feed_id, source_id);
       CREATE INDEX IF NOT EXISTS idx_source_runs_trigger_work ON source_runs (trigger_work_id);
+      CREATE TABLE IF NOT EXISTS raw_snapshots (
+        feed_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        source_id TEXT NOT NULL,
+        snapshot_id TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY (feed_id, run_id, source_id, snapshot_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_raw_snapshots_feed_run ON raw_snapshots (feed_id, run_id);
       CREATE TABLE IF NOT EXISTS source_recipes (
         feed_id TEXT NOT NULL,
         source_id TEXT NOT NULL,
@@ -265,6 +275,10 @@ export class LocalSqliteStore {
 
   sourceRuns(): SourceRunRepository {
     return new SqliteSourceRunRepository(() => this.database());
+  }
+
+  rawSnapshots(): RawSnapshotRepository {
+    return new SqliteRawSnapshotRepository(() => this.database());
   }
 
   sources(): SourceRepository {
@@ -726,6 +740,54 @@ class SqliteSourceRunRepository implements SourceRunRepository {
       `)
       .run(run.id, run.feedId, run.sourceId, run.triggerWorkId ?? null, run.completedAt ?? null, JSON.stringify(run));
   }
+}
+
+class SqliteRawSnapshotRepository implements RawSnapshotRepository {
+  constructor(private readonly database: () => Database) {}
+
+  async init(_feedIds: string[]): Promise<void> {}
+
+  async listKeys(feedId: string): Promise<RawSnapshotKey[]> {
+    const rows = this.database()
+      .query("SELECT run_id, source_id, snapshot_id FROM raw_snapshots WHERE feed_id = ? ORDER BY run_id, source_id, snapshot_id")
+      .all(feedId) as Array<{ run_id: string; source_id: string; snapshot_id: string }>;
+    return rows.map((row) => ({ feedId, runId: row.run_id, sourceId: row.source_id, snapshotId: row.snapshot_id }));
+  }
+
+  async list(feedId: string): Promise<RawSnapshot[]> {
+    const rows = this.database()
+      .query("SELECT run_id, source_id, snapshot_id, payload_json FROM raw_snapshots WHERE feed_id = ? ORDER BY run_id, source_id, snapshot_id")
+      .all(feedId) as Array<{ run_id: string; source_id: string; snapshot_id: string; payload_json: string }>;
+    return rows.map((row) => ({
+      feedId,
+      runId: row.run_id,
+      sourceId: row.source_id,
+      snapshotId: row.snapshot_id,
+      value: JSON.parse(row.payload_json),
+    }));
+  }
+
+  async get(feedId: string, runId: string, sourceId: string, snapshotId: string): Promise<unknown> {
+    const row = this.database()
+      .query("SELECT payload_json FROM raw_snapshots WHERE feed_id = ? AND run_id = ? AND source_id = ? AND snapshot_id = ?")
+      .get(feedId, runId, sourceId, snapshotId) as { payload_json: string } | undefined;
+    if (!row) throw new Error(`Raw snapshot not found: ${snapshotId}`);
+    return JSON.parse(row.payload_json);
+  }
+
+  async has(feedId: string, runId: string, sourceId: string, snapshotId: string): Promise<boolean> {
+    const row = this.database()
+      .query("SELECT 1 AS found FROM raw_snapshots WHERE feed_id = ? AND run_id = ? AND source_id = ? AND snapshot_id = ?")
+      .get(feedId, runId, sourceId, snapshotId) as { found: number } | undefined;
+    return Boolean(row);
+  }
+
+  async write(snapshot: RawSnapshot): Promise<void> {
+    this.database()
+      .query("INSERT INTO raw_snapshots (feed_id, run_id, source_id, snapshot_id, payload_json) VALUES (?, ?, ?, ?, ?)")
+      .run(snapshot.feedId, snapshot.runId, snapshot.sourceId, snapshot.snapshotId, JSON.stringify(snapshot.value));
+  }
+
 }
 
 class SqliteSourceRepository implements SourceRepository {

@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { containsFullEmail } from "../../shared/emailThread";
-import { post } from "../app/api";
+import { api, post } from "../app/api";
 import type { Card, CardAction, CardBlock, WorkItemView } from "../types";
 import { DetachedLink } from "../ui/DetachedLink";
 import { FormattedText } from "../ui/FormattedText";
@@ -81,8 +81,31 @@ function CardHistory({ card }: { card: Card }) {
 }
 
 function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: string; block: CardBlock; onChanged: () => void }) {
+  const sourceSnapshotKey = block.sourceSnapshot
+    ? `${block.sourceSnapshot.runId}:${block.sourceSnapshot.sourceId}:${block.sourceSnapshot.snapshotId}`
+    : "";
   const [value, setValue] = useState(block.value ?? "");
+  const [threadText, setThreadText] = useState(block.text ?? "");
+  const [loadedSourceKey, setLoadedSourceKey] = useState("");
+  const [threadLoading, setThreadLoading] = useState(false);
+  const [threadError, setThreadError] = useState("");
+  const currentSourceKey = useRef(sourceSnapshotKey);
+  const threadRequest = useRef<AbortController | null>(null);
   useEffect(() => setValue(block.value ?? ""), [block.value]);
+  useEffect(() => {
+    currentSourceKey.current = sourceSnapshotKey;
+    threadRequest.current?.abort();
+    threadRequest.current = null;
+    setThreadText(block.text ?? "");
+    setLoadedSourceKey("");
+    setThreadLoading(false);
+    setThreadError("");
+    return () => {
+      currentSourceKey.current = "";
+      threadRequest.current?.abort();
+      threadRequest.current = null;
+    };
+  }, [block.text, sourceSnapshotKey]);
 
   const save = async () => {
     if (value === (block.value ?? "")) return;
@@ -206,11 +229,36 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
     return <section className="block block-receipt"><h3>{block.label ?? "Done"}</h3><p><FormattedText text={block.text} /></p></section>;
   }
   if (block.type === "email_thread") {
-    const fullEmail = containsFullEmail(block.text);
+    const fullEmail = Boolean(block.sourceSnapshot) || containsFullEmail(threadText);
+    const loadThread = async (open: boolean) => {
+      const source = block.sourceSnapshot;
+      if (!open || !source || loadedSourceKey === sourceSnapshotKey || threadLoading) return;
+      setThreadLoading(true);
+      setThreadError("");
+      const requestedSourceKey = sourceSnapshotKey;
+      const controller = new AbortController();
+      threadRequest.current?.abort();
+      threadRequest.current = controller;
+      try {
+        const result = await api<{ text: string }>(`/api/feeds/${encodeURIComponent(feedId)}/runs/${encodeURIComponent(source.runId)}/sources/${encodeURIComponent(source.sourceId)}/snapshots/${encodeURIComponent(source.snapshotId)}/thread`, { signal: controller.signal });
+        if (currentSourceKey.current !== requestedSourceKey) return;
+        setThreadText(result.text);
+        setLoadedSourceKey(requestedSourceKey);
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        if (currentSourceKey.current !== requestedSourceKey) return;
+        setThreadError(error instanceof Error ? error.message : "Could not load the email thread.");
+      } finally {
+        if (threadRequest.current === controller) threadRequest.current = null;
+        if (!controller.signal.aborted && currentSourceKey.current === requestedSourceKey) setThreadLoading(false);
+      }
+    };
     return (
-      <details className="block email-thread">
+      <details key={sourceSnapshotKey} className="block email-thread" onToggle={(event) => void loadThread(event.currentTarget.open)}>
         <summary>{fullEmail ? "Read full email" : "Email details"} <kbd>O</kbd></summary>
-        <div className="email-thread-body"><FormattedText text={block.text} /></div>
+        <div className="email-thread-body">
+          {threadLoading ? "Loading email thread…" : threadError || <FormattedText text={threadText} />}
+        </div>
       </details>
     );
   }

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { runTendCli } from "../server/cli";
-import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS, cliCommandName } from "../server/cli/contract";
+import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS, cliCommandName, cliCommandUsage } from "../server/cli/contract";
 import { MissingFlagError, formatCliError } from "../server/cli/errors";
 import { assertCliRuntimeMatchesLive } from "../server/cli/runtimeGuard";
 import { setupChroniclePrompt, setupCodexPrompt } from "../server/cli/setup";
@@ -24,6 +24,9 @@ describe("CLI contract", () => {
     expect(commandNames).toContain("work:complete");
     expect(commandNames).toContain("work:reconcile-approved");
     expect(commandNames).toContain("source:record-run");
+    expect(commandNames).toContain("sweep:record-inbox-page");
+    expect(commandNames).toContain("sweep:abandon-inbox-collection");
+    expect(commandNames).toContain("sweep:finalize-inbox");
     expect(commandNames).toContain("card:upsert");
     expect(commandNames).toContain("learning:request");
 
@@ -51,6 +54,8 @@ describe("CLI contract", () => {
       hint: "Usage: tend cli work:claim --feed <id> --thread <id> [--cross-feed] [--session <id>]",
     });
     expect(CLI_COMMANDS.find((command) => command.startsWith("feed:bind "))).toContain("--agent claude [--replace]");
+    expect(cliCommandUsage("sweep:record-inbox-page")).toContain("--thread-ids-file <path>");
+    expect(cliCommandUsage("sweep:abandon-inbox-collection")).toContain("--reason <text>");
   });
 
   test("prints a self-contained Codex setup prompt for binary installs", () => {

@@ -33,6 +33,7 @@ export function normalizeSweepState(state: SweepState & { currentRunId?: string 
     lastFeedbackId: state.lastFeedbackId,
     recollectionOffered: state.recollectionOffered,
     statusMessage: state.statusMessage,
+    ...(state.inboxCollection ? { inboxCollection: state.inboxCollection } : {}),
   };
 }
 
@@ -158,9 +159,15 @@ export class MirroredSweepRepository implements SweepRepository {
   }
 
   private async syncFeed(feedId: string): Promise<void> {
-    const [primaryHasState, mirrorHasState] = await Promise.all([this.primary.hasState(feedId), this.mirror.hasState(feedId)]);
-    if (!primaryHasState && mirrorHasState) await this.primary.writeState(feedId, await this.mirror.readState(feedId));
-    if (primaryHasState) await this.mirror.writeState(feedId, await this.primary.readState(feedId));
+    const primaryHasState = await this.primary.hasState(feedId);
+    if (!primaryHasState && await this.mirror.hasState(feedId)) await this.primary.writeState(feedId, await this.mirror.readState(feedId));
+    if (primaryHasState) {
+      try {
+        await this.mirror.writeState(feedId, await this.primary.readState(feedId));
+      } catch (error) {
+        console.error("SQLite sweep state is available, but its filesystem mirror could not be repaired:", error);
+      }
+    }
 
     await this.syncBatches(feedId);
     await this.syncFeedback(feedId);
@@ -168,18 +175,42 @@ export class MirroredSweepRepository implements SweepRepository {
 
   private async syncBatches(feedId: string): Promise<void> {
     const primary = await this.primary.listBatches(feedId);
-    const mirror = await this.mirror.listBatches(feedId);
+    let mirror: SweepBatch[];
+    try {
+      mirror = await this.mirror.listBatches(feedId);
+    } catch (error) {
+      console.error("SQLite sweep batches are available, but their filesystem mirror could not be scanned:", error);
+      return;
+    }
     const primaryIds = new Set(primary.map((batch) => batch.id));
     for (const batch of mirror.filter((item) => !primaryIds.has(item.id))) await this.primary.writeBatch(batch);
-    for (const batch of primary) await this.mirror.writeBatch(batch);
+    for (const batch of primary) {
+      try {
+        await this.mirror.writeBatch(batch);
+      } catch (error) {
+        console.error("SQLite sweep batch is available, but its filesystem mirror could not be repaired:", error);
+      }
+    }
   }
 
   private async syncFeedback(feedId: string): Promise<void> {
     const primary = await this.primary.listFeedback(feedId);
-    const mirror = await this.mirror.listFeedback(feedId);
+    let mirror: SweepFeedbackTrace[];
+    try {
+      mirror = await this.mirror.listFeedback(feedId);
+    } catch (error) {
+      console.error("SQLite sweep feedback is available, but its filesystem mirror could not be scanned:", error);
+      return;
+    }
     const primaryIds = new Set(primary.map((trace) => trace.id));
     for (const trace of mirror.filter((item) => !primaryIds.has(item.id))) await this.primary.writeFeedback(trace);
-    for (const trace of primary) await this.mirror.writeFeedback(trace);
+    for (const trace of primary) {
+      try {
+        await this.mirror.writeFeedback(trace);
+      } catch (error) {
+        console.error("SQLite sweep feedback is available, but its filesystem mirror could not be repaired:", error);
+      }
+    }
   }
 
   private async writeMirror(callback: () => Promise<void>): Promise<void> {

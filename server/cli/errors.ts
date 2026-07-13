@@ -42,5 +42,10 @@ function hintForDomainError(message: string): string {
   if (message.includes("Approved action must pass action:verify")) return "Call tend cli action:verify immediately before the external mutation, then complete with the same token.";
   if (message.includes("Approval stale")) return "Reread the current card or routine group, then return it to review or ask the user to approve the current snapshot.";
   if (message.includes("Source recipe not found")) return "Inspect the feed sources with tend cli inspect --feed <id>, then use a configured source id.";
+  if (message.includes("Use either --")) return "Choose the inline JSON/text flag or its --*-file form, remove the other, and retry.";
+  if (message.includes("Inbox collection") && message.includes("still active")) return "Continue with its collection ID, finalize it, or explicitly abandon it with sweep:abandon-inbox-collection.";
+  if (message.includes("Inbox collection receipt not found") || message.includes("no longer current")) return "Read tend cli state --feed inbox and use the active latestCollection receipt; otherwise start a new collection.";
+  if (message.includes("already been finalized")) return "Read tend cli state --feed inbox and use the verified current batch instead of retrying finalization.";
+  if (message.includes("requestPageToken does not continue")) return "Read latestCollection from tend cli state --feed inbox and retry with its final nextPageToken.";
   return "Run tend cli help for the command contract and retry with current feed/work state.";
 }

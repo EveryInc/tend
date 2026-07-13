@@ -121,9 +121,8 @@ export interface FeedConfig {
   updatedAt: string;
 }
 
-export interface CardBlock {
+interface CardBlockFields {
   id: string;
-  type: BlockType;
   label?: string;
   title?: string;
   text?: string;
@@ -152,6 +151,31 @@ export interface CardBlock {
     note?: string;
   };
 }
+
+export interface SourceSnapshotReference {
+  runId: string;
+  sourceId: string;
+  snapshotId: string;
+}
+
+export type NonEmailCardBlock = CardBlockFields & {
+  type: Exclude<BlockType, "email_thread">;
+  sourceSnapshot?: never;
+};
+
+export type InlineEmailThreadBlock = Omit<CardBlockFields, "text"> & {
+  type: "email_thread";
+  text: string;
+  sourceSnapshot?: never;
+};
+
+export type ReferencedEmailThreadBlock = Omit<CardBlockFields, "text"> & {
+  type: "email_thread";
+  text?: never;
+  sourceSnapshot: SourceSnapshotReference;
+};
+
+export type CardBlock = NonEmailCardBlock | InlineEmailThreadBlock | ReferencedEmailThreadBlock;
 
 export interface ProposedAction {
   label: string;
@@ -303,6 +327,7 @@ export interface Card {
   why: string;
   sourceMailbox?: string;
   sourceRunIds?: string[];
+  sourceItemId?: string;
   contextInfluence?: CardContextInfluence;
   blocks: CardBlock[];
   proposedAction?: ProposedAction;
@@ -422,6 +447,7 @@ export interface SweepState {
   lastFeedbackId: string | null;
   recollectionOffered: boolean;
   statusMessage: string | null;
+  inboxCollection?: InboxCollectionReceipt;
 }
 
 export interface SweepFeedbackTrace {
@@ -442,7 +468,34 @@ export interface SweepBatch {
   sourceRunIds: string[];
   contextUpdateId?: string;
   triggerWorkId?: string;
+  inboxCoverage?: InboxCoverageReceipt;
   createdAt: string;
+}
+
+export interface InboxPageReceipt {
+  receiptId: string;
+  requestPageToken: string | null;
+  nextPageToken: string | null;
+  threadIds: string[];
+}
+
+export interface InboxCollectionReceipt {
+  id: string;
+  sourceId: string;
+  triggerWorkId?: string;
+  query: "in:inbox";
+  collectedAt: string;
+  pages: InboxPageReceipt[];
+}
+
+export interface InboxCoverageReceipt {
+  sourceId: string;
+  threadCount: number;
+  cardCount: number;
+  removedCardIds: string[];
+  threadCardMap: Array<{ threadId: string; cardId: string }>;
+  collection: InboxCollectionReceipt;
+  verifiedAt: string;
 }
 
 export interface SourceRun {
@@ -451,6 +504,7 @@ export interface SourceRun {
   sourceId: string;
   snapshots: number;
   judgments: unknown[];
+  itemIds?: string[];
   contextUse?: SourceRunContextUse;
   triggerWorkId?: string;
   completedAt?: string;
@@ -521,6 +575,10 @@ export interface FeedView {
   work: WorkItemView[];
   sweep: SweepState;
   drain: DrainState;
+  inboxStatus?: {
+    latestCollection?: InboxCollectionReceipt;
+    coverage?: InboxCoverageReceipt;
+  };
   readyNextPass: number;
 }
 

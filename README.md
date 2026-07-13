@@ -273,6 +273,7 @@ pnpm seed:demo
 | Goal                  | Read                                                                                                      |
 | --------------------- | --------------------------------------------------------------------------------------------------------- |
 | Use Tend day to day   | [Manual](./MANUAL.md), [installation](./docs/INSTALL.md), [iPhone setup](./docs/IOS.md)                   |
+| Sweep every inbox item | [Inbox Sweep contract and validation](./docs/INBOX_SWEEP.md)                                             |
 | Understand the system | [Architecture](./docs/ARCHITECTURE.md), [data](./docs/DATA.md), [security](./docs/SECURITY.md)            |
 | Work on Tend          | [Contributing](./CONTRIBUTING.md), [development](./docs/DEVELOPMENT.md), [releasing](./docs/RELEASING.md) |
 | Operate feed threads  | [Agent contract](./docs/AGENT_CONTRACT.md), [runbook](./RUNBOOK.md), [runner skill](./docs/SKILL.md)      |

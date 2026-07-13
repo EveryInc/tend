@@ -239,8 +239,12 @@ export function formatWorkClaimOutput(feedId: string, work: WorkClaimResult, con
   }
 
   if (work.intent === "recollect_sources") {
-    operatorGuidance.requiredWriteBack = "Record one or more source runs with `source:record-run --work <workId>`, then create a sweep batch with `sweep:record-batch --work <workId>` before `work:complete`.";
-    operatorGuidance.sourceRunRule = "Source recollection work must complete with a new sweep batch recorded for this exact work item.";
+    operatorGuidance.requiredWriteBack = work.feedId === "inbox"
+      ? "Record every provider page with `sweep:record-inbox-page --work <workId>`, then atomically finalize its app-minted collection with `sweep:finalize-inbox --collection <id> --work <workId>` before `work:complete`."
+      : "Record one or more source runs with `source:record-run --work <workId>`, then create a sweep batch with `sweep:record-batch --work <workId>` before `work:complete`.";
+    operatorGuidance.sourceRunRule = work.feedId === "inbox"
+      ? "Inbox recollection work must complete with immutable page receipts and a verified one-card-per-thread batch recorded for this exact work item."
+      : "Source recollection work must complete with a new sweep batch recorded for this exact work item.";
   }
 
   return Object.keys(operatorGuidance).length ? { ...work, operatorGuidance } : work;

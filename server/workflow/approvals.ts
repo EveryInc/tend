@@ -44,7 +44,16 @@ export function verifySourceMailbox(feedId: string, card: Card, action: Proposed
 export function actionDigest(card: Card, cardActionId?: string): string {
   const action = configuredApprovalAction(card, cardActionId);
   const artifact = action?.artifactBlockId ? card.blocks.find((block) => block.id === action.artifactBlockId) : undefined;
-  return digest({ cardActionId: cardActionId ?? null, action, artifact });
+  return digest({
+    cardActionId: cardActionId ?? null,
+    action,
+    artifact,
+    sourceIdentity: {
+      sourceRunIds: card.sourceRunIds ?? [],
+      sourceItemId: card.sourceItemId ?? null,
+      sourceMailbox: card.sourceMailbox ?? null,
+    },
+  });
 }
 
 export function cleanupDigest(card: Card, instruction: string): string {

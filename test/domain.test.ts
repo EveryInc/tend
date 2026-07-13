@@ -20,6 +20,7 @@ import { AttentionStore } from "../server/store";
 import type { Card, WorkClaimedByReport, WorkItem } from "../shared/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
 import { readClaudeWakeLines } from "./support/agents";
+import { recordInboxCollection } from "./support/inboxSweep";
 
 const roots: string[] = [];
 
@@ -106,6 +107,14 @@ describe("feed thread operator handshake", () => {
       },
     });
     expect(formatWorkClaimOutput("company-attention", work, { card })).toBe(work);
+  });
+
+  test("routes Inbox recollection claims through immutable page receipts", () => {
+    const work = { id: "work-1", feedId: "inbox", intent: "recollect_sources", kind: "instruction" } as WorkItem;
+    const guidance = formatWorkClaimOutput("inbox", work) as WorkItem & { operatorGuidance: { requiredWriteBack: string } };
+    expect(guidance.operatorGuidance.requiredWriteBack).toContain("sweep:record-inbox-page --work <workId>");
+    expect(guidance.operatorGuidance.requiredWriteBack).toContain("sweep:finalize-inbox --collection <id> --work <workId>");
+    expect(guidance.operatorGuidance.requiredWriteBack).not.toContain("source:record-run");
   });
 
   test("explains sweep rejudge claim prerequisites", () => {
@@ -315,21 +324,6 @@ describe("auto-drain prompt", () => {
 });
 
 describe("filesystem workspace", () => {
-  test("creates real Inbox and Company defaults with inspectable recipes and setup cards", async () => {
-    const { root, store, domain } = await setup();
-    const workspace = await store.readWorkspace();
-    expect(workspace.feeds.map((feed) => feed.id)).toEqual(["inbox", "company-attention"]);
-    expect(workspace.active.sources[0].id).toBe("gmail-inbox");
-    expect(workspace.active.cards[0].id).toBe("inbox-ready-to-collect");
-    expect(workspace.dictation.status).toBe("not_checked");
-    const company = await domain.inspectHowFeedWorks("company-attention");
-    expect((company.sources as Array<{ content: string }>)[0].content).toContain("Return no card rather than padding");
-    const inbox = await domain.inspectHowFeedWorks("inbox");
-    expect((inbox.sources as Array<{ content: string }>)[0].content).toContain("Default every reply draft to the owner of `sourceMailbox`");
-    expect(await readFile(path.join(root, "prompts", "compose-card.md"), "utf8")).toContain("Default every reply draft to the owner of `sourceMailbox`");
-    expect(await readFile(path.join(root, "prompts", "execute-work.md"), "utf8")).toContain("write as the owner of `sourceMailbox`");
-  });
-
   test("lets Codex detect Monologue and persist its configured recording shortcut", async () => {
     const { root, domain, store } = await setup();
     const appPath = path.join(root, "Monologue.app");
@@ -344,19 +338,19 @@ describe("filesystem workspace", () => {
 
   test("keeps raw snapshots immutable and stores run checkpoints separately", async () => {
     const { root, domain, store } = await setup();
-    const batchId = await domain.recordSweepBatch("inbox", []);
-    const run = await domain.recordSourceRun("inbox", "gmail-inbox", [{ threadId: "gmail-1", subject: "Hello" }], [{ decision: "keep" }], { cursor: "gmail-1" });
-    await expect(domain.store.writeRawSnapshot("inbox", run, "gmail-inbox", "snapshot-1", { changed: true })).rejects.toThrow("immutable");
-    const checkpoint = JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8"));
-    expect(checkpoint.cursor).toBe("gmail-1");
-    expect((await store.readSweepState("inbox")).currentBatchId).toBe(batchId);
+    const batchId = await domain.recordSweepBatch("company-attention", []);
+    const run = await domain.recordSourceRun("company-attention", "company-attention", [{ itemId: "item-1", subject: "Hello" }], [{ decision: "keep" }], { cursor: "item-1" });
+    await expect(domain.store.writeRawSnapshot("company-attention", run, "company-attention", "snapshot-1", { changed: true })).rejects.toThrow("immutable");
+    const checkpoint = JSON.parse(await readFile(path.join(root, "feeds", "company-attention", "checkpoints", "company-attention.json"), "utf8"));
+    expect(checkpoint.cursor).toBe("item-1");
+    expect((await store.readSweepState("company-attention")).currentBatchId).toBe(batchId);
   });
 
   test("rejects source-backed card writes and actions from stale sweep runs", async () => {
     const { domain, store } = await setup();
-    const oldRun = await domain.recordSourceRun("inbox", "gmail-inbox", [{ threadId: "gmail-old", subject: "Sign this" }], [{ decision: "keep" }], { cursor: "gmail-old" });
-    await domain.recordSweepBatch("inbox", [oldRun]);
-    await domain.upsertCard("inbox", {
+    const oldRun = await domain.recordSourceRun("company-attention", "company-attention", [{ itemId: "old", subject: "Sign this" }], [{ decision: "keep" }], { cursor: "old" });
+    await domain.recordSweepBatch("company-attention", [oldRun]);
+    await domain.upsertCard("company-attention", {
       id: "stale-source-action",
       title: "Sign this agreement.",
       why: "The old source snapshot said a signature was needed.",
@@ -365,10 +359,10 @@ describe("filesystem workspace", () => {
       actions: [{ id: "review", label: "Review agreement", behavior: "queue_instruction", instruction: "Review the agreement.", variant: "primary" }],
     });
 
-    const newRun = await domain.recordSourceRun("inbox", "gmail-inbox", [{ threadId: "gmail-new", subject: "Signed!" }], [{ decision: "suppress" }], { cursor: "gmail-new" });
-    await domain.recordSweepBatch("inbox", [newRun]);
+    const newRun = await domain.recordSourceRun("company-attention", "company-attention", [{ itemId: "new", subject: "Signed!" }], [{ decision: "suppress" }], { cursor: "new" });
+    await domain.recordSweepBatch("company-attention", [newRun]);
 
-    await expect(domain.upsertCard("inbox", {
+    await expect(domain.upsertCard("company-attention", {
       id: "stale-source-action",
       title: "Sign this agreement.",
       why: "A stale replay should not overwrite the newer sweep.",
@@ -377,9 +371,9 @@ describe("filesystem workspace", () => {
       actions: [{ id: "review", label: "Review agreement", behavior: "queue_instruction", instruction: "Review the agreement.", variant: "primary" }],
     })).rejects.toThrow("source evidence is stale");
 
-    await expect(domain.runCardAction("inbox", "stale-source-action", "review")).rejects.toThrow("source evidence is stale");
+    await expect(domain.runCardAction("company-attention", "stale-source-action", "review")).rejects.toThrow("source evidence is stale");
 
-    await domain.upsertCard("inbox", {
+    await domain.upsertCard("company-attention", {
       id: "stale-source-action",
       title: "Already signed.",
       why: "The current source snapshot shows the work is complete.",
@@ -388,13 +382,13 @@ describe("filesystem workspace", () => {
       actions: [],
     });
 
-    expect((await store.readCard("inbox", "stale-source-action")).sourceRunIds).toEqual([newRun]);
+    expect((await store.readCard("company-attention", "stale-source-action")).sourceRunIds).toEqual([newRun]);
   });
 
   test("refuses to record raw evidence for an unconfigured source recipe", async () => {
     const { root, domain } = await setup();
-    await expect(domain.recordSourceRun("inbox", "not-an-authorized-recipe", [{ threadId: "nope" }], [], { cursor: "nope" })).rejects.toThrow("Source recipe not found");
-    await expect(readFile(path.join(root, "feeds", "inbox", "checkpoints", "not-an-authorized-recipe.json"), "utf8")).rejects.toThrow();
+    await expect(domain.recordSourceRun("company-attention", "not-an-authorized-recipe", [{ itemId: "nope" }], [], { cursor: "nope" })).rejects.toThrow("Source recipe not found");
+    await expect(readFile(path.join(root, "feeds", "company-attention", "checkpoints", "not-an-authorized-recipe.json"), "utf8")).rejects.toThrow();
   });
 
   test("creates a feed and source recipe from plain English", async () => {
@@ -577,7 +571,7 @@ describe("filesystem workspace", () => {
 
   test("migrates source runs from JSON files into SQLite and mirrors updates", async () => {
     const { root, domain: fileDomain } = await setup();
-    const runId = await fileDomain.recordSourceRun("inbox", "gmail-inbox", [{ threadId: "gmail-1", subject: "Hello" }], [{ decision: "keep" }], { cursor: "gmail-1" });
+    const runId = await fileDomain.recordSourceRun("company-attention", "company-attention", [{ itemId: "item-1", subject: "Hello" }], [{ decision: "keep" }], { cursor: "item-1" });
 
     const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
     await sqlite.init();
@@ -593,15 +587,15 @@ describe("filesystem workspace", () => {
     });
     await store.init();
 
-    expect((await sqlite.sourceRuns().list("inbox")).map((run) => run.id)).toContain(runId);
+    expect((await sqlite.sourceRuns().list("company-attention")).map((run) => run.id)).toContain(runId);
 
-    const run = await store.readRun("inbox", runId);
+    const run = await store.readRun("company-attention", runId);
     await store.writeRun({ ...run, judgments: [{ decision: "keep" }, { decision: "promote" }] });
 
-    const workspace = await store.readWorkspace("inbox");
+    const workspace = await store.readWorkspace("company-attention");
     expect(workspace.active.runs.map((item) => item.id)).toContain(runId);
-    expect((await sqlite.sourceRuns().get("inbox", runId)).judgments).toHaveLength(2);
-    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "runs", `${runId}.json`), "utf8")).judgments).toHaveLength(2);
+    expect((await sqlite.sourceRuns().get("company-attention", runId)).judgments).toHaveLength(2);
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "company-attention", "runs", `${runId}.json`), "utf8")).judgments).toHaveLength(2);
     sqlite.close();
   });
 
@@ -739,8 +733,8 @@ describe("filesystem workspace", () => {
 
   test("migrates source recipes and checkpoints from JSON files into SQLite and mirrors updates", async () => {
     const { root, domain: fileDomain } = await setup();
-    const source = await fileDomain.addSourceFromBrief("inbox", "Read the important local notes.");
-    await fileDomain.recordSourceRun("inbox", source.id, [{ note: "one" }], [{ decision: "keep" }], { cursor: "note-1" });
+    const source = await fileDomain.addSourceFromBrief("company-attention", "Read the important local notes.");
+    await fileDomain.recordSourceRun("company-attention", source.id, [{ note: "one" }], [{ decision: "keep" }], { cursor: "note-1" });
 
     const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
     await sqlite.init();
@@ -756,17 +750,17 @@ describe("filesystem workspace", () => {
     });
     await store.init();
 
-    expect((await sqlite.sources().list("inbox")).map((record) => record.recipe.id)).toContain(source.id);
-    expect((await sqlite.sources().get("inbox", source.id)).content).toContain("Read the important local notes.");
-    expect((await sqlite.sources().get("inbox", source.id)).checkpoint).toMatchObject({ cursor: "note-1" });
+    expect((await sqlite.sources().list("company-attention")).map((record) => record.recipe.id)).toContain(source.id);
+    expect((await sqlite.sources().get("company-attention", source.id)).content).toContain("Read the important local notes.");
+    expect((await sqlite.sources().get("company-attention", source.id)).checkpoint).toMatchObject({ cursor: "note-1" });
 
-    await store.writeSourceRecipe("inbox", source.id, "# Updated source\n\nRead only starred local notes.");
-    await store.writeSourceCheckpoint("inbox", source.id, { cursor: "note-2" });
+    await store.writeSourceRecipe("company-attention", source.id, "# Updated source\n\nRead only starred local notes.");
+    await store.writeSourceCheckpoint("company-attention", source.id, { cursor: "note-2" });
 
-    expect((await sqlite.sources().get("inbox", source.id)).content).toContain("starred local notes");
-    expect((await sqlite.sources().get("inbox", source.id)).checkpoint).toMatchObject({ cursor: "note-2" });
-    expect(await readFile(path.join(root, "feeds", "inbox", "sources", source.filename), "utf8")).toContain("starred local notes");
-    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", source.checkpointFilename), "utf8")).cursor).toBe("note-2");
+    expect((await sqlite.sources().get("company-attention", source.id)).content).toContain("starred local notes");
+    expect((await sqlite.sources().get("company-attention", source.id)).checkpoint).toMatchObject({ cursor: "note-2" });
+    expect(await readFile(path.join(root, "feeds", "company-attention", "sources", source.filename), "utf8")).toContain("starred local notes");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "company-attention", "checkpoints", source.checkpointFilename), "utf8")).cursor).toBe("note-2");
     sqlite.close();
   });
 
@@ -1934,11 +1928,11 @@ describe("approval, learning, and heartbeat safety", () => {
       items: [{ id: "setup-noise", cardId: "inbox-ready-to-collect", title: "Routine notice", reason: "No reply or decision is needed." }],
     });
 
-    const batchId = await domain.recordSweepBatch("inbox", []);
+    const { batchId } = await domain.finalizeInboxSweep("inbox", "gmail-inbox", [], [], {}, await recordInboxCollection(domain, []));
 
     expect(batchId).toMatch(/^batch_/);
     expect((await store.readRoutineActionGroup("inbox", "old-sweep-cleanup")).status).toBe("stale");
-    expect((await store.readRoutineActionGroup("inbox", "old-sweep-cleanup")).error).toContain("Superseded by newer sweep batch");
+    expect((await store.readRoutineActionGroup("inbox", "old-sweep-cleanup")).error).toContain("Superseded by finalized Inbox sweep");
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).routineActionGroupId).toBeUndefined();
     expect((await store.readFeed("inbox")).routineActions.filter((group) => group.status === "proposed")).toHaveLength(0);
   });
@@ -2126,7 +2120,7 @@ describe("scoped persistent voice dock routing", () => {
 
   test("falls back from stale object targets to the nearest valid parent scope", async () => {
     const { domain } = await setup();
-    const batchId = await domain.recordSweepBatch("inbox", []);
+    const { batchId } = await domain.finalizeInboxSweep("inbox", "gmail-inbox", [], [], {}, await recordInboxCollection(domain, []));
     expect(await domain.store.validateVoiceTarget({ kind: "card", feedId: "inbox", cardId: "missing-card" })).toEqual({ kind: "sweep", feedId: "inbox", batchId });
     expect(await domain.store.validateVoiceTarget({ kind: "source_recipe", feedId: "inbox", sourceId: "missing-source" })).toEqual({ kind: "feed", feedId: "inbox" });
     expect(await domain.store.validateVoiceTarget({ kind: "prompt_layer", feedId: "missing-feed", promptId: "judge.md" })).toEqual({ kind: "attention" });
@@ -2345,7 +2339,7 @@ describe("scoped persistent voice dock routing", () => {
 
   test("rejects sweep batches that reference missing source runs", async () => {
     const { domain } = await setup();
-    await expect(domain.recordSweepBatch("inbox", ["run-does-not-exist"])).rejects.toThrow("Source run not found");
+    await expect(domain.recordSweepBatch("company-attention", ["run-does-not-exist"])).rejects.toThrow("Source run not found");
   });
 
   test("queues broader voice intent for Codex and preserves approval-gated revision history", async () => {

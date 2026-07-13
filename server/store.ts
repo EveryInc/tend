@@ -36,6 +36,11 @@ import {
   DISTILL_POLICY_PROMPT,
   EXECUTE_WORK_PROMPT,
   GLOBAL_POLICY,
+  DEFAULT_FEED_JUDGE_LAYER,
+  INBOX_JUDGE_LAYER,
+  INBOX_POLICY,
+  INBOX_PURPOSE,
+  INBOX_SEED_VERSION,
   companyRecipe,
   feedConfig,
   inboxRecipe,
@@ -50,6 +55,7 @@ import { FileMindContextRepository, type MindContextRepository } from "./reposit
 import { FileMobileCommandReceiptRepository, type MobileCommandReceiptRepository } from "./repositories/mobileCommandReceipts";
 import { FileRevisionRepository, type RevisionRepository } from "./repositories/revisions";
 import { FileRoutineActionGroupRepository, type RoutineActionGroupRepository } from "./repositories/routineActionGroups";
+import { FileRawSnapshotRepository, type RawSnapshotRepository } from "./repositories/rawSnapshots";
 import { FileSourceRunRepository, type SourceRunRepository } from "./repositories/sourceRuns";
 import { FileSourceRepository, type SourceRepository } from "./repositories/sources";
 import { FileSweepRepository, type SweepRepository } from "./repositories/sweeps";
@@ -57,6 +63,7 @@ import { FileTextDocumentRepository, type TextDocumentRepository, type TextDocum
 import { FileWorkItemRepository, type WorkItemRepository } from "./repositories/workItems";
 import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 import type { MobileCommandReceipt } from "../shared/mobile";
+import { migrateInboxSeed } from "./migrations/inboxSeed";
 
 export const GLOBAL_PROMPT_NAMES = ["judge.md", "compose-card.md", "execute-work.md", "distill-policy.md", "compound.md"] as const;
 export const FEED_PROMPT_NAMES = ["judge.md", "compose-card.md"] as const;
@@ -95,6 +102,7 @@ export class AttentionStore {
   private readonly mobileCommandReceipts: MobileCommandReceiptRepository;
   private readonly revisions: RevisionRepository;
   private readonly routineActionGroups: RoutineActionGroupRepository;
+  private readonly rawSnapshots: RawSnapshotRepository;
   private readonly sourceRuns: SourceRunRepository;
   private readonly sources: SourceRepository;
   private readonly sweeps: SweepRepository;
@@ -104,7 +112,7 @@ export class AttentionStore {
   private readonly runAtomic?: AtomicRunner;
   private readonly agentWakeSeq = new Map<AgentPresence["agent"], number>();
 
-  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; mindContext?: MindContextRepository; mobileCommandReceipts?: MobileCommandReceiptRepository; revisions?: RevisionRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; sources?: SourceRepository; sweeps?: SweepRepository; textDocuments?: TextDocumentRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository; runAtomic?: AtomicRunner } = {}) {
+  constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; mindContext?: MindContextRepository; mobileCommandReceipts?: MobileCommandReceiptRepository; revisions?: RevisionRepository; routineActionGroups?: RoutineActionGroupRepository; rawSnapshots?: RawSnapshotRepository; sourceRuns?: SourceRunRepository; sources?: SourceRepository; sweeps?: SweepRepository; textDocuments?: TextDocumentRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository; runAtomic?: AtomicRunner } = {}) {
     this.dataDir = dataDir;
     this.cards = options.cards ?? new FileCardRepository(this.dataDir);
     this.events = options.events ?? new FileFeedEventRepository(this.dataDir);
@@ -112,6 +120,7 @@ export class AttentionStore {
     this.mobileCommandReceipts = options.mobileCommandReceipts ?? new FileMobileCommandReceiptRepository(this.dataDir);
     this.revisions = options.revisions ?? new FileRevisionRepository(this.dataDir);
     this.routineActionGroups = options.routineActionGroups ?? new FileRoutineActionGroupRepository(this.dataDir);
+    this.rawSnapshots = options.rawSnapshots ?? new FileRawSnapshotRepository(this.dataDir);
     this.sourceRuns = options.sourceRuns ?? new FileSourceRunRepository(this.dataDir);
     this.sources = options.sources ?? new FileSourceRepository(this.dataDir);
     this.sweeps = options.sweeps ?? new FileSweepRepository(this.dataDir);
@@ -136,6 +145,7 @@ export class AttentionStore {
     await this.mobileCommandReceipts.init();
     await this.revisions.init(feedIds);
     await this.routineActionGroups.init(feedIds);
+    await this.rawSnapshots.init(feedIds);
     await this.sourceRuns.init(feedIds);
     await this.sources.init(feedIds);
     await this.sweeps.init(feedIds);
@@ -372,6 +382,14 @@ export class AttentionStore {
     runs.sort((a, b) => (a.completedAt ?? "").localeCompare(b.completedAt ?? "") || a.id.localeCompare(b.id));
     routineActions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     work.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    let inboxStatus: FeedView["inboxStatus"];
+    if (feedId === "inbox") {
+      const coverage = sweep.currentBatchId ? (await this.sweeps.getBatch(feedId, sweep.currentBatchId)).inboxCoverage : undefined;
+      inboxStatus = {
+        ...(sweep.inboxCollection ? { latestCollection: sweep.inboxCollection } : {}),
+        ...(coverage ? { coverage } : {}),
+      };
+    }
     return {
       config,
       thread,
@@ -383,6 +401,7 @@ export class AttentionStore {
       work: work.map(workItemView),
       sweep,
       drain,
+      ...(inboxStatus ? { inboxStatus } : {}),
       readyNextPass: cards.filter((card) => card.status === "to_review_updated" && card.readyForPass > config.currentPass).length,
     };
   }
@@ -577,9 +596,15 @@ export class AttentionStore {
   }
 
   async writeRawSnapshot(feedId: string, runId: string, sourceId: string, snapshotId: string, value: unknown): Promise<void> {
-    const file = this.feedPath(feedId, "raw", runId, sourceId, `${snapshotId}.json`);
-    if (existsSync(file)) throw new Error("Raw snapshots are immutable.");
-    await writeJson(file, value);
+    await this.rawSnapshots.write({ feedId, runId, sourceId, snapshotId, value });
+  }
+
+  async readRawSnapshot(feedId: string, runId: string, sourceId: string, snapshotId: string): Promise<unknown> {
+    return this.rawSnapshots.get(feedId, runId, sourceId, snapshotId);
+  }
+
+  async hasRawSnapshot(feedId: string, runId: string, sourceId: string, snapshotId: string): Promise<boolean> {
+    return this.rawSnapshots.has(feedId, runId, sourceId, snapshotId);
   }
 
   async writeRun(run: SourceRun): Promise<void> {
@@ -696,19 +721,49 @@ export class AttentionStore {
   }
 
   private async ensureDefaultFeed(feedId: "inbox" | "company-attention"): Promise<void> {
-    if (existsSync(this.feedPath(feedId, "feed.json"))) return;
+    if (existsSync(this.feedPath(feedId, "feed.json"))) {
+      if (feedId === "inbox") {
+        await this.ensureFeedTextDocuments(feedId);
+        await migrateInboxSeed({
+          dataDir: this.dataDir,
+          textDocuments: this.textDocuments,
+          sources: this.sources,
+          readConfig: () => this.readConfig("inbox"),
+          writeConfig: (config) => this.writeConfig(config),
+          appendEvent: async (detail) => {
+            await this.appendEvent({ feedId: "inbox", type: "seed.migrated", detail });
+          },
+          readMigrationEvent: async () => {
+            const event = (await this.readEvents("inbox")).find((candidate) =>
+              candidate.type === "seed.migrated"
+              && typeof candidate.detail === "object"
+              && candidate.detail !== null
+              && (candidate.detail as { inboxVersion?: unknown }).inboxVersion === INBOX_SEED_VERSION,
+            );
+            if (!event || typeof event.detail !== "object" || !event.detail) return null;
+            const detail = event.detail as { inboxVersion: number; changed?: unknown };
+            return { inboxVersion: detail.inboxVersion, changed: Array.isArray(detail.changed) ? detail.changed.filter((item): item is string => typeof item === "string") : [] };
+          },
+        });
+      }
+      return;
+    }
     const inbox = feedId === "inbox";
     const config = inbox
-      ? feedConfig({ id: "inbox", name: "Inbox", purpose: "Turn email into a calm, actionable sweep with exact approval before any external send.", defaultCleanup: "Archive the email thread." })
+      ? feedConfig({ id: "inbox", name: "Inbox", purpose: INBOX_PURPOSE, defaultCleanup: "Archive the email thread." })
       : feedConfig({ id: "company-attention", name: "Company Attention", purpose: "Surface a small number of exceptional company signals with enough evidence to decide or act.", defaultCleanup: "Dismiss this card and suppress unchanged repeats." });
     await writeJson(this.feedPath(feedId, "feed.json"), config);
     await writeText(this.feedPath(feedId, "feed.md"), `# ${config.name}\n\n${config.purpose}\n`);
-    await this.textDocuments.write(`feeds/${feedId}/policy.md`, `# ${config.name} policy\n\n- Start with a high attention bar.\n- Preserve provenance and do not pad.\n`);
+    const policy = inbox
+      ? INBOX_POLICY
+      : `# ${config.name} policy\n\n- Start with a high attention bar.\n- Preserve provenance and do not pad.\n`;
+    await this.textDocuments.write(`feeds/${feedId}/policy.md`, policy);
     await writeJson(this.feedPath(feedId, "thread.json"), threadBinding());
     await writeJson(this.feedPath(feedId, "sources.json"), []);
     const source = inbox ? inboxRecipe() : companyRecipe();
     await this.addSource(feedId, source.recipe, source.markdown);
     await this.writeCard(setupCard(feedId, inbox ? "inbox" : "company"));
+    if (inbox) await writeJson(this.feedPath(feedId, "seed.json"), { inboxVersion: INBOX_SEED_VERSION, appliedAt: isoNow(), migrated: false });
   }
 
   private async ensureFeedTextDocuments(feedId: string): Promise<void> {
@@ -744,7 +799,7 @@ export class AttentionStore {
     const config = await this.readConfig(feedId);
     return [
       { key: `feeds/${feedId}/policy.md`, content: `# ${config.name} policy\n\n- Start with a high attention bar.\n- Preserve provenance and do not pad.\n` },
-      { key: `feeds/${feedId}/prompts/judge.md`, content: "# Feed judge prompt layer\n\nAdd feed-specific judging refinements here. Global policy and the global judge prompt remain in force.\n" },
+      { key: `feeds/${feedId}/prompts/judge.md`, content: feedId === "inbox" ? INBOX_JUDGE_LAYER : DEFAULT_FEED_JUDGE_LAYER },
       { key: `feeds/${feedId}/prompts/compose-card.md`, content: "# Feed card prompt layer\n\nAdd feed-specific card composition refinements here. Keep the outer card calm and compact.\n" },
     ];
   }

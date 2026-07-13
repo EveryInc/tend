@@ -11,7 +11,7 @@ import {
   resolveDbPath,
   resolveRuntimeRoot,
 } from "../runtime";
-import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS } from "./contract";
+import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS, cliCommandUsage } from "./contract";
 import { MissingFlagError } from "./errors";
 import {
   importLegacyAttentionCard,
@@ -22,6 +22,12 @@ import { assertCliRuntimeMatchesLive } from "./runtimeGuard";
 export async function runOperatorCli(rawArgs: string[]): Promise<void> {
   const root = resolveAppRoot();
   const [command = "help", ...argv] = rawArgs;
+  if (argv.includes("--help") || argv.includes("-h")) {
+    const usage = cliCommandUsage(command);
+    if (!usage) throw new Error(`Unknown Tend CLI command "${command}". Run tend cli help.`);
+    process.stdout.write(`${JSON.stringify({ command, usage: `tend cli ${usage}` }, null, 2)}\n`);
+    return;
+  }
   const runtimeRoot = resolveRuntimeRoot(root);
   await assertCliRuntimeMatchesLive(command, runtimeRoot, {
     explicitRuntime: Boolean(process.env.ATTENTION_HOME),
@@ -45,10 +51,16 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
     return result;
   };
   const text = async (name: string) => {
+    if (value(name) !== undefined && value(`${name}-file`) !== undefined) {
+      throw new Error(`Use either --${name} or --${name}-file, not both.`);
+    }
     const filename = value(`${name}-file`);
     return filename ? readFile(filename, "utf8") : required(name);
   };
   const structured = async (name: string) => {
+    if (value(name) !== undefined && value(`${name}-file`) !== undefined) {
+      throw new Error(`Use either --${name} or --${name}-file, not both.`);
+    }
     const filename = value(`${name}-file`);
     return filename
       ? JSON.parse(await readFile(filename, "utf8"))
@@ -152,6 +164,48 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
           json(required("runs")),
           value("work"),
           value("context"),
+        );
+        break;
+      case "sweep:finalize-inbox":
+        output = await domain.finalizeInboxSweep(
+          required("feed"),
+          required("source"),
+          await structured("snapshots"),
+          await structured("cards"),
+          await structured("checkpoint"),
+          required("collection"),
+          value("work"),
+        );
+        break;
+      case "sweep:record-inbox-page":
+        {
+          const collection = await domain.recordInboxPage(
+          required("feed"),
+          required("source"),
+          value("collection"),
+          value("work"),
+          value("request-page-token") ?? null,
+          value("next-page-token") ?? null,
+          await structured("thread-ids"),
+          );
+          const page = collection.pages.at(-1)!;
+          output = {
+            collectionId: collection.id,
+            receiptId: page.receiptId,
+            pageNumber: collection.pages.length,
+            threadCount: page.threadIds.length,
+            totalThreadCount: collection.pages.reduce((sum, receipt) => sum + receipt.threadIds.length, 0),
+            nextPageToken: page.nextPageToken,
+          };
+        }
+        break;
+      case "sweep:abandon-inbox-collection":
+        output = await domain.abandonInboxCollection(
+          required("feed"),
+          required("source"),
+          required("collection"),
+          value("work"),
+          required("reason"),
         );
         break;
       case "sweep:rejudge":

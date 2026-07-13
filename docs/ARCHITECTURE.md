@@ -23,7 +23,7 @@ flowchart LR
   Thread --> Connectors["Codex Desktop connectors"]
 ```
 
-The current domain model keeps the richest authoring artifacts readable in local file mirrors while moving active runtime records into SQLite. Active feed membership, editable prompt/policy documents, feed cards, routine action groups, source recipes/checkpoints, source run records, sweep state/artifacts, revision records, feed audit events, and work items are now behind repository interfaces with SQLite as the runtime authority and readable files as backup-compatible mirrors.
+The current domain model keeps the richest authoring artifacts readable in local file mirrors while moving active runtime records into SQLite. Active feed membership, editable prompt/policy documents, feed cards, routine action groups, source recipes/checkpoints, source run records, immutable raw evidence snapshots, sweep state/artifacts, revision records, feed audit events, and work items are now behind repository interfaces with SQLite as the runtime authority and readable files as backup-compatible mirrors.
 
 On Your Mind is a workspace-level contextual layer beside feeds. One bound Chronicle thread
 publishes ordered, privacy-filtered updates. Feed runners receive a prompt-safe summary before

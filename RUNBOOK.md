@@ -155,7 +155,18 @@ The inspection includes the current prompt-safe `mindContext`. If it is fresh:
 - Ignore context that does not fit the feed lane. A no-effect sweep is correct.
 
 Use the connector, browser, computer-use workflow, local file, or source thread described by the
-recipe. Preserve immutable retrieved evidence and record the completed run:
+recipe.
+
+For Inbox, do not use the general source-run and batch commands below. Enumerate every `in:inbox`
+provider page and immediately persist each response with `sweep:record-inbox-page`; pass its
+app-minted collection ID into the next page. For claimed recollection, include `--work <work-id>` on
+every page receipt. Then call `sweep:finalize-inbox --collection <id>` with the complete snapshots,
+cards, and checkpoint (and the same `--work` when claimed). Tend reconstructs the immutable page
+ledger and activates coverage atomically. If a persisted receipt is wrong, use
+`sweep:abandon-inbox-collection --collection <id> --reason <text>` before restarting collection;
+the abandonment is durable and audited.
+
+For all other feeds, preserve immutable retrieved evidence and record the completed run:
 
 ```bash
 tend cli source:record-run \
@@ -188,11 +199,11 @@ tend cli source:record-run \
   --context-use-file <local-json-file>
 ```
 
-For a claimed `recollect_sources` item, add `--work <claimed-recollection-work-id>` to each
+For a claimed non-Inbox `recollect_sources` item, add `--work <claimed-recollection-work-id>` to each
 `source:record-run` call. Do not pad. If nothing deserves attention, record an empty judgment set
 and stop.
 
-After the relevant sources have completed, record one judged sweep batch separately. A batch can
+After the relevant non-Inbox sources have completed, record one judged sweep batch separately. A batch can
 refer to multiple source runs:
 
 ```bash

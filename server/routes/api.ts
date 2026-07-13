@@ -4,6 +4,7 @@ import path from "node:path";
 import { parseOptionalWorkAgent } from "../../shared/lanes";
 import type { PostActionCompletion, VoiceTarget } from "../../shared/types";
 import { mindContextPublicationReceipt } from "../domain";
+import { InboxThreadSnapshotNotFoundError } from "../inboxSweep";
 import { versionInfo } from "../version";
 import { body, mutation, mutationAccessError, type LocalRouteContext } from "./shared";
 
@@ -55,6 +56,20 @@ export function apiRoutes(context: LocalRouteContext): Hono {
     }
   });
   app.get("/api/feeds/:feed/how", async (c) => c.json(await domain.inspectHowFeedWorks(c.req.param("feed"))));
+  app.get("/api/feeds/:feed/runs/:run/sources/:source/snapshots/:snapshot/thread", async (c) => {
+    c.header("cache-control", "no-store");
+    try {
+      return c.json(await domain.readInboxThreadSnapshot(
+        c.req.param("feed"),
+        c.req.param("run"),
+        c.req.param("source"),
+        c.req.param("snapshot"),
+      ));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return c.json({ error: message }, error instanceof InboxThreadSnapshotNotFoundError ? 404 : 500);
+    }
+  });
   app.get("/api/global-prompts", async (c) => c.json(await domain.inspectGlobalPromptWorkspace()));
 
   app.post("/api/feeds", async (c) => mutation(c, notify, async () => {

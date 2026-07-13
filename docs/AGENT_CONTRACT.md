@@ -63,8 +63,12 @@ For `sweep_rejudge` work:
 
 For `recollect_sources` work:
 
-- Record source runs with `tend cli source:record-run --work <work>`.
-- Record the resulting sweep with `tend cli sweep:record-batch --work <work>`.
+- For Inbox, enumerate every `in:inbox` page, persist each provider response immediately with
+  `tend cli sweep:record-inbox-page`, and use the returned collection ID with
+  `tend cli sweep:finalize-inbox --collection <id> --work <work>`. Do not use the general
+  source-run/batch commands for Gmail Inbox collection.
+- For other feeds, record source runs with `tend cli source:record-run --work <work>` and the
+  resulting sweep with `tend cli sweep:record-batch --work <work>`.
 - Complete the work only after the source run and sweep batch are written back.
 
 ## Core Commands
@@ -90,6 +94,9 @@ Run `tend cli help` for the full command surface. Core feed-runner commands are:
 | Remove source | `tend cli source:remove --feed <feed> --source <source>` |
 | Record source run | `tend cli source:record-run --feed <feed> --source <source> --snapshots <json> --judgments <json> --checkpoint <json> [--context-use-file <path>]` |
 | Record sweep batch | `tend cli sweep:record-batch --feed <feed> --runs <json-array> [--context <mind-update-id>]` |
+| Record one immutable Inbox provider page | `tend cli sweep:record-inbox-page --feed inbox --source <source> [--collection <id>] [--work <id>] [--request-page-token <token>] [--next-page-token <token>] --thread-ids-file <path>` |
+| Abandon a wrong, unfinalized Inbox collection | `tend cli sweep:abandon-inbox-collection --feed inbox --source <source> --collection <id> --reason <text> [--work <id>]` |
+| Finalize exhaustive Inbox | `tend cli sweep:finalize-inbox --feed inbox --source <source> --collection <id> --snapshots-file <path> --cards-file <path> --checkpoint-file <path> [--work <id>]` |
 | Record sweep rejudgment | `tend cli sweep:rejudge --feed <feed> --feedback <id> --ordered-cards <json-array> --removed-cards <json-array>` |
 | Upsert card | `tend cli card:upsert --feed <feed> --card <json>` |
 | Dismiss card | `tend cli card:dismiss --feed <feed> --card <card>` |

@@ -8,6 +8,7 @@ import { FileMobileCommandReceiptRepository, MirroredMobileCommandReceiptReposit
 import { MirrorWriteCoordinator } from "./repositories/mirrorWrites";
 import { FileRevisionRepository, MirroredRevisionRepository } from "./repositories/revisions";
 import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository } from "./repositories/routineActionGroups";
+import { FileRawSnapshotRepository, MirroredRawSnapshotRepository } from "./repositories/rawSnapshots";
 import { FileSourceRunRepository, MirroredSourceRunRepository } from "./repositories/sourceRuns";
 import { FileSourceRepository, MirroredSourceRepository } from "./repositories/sources";
 import { FileSweepRepository, MirroredSweepRepository } from "./repositories/sweeps";
@@ -81,10 +82,17 @@ export async function createLocalRuntime(
   const sourceRuns = new MirroredSourceRunRepository(
     sqlite.sourceRuns(),
     new FileSourceRunRepository(dataDir),
+    mirrorWrites,
+  );
+  const rawSnapshots = new MirroredRawSnapshotRepository(
+    sqlite.rawSnapshots(),
+    new FileRawSnapshotRepository(dataDir),
+    mirrorWrites,
   );
   const sources = new MirroredSourceRepository(
     sqlite.sources(),
     new FileSourceRepository(dataDir),
+    mirrorWrites,
   );
   const sweeps = new MirroredSweepRepository(
     sqlite.sweeps(),
@@ -102,6 +110,7 @@ export async function createLocalRuntime(
     mobileCommandReceipts,
     revisions,
     routineActionGroups,
+    rawSnapshots,
     runAtomic: (callback) => mirrorWrites.transaction(() => sqlite.transaction(callback)),
     sourceRuns,
     sources,

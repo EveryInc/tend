@@ -63,9 +63,14 @@ waking this same thread and saying `go deal with the feed`.
 5. Use local connectors only for the claimed item.
 6. Write results back through the relevant `tend cli` command.
 7. For `sweep_rejudge`, run `sweep:rejudge` against the returned `operatorGuidance.visibleCardIds` before completing the work.
-8. For source recollection, record source runs and a sweep batch with the claimed `--work` id before completing the work.
-   If context influenced collection, include a file-backed `contextUse` on the relevant source run
-   and pin the same update id to the sweep batch.
+8. For Inbox recollection, record every provider page immediately with `sweep:record-inbox-page
+   --work <id>`, carry the app-minted collection ID through the token chain, then call
+   `sweep:finalize-inbox --collection <id> --work <id>` with complete snapshots, cards, and checkpoint.
+   If a receipt is wrong and cannot be finalized, use `sweep:abandon-inbox-collection` with a concrete
+   reason before starting a replacement collection; never edit sweep state by hand.
+   For other feeds, record source runs and a sweep batch with the claimed `--work` id before completing
+   the work. If context influenced non-Inbox collection, include a file-backed `contextUse` on the
+   relevant source run and pin the same update id to the sweep batch.
 9. Repeat until `work:claim` returns idle.
 10. If a meaningful sweep or refresh happened, ask whether to compound learnings.
 

@@ -73,6 +73,10 @@ Tend creates the local feed, its initial policy, and an onboarding card. The fee
 thread then proposes the smallest useful source recipe and heartbeat cadence for review before
 collecting.
 
+The built-in Inbox feed is stricter than the example above: it enumerates the complete current
+Gmail Inbox and maintains one review card per thread, including low-attention mail. See
+[Inbox Sweep](./docs/INBOX_SWEEP.md) for its coverage, safety, and validation contract.
+
 ### Connect The Home Thread
 
 Create one fresh Codex Desktop thread for the feed:
@@ -176,7 +180,8 @@ front of you.
 
 Choose **Review ready cards** to begin the next pass. Updated cards appear under **Back for review**.
 
-A quiet feed is valid. Tend's global policy explicitly prefers no card over a weak card.
+A quiet feed is valid for selective feeds. Inbox is intentionally exhaustive: if Gmail currently
+contains Inbox threads, each one should have a corresponding review card.
 
 ## Steering With The Dock
 
