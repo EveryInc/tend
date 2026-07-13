@@ -216,6 +216,9 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
       case "card:dismiss":
         output = await domain.dismissCard(required("feed"), required("card"));
         break;
+      case "card:dismiss-local":
+        output = await domain.dismissCardLocal(required("feed"), required("card"));
+        break;
       case "card:undo-dismiss":
         output = await domain.undoDismiss(required("feed"), required("card"));
         break;

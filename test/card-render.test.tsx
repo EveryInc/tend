@@ -121,3 +121,65 @@ test("labels context-originated research separately from source evidence", () =>
   expect(html).toContain("Prompted by On Your Mind");
   expect(html).toContain("What evidence-backed paywall improvements fit Every?");
 });
+
+test("injects a local Dismiss card control by default instead of Archive", () => {
+  const card: Card = {
+    id: "plain",
+    feedId: "inbox",
+    kind: "attention",
+    status: "to_review_new",
+    title: "Nothing urgent",
+    eyebrow: "Inbox",
+    why: "You can clear this from review without touching the source.",
+    blocks: [{ id: "memo", type: "memo", text: "No action needed." }],
+    readyForPass: 1,
+    createdAt: "2026-07-10T12:00:00.000Z",
+    updatedAt: "2026-07-10T12:00:00.000Z",
+    history: [],
+  };
+
+  const html = renderToStaticMarkup(
+    <CardView
+      card={card}
+      active={false}
+      onActivate={() => {}}
+      onChanged={() => {}}
+      onAction={() => {}}
+      onReturnToReview={() => {}}
+    />,
+  );
+
+  expect(html).toContain("Dismiss card");
+  expect(html).not.toContain("Archive");
+});
+
+test("surfaces Archive only when the card explicitly proposes source cleanup", () => {
+  const card: Card = {
+    id: "cleanup",
+    feedId: "inbox",
+    kind: "attention",
+    status: "to_review_new",
+    title: "Routine notice",
+    eyebrow: "Inbox",
+    why: "This thread can be archived at the source.",
+    blocks: [{ id: "memo", type: "memo", text: "Routine." }],
+    proposedAction: { label: "Archive this thread", instruction: "Archive the email thread." },
+    readyForPass: 1,
+    createdAt: "2026-07-10T12:00:00.000Z",
+    updatedAt: "2026-07-10T12:00:00.000Z",
+    history: [],
+  };
+
+  const html = renderToStaticMarkup(
+    <CardView
+      card={card}
+      active={false}
+      onActivate={() => {}}
+      onChanged={() => {}}
+      onAction={() => {}}
+      onReturnToReview={() => {}}
+    />,
+  );
+
+  expect(html).toContain("Archive");
+});

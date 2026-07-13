@@ -84,9 +84,9 @@ private struct UndoArchiveToast: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "archivebox.fill")
+            Image(systemName: model.pendingUndo?.kind == "dismiss" ? "checkmark.circle.fill" : "archivebox.fill")
                 .foregroundStyle(.white.opacity(0.85))
-            Text("Archived")
+            Text(model.pendingUndo?.kind == "dismiss" ? "Dismissed" : "Archived")
                 .font(.headline)
                 .foregroundStyle(.white)
             Spacer()

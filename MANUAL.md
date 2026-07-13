@@ -144,7 +144,13 @@ Card buttons describe the concrete next move, such as:
 - **Research**
 - **Triage Proof**
 - **Send reply**
+- **Dismiss card**
 - **Archive**
+
+**Dismiss card** removes a card from review on Tend only. It changes nothing outside Tend, queues no
+work, and is reversible. **Archive** is different: it queues the source cleanup Codex performs and
+verifies (for the Inbox, archiving the email). Archive appears only when the card explicitly offers
+source cleanup, while every reviewable card can be dismissed.
 
 Preparation work is queued for Codex. An external mutation, such as sending a reply, requires an
 exact visible approval and the verification described in
@@ -163,7 +169,7 @@ judgment, the group fails safely and returns those items to individual review.
 
 ### Undo And Review Again
 
-After archiving or queuing work, Tend briefly offers **Undo**.
+After dismissing a card, archiving, or queuing work, Tend briefly offers **Undo**.
 
 Queued cards also provide **Move back to review**. Completed cards provide **Review again**. Returning
 a card to review does not reverse an external action that already happened.
@@ -513,7 +519,7 @@ Tend includes an optional native iPhone client for reviewing feeds away from the
 The phone can:
 
 - review every configured feed
-- swipe to archive with a short undo window
+- swipe to archive, or tap **Dismiss card**, each with a short undo window
 - edit and approve exact action artifacts
 - talk or type card instructions
 - inspect On Your Mind

@@ -149,6 +149,7 @@ private struct ActivityRow: View {
         }
         switch activity.kind {
         case "archive": return "Archived card"
+        case "dismiss": return "Dismissed card"
         case "approve_action": return "Approved action"
         case "approve_routine_action": return "Approved routine"
         case "return_to_review": return "Returned card to review"
@@ -173,6 +174,7 @@ private struct ActivityRow: View {
     private var icon: String {
         switch activity.kind {
         case "archive": "archivebox.fill"
+        case "dismiss": "checkmark.circle.fill"
         case "approve_action", "approve_routine_action": "checkmark.seal.fill"
         case "instruction", "edit_queued_instruction": "text.bubble.fill"
         case "return_to_review": "arrow.uturn.backward.circle.fill"

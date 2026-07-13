@@ -29,6 +29,9 @@ function readableHistory(card: Card): Array<{ at: string; label: string; detail:
     if (entry.type === "user.edited_queued_instruction") {
       return [{ at: entry.at, label: "You corrected", detail: entry.detail ?? "The queued note." }];
     }
+    if (entry.type === "user.card_dismissed") {
+      return [{ at: entry.at, label: "You dismissed", detail: "Removed this card from review. The source was not changed." }];
+    }
     if (entry.type === "user.returned_to_review") {
       return [{ at: entry.at, label: "Back for review", detail: "You moved this card back into the sweep." }];
     }
@@ -284,7 +287,7 @@ export function CardView({
 }) {
   const actions = visibleCardActions(card);
   const nextThing = card.proposedAction?.label === "Decide disposition"
-    ? "Archive, or tell Codex what to do"
+    ? "Dismiss, or tell Codex what to do"
     : card.proposedAction?.label ?? actions.find((action) => action.variant === "primary")?.label ?? actions[0]?.label;
   return (
     <article className={`attention-card ${card.contextInfluence ? "has-context-influence" : ""} ${active ? "is-active" : ""}`} data-card-id={card.id} onClick={onActivate} onMouseEnter={onActivate}>
@@ -339,7 +342,7 @@ export function CardView({
         <footer className="card-action">
           <div>
             <span className="action-label">{card.status === "queued" ? `Queued for ${queuedFor ?? "Codex"}` : "Done"}</span>
-            <b>{card.status === "queued" ? `Waiting for ${queuedFor ?? "the feed thread"}` : "Completed"}</b>
+            <b>{card.status === "queued" ? `Waiting for ${queuedFor ?? "the feed thread"}` : card.completionDisposition === "dismissed" ? "Dismissed" : "Completed"}</b>
           </div>
           <div className="action-buttons">
             <button className="button ghost" onClick={(event) => { event.stopPropagation(); onReturnToReview(); }}>

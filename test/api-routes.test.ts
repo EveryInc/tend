@@ -210,4 +210,16 @@ describe("API routing and mutation hardening", () => {
     expect(bytes).not.toContain("capabilityToken");
     expect(bytes).not.toContain(claimed.capabilityToken);
   });
+
+  test("POST /cards/:card/dismiss-local dismisses locally without queuing work", async () => {
+    const { app, store } = await setup();
+
+    const response = await app.request("/api/feeds/inbox/cards/inbox-ready-to-collect/dismiss-local", jsonPost({}));
+    expect(response.status).toBe(200);
+    const card = await response.json() as { status: string; completionDisposition?: string };
+    expect(card.status).toBe("done");
+    expect(card.completionDisposition).toBe("dismissed");
+
+    expect((await store.readWorkItems("inbox")).filter((item) => item.cardId === "inbox-ready-to-collect")).toHaveLength(0);
+  });
 });

@@ -48,6 +48,7 @@ the user wants an immediate sweep.
 - Follow the `operatorGuidance` returned by `work:claim`; it is part of the command contract.
 - When an approved action receipt includes `completionCleanup`, the same click authorizes that predictable cleanup after the main action succeeds. Perform and verify it before completion; never ask for a separate Archive click.
 - If the main action succeeds but bundled cleanup fails, report cleanup status `blocked`. Retry only cleanup, then use `work:reconcile-approved`; never repeat the already-successful main action.
+- Local dismissal (`card:dismiss-local`, or the browser/iPhone "Dismiss card" control) moves a card to done with no work item, no approval digest, and no connector call; reverse it with `card:return-to-review`. The legacy `card:dismiss` instead queues a `default_cleanup` work item that archives the source, which Codex claims, verifies with `action:verify`, and drains. The two are independent dispositions.
 
 ## Claim Guidance
 
@@ -92,8 +93,9 @@ Run `tend cli help` for the full command surface. Core feed-runner commands are:
 | Record sweep batch | `tend cli sweep:record-batch --feed <feed> --runs <json-array> [--context <mind-update-id>]` |
 | Record sweep rejudgment | `tend cli sweep:rejudge --feed <feed> --feedback <id> --ordered-cards <json-array> --removed-cards <json-array>` |
 | Upsert card | `tend cli card:upsert --feed <feed> --card <json>` |
-| Dismiss card | `tend cli card:dismiss --feed <feed> --card <card>` |
-| Undo dismiss | `tend cli card:undo-dismiss --feed <feed> --card <card>` |
+| Dismiss card and clean up the source (queues archive) | `tend cli card:dismiss --feed <feed> --card <card>` |
+| Dismiss card locally (Tend-only, no source cleanup) | `tend cli card:dismiss-local --feed <feed> --card <card>` |
+| Undo dismiss (cancels a queued source cleanup) | `tend cli card:undo-dismiss --feed <feed> --card <card>` |
 | Return card to review | `tend cli card:return-to-review --feed <feed> --card <card>` |
 | List work | `tend cli work:list --feed <feed> --thread <thread>` |
 | Claim work | `tend cli work:claim --feed <feed> --thread <thread> [--session <id>]` |

@@ -184,8 +184,8 @@ fixtures through `TEND_USE_FIXTURES=1` or the `-fixtures` launch argument.
 3. Tap **Email me a sign-in link**.
 4. Open the link on that phone. Safari should return directly to Tend.
 5. Confirm the feed list and **On Your Mind** show the same current projections as the Mac.
-6. Submit a harmless local command, such as Archive followed immediately by Undo, and confirm
-   Activity records the round trip.
+6. Submit a harmless local command, such as Dismiss card (or Archive) followed immediately by Undo,
+   and confirm Activity records the round trip.
 7. Relaunch the app and confirm the Keychain-backed session restores without another email.
 
 Magic links are one-time use and rate limited. Avoid repeatedly requesting links while debugging;

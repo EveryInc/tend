@@ -15,6 +15,7 @@ final class TendAppModel {
         let id: UUID
         let card: MobileCard
         let activity: MobileActivity
+        let kind: String
     }
 
     var authState: AuthState = .loading
@@ -183,6 +184,8 @@ final class TendAppModel {
         let kind: String
         if action.behavior == "default_cleanup" {
             kind = "archive"
+        } else if action.behavior == "dismiss_card" {
+            kind = "dismiss"
         } else if card.itemKind == "routine_action_group" {
             kind = "approve_routine_action"
         } else if action.behavior == "queue_instruction" {
@@ -251,7 +254,7 @@ final class TendAppModel {
             guard let cancelled = try await repository.cancel(commandID: undo.activity.id) else {
                 pendingUndo = nil
                 await refresh()
-                errorMessage = "That archive already left the undo window. Its current state is shown in Activity."
+                errorMessage = "That change already left the undo window. Its current state is shown in Activity."
                 return
             }
             restore(card: undo.card)
@@ -309,8 +312,8 @@ final class TendAppModel {
             if removeFromReview {
                 markHandled(card: card)
             }
-            if submission.kind == "archive" {
-                pendingUndo = UndoArchive(id: activity.id, card: card, activity: activity)
+            if submission.kind == "archive" || submission.kind == "dismiss" {
+                pendingUndo = UndoArchive(id: activity.id, card: card, activity: activity, kind: submission.kind)
                 undoTask?.cancel()
                 undoTask = Task {
                     try? await Task.sleep(for: .seconds(5))

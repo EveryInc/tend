@@ -97,6 +97,11 @@ sweep with `card:return-to-review`. Returning a queued card cancels its unstarte
 card can be returned for another review pass, but this does not reverse an external action that
 already happened.
 
+`card:dismiss-local` moves a reviewable card to done with no queued work, no `action:verify`, and no
+connector call; it is a Tend-only disposition reversible with `card:return-to-review`. This is
+distinct from `card:dismiss`, which queues a `default_cleanup` work item that Codex claims, verifies,
+and drains against the source connector.
+
 ## Claude Lane
 
 Feeds can route work to a Claude Code session alongside the Codex home thread. The routing is

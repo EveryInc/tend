@@ -2424,3 +2424,133 @@ describe("scoped persistent voice dock routing", () => {
     ]));
   });
 });
+
+describe("local card dismissal (Tend-only, no source cleanup)", () => {
+  test("moves a reviewable card to done with no work item, no cleanup, and a dismissed disposition", async () => {
+    const { store, domain } = await setup();
+
+    const card = await domain.dismissCardLocal("inbox", "inbox-ready-to-collect");
+
+    expect(card.status).toBe("done");
+    expect(card.completionDisposition).toBe("dismissed");
+    expect(card.completedAt).toBeTruthy();
+
+    // The strongest invariant: no WorkItem of any kind was created, so there is no approval digest
+    // and no connector authorization anywhere for this dismissal.
+    const work = (await store.readWorkItems("inbox")).filter((item) => item.cardId === "inbox-ready-to-collect");
+    expect(work).toHaveLength(0);
+
+    const events = (await store.readEvents("inbox")).map((event) => event.type);
+    expect(events).toContain("card.dismissed");
+    expect(events).not.toContain("cleanup.queued");
+
+    const stored = await store.readCard("inbox", "inbox-ready-to-collect");
+    expect(stored.history.map((entry) => entry.type)).toContain("user.card_dismissed");
+    expect(stored.history.map((entry) => entry.type)).not.toContain("user.default_cleanup_approved");
+  });
+
+  test("runCardAction routes a dismiss_card action to local dismissal, not source cleanup", async () => {
+    const { store, domain } = await setup();
+    await domain.upsertCard("inbox", {
+      id: "dismiss-me",
+      title: "Nothing to do here.",
+      why: "Clear it from review without touching the source.",
+      blocks: [{ id: "memo", type: "memo", text: "No action needed." }],
+      actions: [{ id: "set-aside", label: "Set aside", behavior: "dismiss_card" }],
+    });
+
+    const result = await domain.runCardAction("inbox", "dismiss-me", "set-aside");
+
+    expect((result as Card).status).toBe("done");
+    expect((result as Card).completionDisposition).toBe("dismissed");
+    expect((await store.readWorkItems("inbox")).filter((item) => item.cardId === "dismiss-me")).toHaveLength(0);
+  });
+
+  test("the injected dismiss-card action id also dismisses locally", async () => {
+    const { store, domain } = await setup();
+
+    const result = await domain.runCardAction("inbox", "inbox-ready-to-collect", "dismiss-card");
+
+    expect((result as Card).status).toBe("done");
+    expect((result as Card).completionDisposition).toBe("dismissed");
+    expect((await store.readWorkItems("inbox")).filter((item) => item.cardId === "inbox-ready-to-collect")).toHaveLength(0);
+  });
+
+  test("return-to-review reverses a local dismissal and clears the disposition", async () => {
+    const { domain } = await setup();
+
+    await domain.dismissCardLocal("inbox", "inbox-ready-to-collect");
+    const card = await domain.returnCardToReview("inbox", "inbox-ready-to-collect");
+
+    expect(card.status).toBe("to_review_updated");
+    expect(card.completedAt).toBeUndefined();
+    expect(card.completionDisposition).toBeUndefined();
+    expect(card.history.map((entry) => entry.type)).toContain("user.returned_to_review");
+  });
+
+  test("explicit default cleanup still queues a verifiable connector work item, unchanged", async () => {
+    const { store, domain } = await setup();
+
+    const work = await domain.dismissCard("inbox", "inbox-ready-to-collect");
+
+    expect(work.kind).toBe("default_cleanup");
+    expect(work.approvalDigest).toBeTruthy();
+    expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("queued");
+  });
+
+  test("local dismiss rejects a card that is not under review", async () => {
+    const { domain } = await setup();
+
+    await domain.dismissCard("inbox", "inbox-ready-to-collect"); // queues cleanup → card leaves review
+
+    await expect(domain.dismissCardLocal("inbox", "inbox-ready-to-collect")).rejects.toThrow("under review");
+  });
+
+  test("legacy cards without a completionDisposition remain valid and returnable", async () => {
+    const { store, domain } = await setup();
+
+    const legacy = await store.readCard("inbox", "inbox-ready-to-collect");
+    expect(legacy.completionDisposition).toBeUndefined();
+    legacy.status = "done";
+    legacy.completedAt = new Date("2026-07-01T00:00:00.000Z").toISOString();
+    await store.writeCard(legacy);
+
+    const returned = await domain.returnCardToReview("inbox", "inbox-ready-to-collect");
+    expect(returned.status).toBe("to_review_updated");
+    expect(returned.completionDisposition).toBeUndefined();
+  });
+
+  test("cleaning up a locally dismissed card then undoing leaves a clean reviewable card", async () => {
+    const { store, domain } = await setup();
+
+    await domain.dismissCardLocal("inbox", "inbox-ready-to-collect");
+    await domain.dismissCard("inbox", "inbox-ready-to-collect"); // queue source cleanup on the dismissed card
+
+    const queued = await store.readCard("inbox", "inbox-ready-to-collect");
+    expect(queued.status).toBe("queued");
+    expect(queued.completionDisposition).toBeUndefined();
+    expect(queued.completedAt).toBeUndefined();
+
+    const undone = await domain.undoDismiss("inbox", "inbox-ready-to-collect");
+    expect(undone.status).toBe("to_review_updated");
+    expect(undone.completionDisposition).toBeUndefined();
+    expect(undone.completedAt).toBeUndefined();
+  });
+
+  test("upsertCard preserves an explicit completionDisposition", async () => {
+    const { domain } = await setup();
+
+    const card = await domain.upsertCard("inbox", {
+      id: "explicit-dismissed",
+      title: "Already dismissed",
+      why: "Imported as dismissed.",
+      status: "done",
+      completedAt: "2026-07-01T00:00:00.000Z",
+      completionDisposition: "dismissed",
+      blocks: [{ id: "memo", type: "memo", text: "n/a" }],
+    });
+
+    expect(card.status).toBe("done");
+    expect(card.completionDisposition).toBe("dismissed");
+  });
+});

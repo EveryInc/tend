@@ -5,6 +5,19 @@ a promise of ongoing maintenance.
 
 ## Unreleased
 
+- Separate local card dismissal from source cleanup. A new `dismiss_card` card action behavior and a
+  `tend cli card:dismiss-local` command move a reviewable card to `done` with no work item, approval
+  digest, `action:verify`, or connector call, and are reversible with `card:return-to-review`. The
+  existing `card:dismiss` is unchanged: it still queues a `default_cleanup` work item that archives
+  the source.
+- Make local dismissal the default injected card control in the browser and iPhone apps; the
+  connector `Archive` control now appears only when a card explicitly configures source cleanup.
+- Record how a card reached `done` with an optional `completionDisposition` (`completed` |
+  `dismissed`); legacy cards without it are treated as `completed`.
+- Add the local `dismiss` mobile command kind (new Supabase migration `202607130001`) mirrored
+  across the shared types, mobile projection, Swift models, and iOS controls, swipes, and activity.
+- Advance the CLI contract to `0.4` with the additive `card:dismiss-local` command.
+
 ## 0.2.0 - 2026-07-06
 
 - Fix the public product name as Tend, consolidate runtime and agent operations under one `tend`

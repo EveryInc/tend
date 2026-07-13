@@ -134,6 +134,7 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   app.post("/api/feeds/:feed/cards/:card/actions/:action", async (c) => mutation(c, notify, async () => domain.runCardAction(c.req.param("feed"), c.req.param("card"), c.req.param("action"))));
   app.post("/api/feeds/:feed/cards/:card/approve", async (c) => mutation(c, notify, async () => domain.approveAction(c.req.param("feed"), c.req.param("card"))));
   app.post("/api/feeds/:feed/cards/:card/dismiss", async (c) => mutation(c, notify, async () => domain.dismissCard(c.req.param("feed"), c.req.param("card"))));
+  app.post("/api/feeds/:feed/cards/:card/dismiss-local", async (c) => mutation(c, notify, async () => domain.dismissCardLocal(c.req.param("feed"), c.req.param("card"))));
   app.post("/api/feeds/:feed/cards/:card/undo-dismiss", async (c) => mutation(c, notify, async () => domain.undoDismiss(c.req.param("feed"), c.req.param("card"))));
   app.post("/api/feeds/:feed/cards/:card/return-to-review", async (c) => mutation(c, notify, async () => domain.returnCardToReview(c.req.param("feed"), c.req.param("card"))));
   app.post("/api/feeds/:feed/cards/:card/blocks/:block", async (c) => mutation(c, notify, async () => domain.updateBlock(c.req.param("feed"), c.req.param("card"), c.req.param("block"), String((await body(c)).value ?? ""))));

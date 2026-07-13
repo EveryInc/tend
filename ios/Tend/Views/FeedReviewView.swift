@@ -127,10 +127,12 @@ struct FeedReviewView: View {
                             }
                     )
 
-                    Text("Swipe left to archive")
-                        .font(.caption)
-                        .foregroundStyle(TendTheme.secondaryInk)
-                        .padding(.bottom, 4)
+                    if card.archiveAction != nil {
+                        Text("Swipe left to archive")
+                            .font(.caption)
+                            .foregroundStyle(TendTheme.secondaryInk)
+                            .padding(.bottom, 4)
+                    }
                 }
                 .padding(.horizontal, 14)
                 .padding(.bottom, 16)
@@ -140,6 +142,7 @@ struct FeedReviewView: View {
                 card: card,
                 isSubmitting: model.isSubmitting,
                 archive: { archive(card) },
+                dismiss: { dismissCard(card) },
                 talkOrType: { showComposer = true },
                 selectAction: { action in
                     handle(action: action, card: card)
@@ -202,6 +205,17 @@ struct FeedReviewView: View {
         }
     }
 
+    private func dismissCard(_ card: MobileCard) {
+        guard let action = card.dismissAction, !model.isSubmitting else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        Task {
+            let succeeded = await model.submit(action: action, for: card, edits: [:])
+            if succeeded {
+                finishFeedIfNeeded()
+            }
+        }
+    }
+
     private func handle(action: MobileAction, card: MobileCard) {
         guard !model.isSubmitting else { return }
         if action.confirmation != nil || action.artifactBlockId != nil {
@@ -247,23 +261,26 @@ private struct ReviewActionTray: View {
     let card: MobileCard
     let isSubmitting: Bool
     let archive: () -> Void
+    let dismiss: () -> Void
     let talkOrType: () -> Void
     let selectAction: (MobileAction) -> Void
 
     private var namedActions: [MobileAction] {
-        card.actions.filter { $0.behavior != "default_cleanup" }
+        card.actions.filter { $0.behavior != "default_cleanup" && $0.behavior != "dismiss_card" }
     }
 
     var body: some View {
         VStack(spacing: 10) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
-                    archiveButton
+                    if card.archiveAction != nil { archiveButton }
+                    if card.dismissAction != nil { dismissButton }
                     talkButton
                 }
                 VStack(spacing: 8) {
                     talkButton
-                    archiveButton
+                    if card.archiveAction != nil { archiveButton }
+                    if card.dismissAction != nil { dismissButton }
                 }
             }
 
@@ -309,6 +326,15 @@ private struct ReviewActionTray: View {
         }
         .buttonStyle(TendSecondaryButtonStyle())
         .disabled(isSubmitting || card.archiveAction == nil)
+    }
+
+    private var dismissButton: some View {
+        Button(action: dismiss) {
+            Label("Dismiss card", systemImage: "checkmark.circle")
+                .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(TendSecondaryButtonStyle())
+        .disabled(isSubmitting || card.dismissAction == nil)
     }
 
     private var talkButton: some View {

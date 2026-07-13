@@ -151,4 +151,47 @@ describe("mobile commands", () => {
       id: "../../outside",
     }))).rejects.toThrow("command id");
   });
+
+  test("applies a local dismiss command with no work item and marks the card dismissed", async () => {
+    const { store, domain } = await setup();
+    const projection = (await projectMobileWorkspace(store)).cards.find((card) => card.cardId === "reply")!;
+    const dismissAction = projection.actions.find((action) => action.id === "dismiss-card")!;
+    expect(dismissAction.behavior).toBe("dismiss_card");
+
+    const input = command(projection, {
+      id: "10000000-0000-0000-0000-000000000009",
+      clientRequestId: "request-dismiss",
+      kind: "dismiss",
+      actionId: "dismiss-card",
+      expectedActionDigest: dismissAction.digest,
+    });
+
+    const result = await domain.applyMobileCommand(input);
+
+    expect(result.receipt.state).toBe("applied");
+    expect(result.workId).toBeUndefined();
+
+    const card = await store.readCard("inbox", "reply");
+    expect(card.status).toBe("done");
+    expect(card.completionDisposition).toBe("dismissed");
+    expect((await store.readWorkItems("inbox")).filter((item) => item.cardId === "reply")).toHaveLength(0);
+
+    // Idempotent replay returns the same receipt and still creates no work.
+    const replay = await domain.applyMobileCommand(input);
+    expect(replay).toEqual(result);
+    expect((await store.readWorkItems("inbox")).filter((item) => item.cardId === "reply")).toHaveLength(0);
+  });
+
+  test("rejects a dismiss command whose action digest is stale", async () => {
+    const { store, domain } = await setup();
+    const projection = (await projectMobileWorkspace(store)).cards.find((card) => card.cardId === "reply")!;
+
+    await expect(domain.applyMobileCommand(command(projection, {
+      id: "10000000-0000-0000-0000-00000000000a",
+      clientRequestId: "request-dismiss-stale",
+      kind: "dismiss",
+      actionId: "dismiss-card",
+      expectedActionDigest: "stale-digest",
+    }))).rejects.toThrow("stale");
+  });
 });

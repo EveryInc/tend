@@ -156,6 +156,21 @@ enum FixtureData {
             createdAt: timestamp(minutesAgo: 5),
             updatedAt: timestamp(minutesAgo: 2)
         ),
+        MobileActivity(
+            id: UUID(uuidString: "10000000-0000-0000-0000-000000000003")!,
+            feedId: "inbox",
+            cardId: "agreements",
+            kind: "dismiss",
+            payload: MobileActivityPayload(actionId: "dismiss-card", instruction: nil, riskConfirmation: nil),
+            state: "applied",
+            availableAt: timestamp(minutesAgo: 30),
+            resultWorkId: nil,
+            workStatus: nil,
+            response: "Removed from Tend. The email was left untouched.",
+            error: nil,
+            createdAt: timestamp(minutesAgo: 30),
+            updatedAt: timestamp(minutesAgo: 29)
+        ),
     ]
 
     private static let agreementCard = card(
@@ -176,6 +191,7 @@ enum FixtureData {
         ],
         actions: [
             action("default-cleanup", "Archive", "default_cleanup", "cleanup-agreements", variant: "secondary"),
+            action("dismiss-card", "Dismiss card", "dismiss_card", "dismiss-agreements", variant: "secondary"),
             action("review", "Review both agreements", "queue_instruction", "review-agreements", variant: "primary"),
         ]
     )

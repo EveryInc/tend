@@ -164,7 +164,10 @@ export interface ProposedAction {
 export interface CardAction {
   id: string;
   label: string;
-  behavior: "queue_instruction" | "approve_action" | "default_cleanup";
+  // "default_cleanup" runs the feed's configured source cleanup (an external connector mutation,
+  // e.g. archiving the source email). "dismiss_card" removes the card from review locally and
+  // performs no source mutation. They are deliberately distinct dispositions.
+  behavior: "queue_instruction" | "approve_action" | "default_cleanup" | "dismiss_card";
   instruction?: string;
   artifactBlockId?: string;
   externalMutation?: boolean;
@@ -311,6 +314,10 @@ export interface Card {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
+  // How a card reached "done": "completed" via approved work/source cleanup, or "dismissed" via a
+  // local-only dismissal that ran no source cleanup. Optional and absent on legacy/pre-existing
+  // cards, which are treated as "completed".
+  completionDisposition?: "completed" | "dismissed";
   routineActionGroupId?: string;
   history: Array<{ at: string; type: string; detail?: string }>;
   sweep?: {

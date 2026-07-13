@@ -138,7 +138,8 @@ describe("mobile workspace projection", () => {
     const serialized = JSON.stringify(snapshot);
 
     expect(card?.reviewable).toBe(true);
-    expect(card?.actions.map((action) => action.label)).toEqual(["Archive", "Send reply"]);
+    expect(card?.actions.map((action) => action.label)).toEqual(["Dismiss card", "Send reply"]);
+    expect(card?.actions.find((action) => action.id === "dismiss-card")?.behavior).toBe("dismiss_card");
     expect(card?.actions.find((action) => action.id === "send")?.confirmation?.recipients).toEqual(["syd@example.com"]);
     const evidenceItems = card?.blocks[0].items ?? [];
     expect((evidenceItems[0] as any).href).toBe("https://example.com/agreement");

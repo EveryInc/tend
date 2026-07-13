@@ -16,6 +16,7 @@ export const MOBILE_SCHEMA_VERSION = 1;
 export type MobileItemKind = CardKind | "routine_action_group";
 export type MobileCommandKind =
   | "archive"
+  | "dismiss"
   | "instruction"
   | "approve_action"
   | "approve_routine_action"
@@ -58,7 +59,7 @@ export interface MobileActionConfirmation {
 export interface MobileActionProjection {
   id: string;
   label: string;
-  behavior: "queue_instruction" | "approve_action" | "default_cleanup";
+  behavior: "queue_instruction" | "approve_action" | "default_cleanup" | "dismiss_card";
   digest: string;
   artifactBlockId?: string;
   externalMutation?: boolean;
@@ -100,6 +101,7 @@ export interface MobileCardProjection {
   createdAt: string;
   updatedAt: string;
   completedAt?: string;
+  completionDisposition?: "completed" | "dismissed";
 }
 
 export interface MobileFeedProjection {

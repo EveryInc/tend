@@ -24,6 +24,7 @@ export const CLI_COMMANDS = [
   "routine:upsert --feed <id> --group <json>",
   "routine:approve --feed <id> --group <id>",
   "card:dismiss --feed <id> --card <id>",
+  "card:dismiss-local --feed <id> --card <id>",
   "card:undo-dismiss --feed <id> --card <id>",
   "card:return-to-review --feed <id> --card <id>",
   "work:list --feed <id> --thread <id> [--cross-feed]",
