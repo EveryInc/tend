@@ -1420,7 +1420,7 @@ export class AttentionDomain {
     return work;
   }
 
-  private async dismissCardLocked(
+  private async queueSourceCleanupLocked(
     feedId: string,
     cardId: string,
     sourceMobileCommandId?: string,
@@ -1515,34 +1515,33 @@ export class AttentionDomain {
   }
 
   async runCardAction(feedId: string, cardId: string, cardActionId: string): Promise<WorkItem | Card> {
-    if (cardActionId === "default-cleanup") return this.dismissCard(feedId, cardId);
-    if (cardActionId === "dismiss-card") return this.dismissCardLocal(feedId, cardId);
+    if (cardActionId === "default-cleanup") return this.queueSourceCleanup(feedId, cardId);
+    if (cardActionId === "dismiss-card") return this.dismissCard(feedId, cardId);
     if (cardActionId === "proposed-action") return this.approveAction(feedId, cardId);
     const card = await this.store.readCard(feedId, cardId);
     const action = card.actions?.find((item) => item.id === cardActionId);
     if (!action) throw new Error("Card action not found.");
-    if (action.behavior === "default_cleanup") return this.dismissCard(feedId, cardId);
-    if (action.behavior === "dismiss_card") return this.dismissCardLocal(feedId, cardId);
+    if (action.behavior === "default_cleanup") return this.queueSourceCleanup(feedId, cardId);
+    if (action.behavior === "dismiss_card") return this.dismissCard(feedId, cardId);
     await this.assertCardSourceCurrent(card);
     if (!action.instruction?.trim()) throw new Error("Card action instruction is required.");
     if (action.behavior === "queue_instruction") return this.queueInstruction(feedId, cardId, action.instruction);
     return this.approveAction(feedId, cardId, action.id);
   }
 
-  // NOTE: despite its name, dismissCard() approves the feed's configured default cleanup, which is
-  // an external connector mutation (e.g. archiving the source email). For a local-only dismissal
-  // that performs no source cleanup, use dismissCardLocal().
-  async dismissCard(feedId: string, cardId: string): Promise<WorkItem> {
-    return this.store.serialize(() => this.dismissCardLocked(feedId, cardId));
+  // Queue the feed's configured source cleanup as verified work. This can mutate the source
+  // connector (for example, archiving an email) and is intentionally separate from local dismissal.
+  async queueSourceCleanup(feedId: string, cardId: string): Promise<WorkItem> {
+    return this.store.serialize(() => this.queueSourceCleanupLocked(feedId, cardId));
   }
 
   // Local, connector-free dismissal: removes a card from review without creating any WorkItem,
   // approval digest, or external connector mutation. Reversible via returnCardToReview().
-  async dismissCardLocal(feedId: string, cardId: string): Promise<Card> {
-    return this.store.serialize(() => this.dismissCardLocalLocked(feedId, cardId));
+  async dismissCard(feedId: string, cardId: string): Promise<Card> {
+    return this.store.serialize(() => this.dismissCardLocked(feedId, cardId));
   }
 
-  private async dismissCardLocalLocked(feedId: string, cardId: string, sourceMobileCommandId?: string): Promise<Card> {
+  private async dismissCardLocked(feedId: string, cardId: string, sourceMobileCommandId?: string): Promise<Card> {
     const card = await this.store.readCard(feedId, cardId);
     if (card.routineActionGroupId) throw new Error("This card belongs to a routine action group. Review the group instead.");
     if (card.status !== "to_review_new" && card.status !== "to_review_updated") {
@@ -1671,7 +1670,7 @@ export class AttentionDomain {
     return work;
   }
 
-  async undoDismiss(feedId: string, cardId: string): Promise<Card> {
+  async undoSourceCleanup(feedId: string, cardId: string): Promise<Card> {
     return this.store.serialize(async () => {
       const feed = await this.store.readFeed(feedId);
       const work = [...(await this.store.readWorkItems(feedId))].reverse().find((item) => item.cardId === cardId && item.kind === "default_cleanup" && item.status === "queued");
@@ -1826,13 +1825,13 @@ export class AttentionDomain {
         case "archive": {
           const action = requireMobileAction(projection.actions, command.actionId ?? "default-cleanup", command.expectedActionDigest);
           if (action.behavior !== "default_cleanup") throw new Error("Mobile archive action is no longer available.");
-          work = await this.dismissCardLocked(command.feedId, command.cardId, command.id);
+          work = await this.queueSourceCleanupLocked(command.feedId, command.cardId, command.id);
           break;
         }
         case "dismiss": {
           const action = requireMobileAction(projection.actions, command.actionId ?? "dismiss-card", command.expectedActionDigest);
           if (action.behavior !== "dismiss_card") throw new Error("Mobile dismiss action is no longer available.");
-          await this.dismissCardLocalLocked(command.feedId, command.cardId, command.id);
+          await this.dismissCardLocked(command.feedId, command.cardId, command.id);
           break;
         }
         case "approve_action": {

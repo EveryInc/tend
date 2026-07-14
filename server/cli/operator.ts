@@ -216,11 +216,11 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
       case "card:dismiss":
         output = await domain.dismissCard(required("feed"), required("card"));
         break;
-      case "card:dismiss-local":
-        output = await domain.dismissCardLocal(required("feed"), required("card"));
+      case "card:cleanup-source":
+        output = await domain.queueSourceCleanup(required("feed"), required("card"));
         break;
-      case "card:undo-dismiss":
-        output = await domain.undoDismiss(required("feed"), required("card"));
+      case "card:undo-cleanup-source":
+        output = await domain.undoSourceCleanup(required("feed"), required("card"));
         break;
       case "card:return-to-review":
         output = await domain.returnCardToReview(

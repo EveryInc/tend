@@ -25,6 +25,11 @@ describe("CLI contract", () => {
     expect(commandNames).toContain("work:reconcile-approved");
     expect(commandNames).toContain("source:record-run");
     expect(commandNames).toContain("card:upsert");
+    expect(commandNames).toContain("card:dismiss");
+    expect(commandNames).toContain("card:cleanup-source");
+    expect(commandNames).toContain("card:undo-cleanup-source");
+    expect(commandNames).not.toContain("card:dismiss-local");
+    expect(commandNames).not.toContain("card:undo-dismiss");
     expect(commandNames).toContain("learning:request");
 
     for (const command of INTERNAL_CLI_COMMANDS) {

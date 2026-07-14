@@ -211,15 +211,30 @@ describe("API routing and mutation hardening", () => {
     expect(bytes).not.toContain(claimed.capabilityToken);
   });
 
-  test("POST /cards/:card/dismiss-local dismisses locally without queuing work", async () => {
+  test("POST /cards/:card/dismiss dismisses locally without queuing work", async () => {
     const { app, store } = await setup();
 
-    const response = await app.request("/api/feeds/inbox/cards/inbox-ready-to-collect/dismiss-local", jsonPost({}));
+    const response = await app.request("/api/feeds/inbox/cards/inbox-ready-to-collect/dismiss", jsonPost({}));
     expect(response.status).toBe(200);
     const card = await response.json() as { status: string; completionDisposition?: string };
     expect(card.status).toBe("done");
     expect(card.completionDisposition).toBe("dismissed");
 
     expect((await store.readWorkItems("inbox")).filter((item) => item.cardId === "inbox-ready-to-collect")).toHaveLength(0);
+  });
+
+  test("source cleanup has explicit queue and undo routes", async () => {
+    const { app } = await setup();
+
+    const queuedResponse = await app.request("/api/feeds/inbox/cards/inbox-ready-to-collect/cleanup-source", jsonPost({}));
+    expect(queuedResponse.status).toBe(200);
+    const work = await queuedResponse.json() as { kind: string };
+    expect(work.kind).toBe("default_cleanup");
+
+    const undoResponse = await app.request("/api/feeds/inbox/cards/inbox-ready-to-collect/undo-cleanup-source", jsonPost({}));
+    expect(undoResponse.status).toBe(200);
+    const card = await undoResponse.json() as { status: string; completionDisposition?: string };
+    expect(card.status).toBe("to_review_updated");
+    expect(card.completionDisposition).toBeUndefined();
   });
 });
