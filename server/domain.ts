@@ -341,11 +341,9 @@ function validateCardActions(actions: CardAction[] | undefined): void {
 }
 
 function offersSourceCleanup(card: Card): boolean {
-  return Boolean(
-    safeConfiguredCardActions(card.actions).some((action) => action.behavior === "default_cleanup")
-    || card.proposedAction?.label === "Archive"
-    || card.proposedAction?.label === "Archive this thread",
-  );
+  const configuredActions = safeConfiguredCardActions(card.actions);
+  if (configuredActions.length) return configuredActions.some((action) => action.behavior === "default_cleanup");
+  return card.proposedAction?.label === "Archive" || card.proposedAction?.label === "Archive this thread";
 }
 
 function validateSourceRunIds(sourceRunIds: unknown): string[] | undefined {

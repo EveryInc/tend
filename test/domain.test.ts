@@ -2536,6 +2536,26 @@ describe("local card dismissal (Tend-only, no source cleanup)", () => {
     expect((await store.readWorkItems("inbox")).filter((work) => work.kind === "default_cleanup")).toHaveLength(2);
   });
 
+  test("configured non-cleanup actions suppress proposed Archive source cleanup", async () => {
+    const { store, domain } = await setup();
+    await domain.upsertCard("inbox", {
+      id: "simulated-archive",
+      title: "Simulate archiving without touching the source.",
+      why: "The configured action is preparation work, not connector authorization.",
+      blocks: [{ id: "memo", type: "memo", text: "Do not touch Gmail." }],
+      proposedAction: { label: "Archive", instruction: "Archive the source thread." },
+      actions: [{
+        id: "simulate-archive",
+        label: "Archive (simulation)",
+        behavior: "queue_instruction",
+        instruction: "Simulate the cleanup and report what would happen without changing the source.",
+      }],
+    });
+
+    await expect(domain.runCardAction("inbox", "simulated-archive", "default-cleanup")).rejects.toThrow("not available");
+    expect((await store.readWorkItems("inbox")).filter((work) => work.cardId === "simulated-archive")).toHaveLength(0);
+  });
+
   test("local dismiss rejects a card that is not under review", async () => {
     const { store, domain } = await setup();
 

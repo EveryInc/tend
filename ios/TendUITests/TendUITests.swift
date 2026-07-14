@@ -30,6 +30,28 @@ final class TendUITests: XCTestCase {
     }
 
     @MainActor
+    func testDismissOnlyCardNeverOffersSourceCleanupAndUndoRestoresIt() {
+        let app = launchApp()
+        app.buttons["feed-inbox"].tap()
+        XCTAssertTrue(app.otherElements["review-card-inbox-agreements"].waitForExistence(timeout: 5))
+        app.buttons["Archive"].tap()
+        XCTAssertTrue(app.otherElements["review-card-inbox-cursor-reply"].waitForExistence(timeout: 5))
+        app.buttons["Archive"].tap()
+
+        let card = app.otherElements["review-card-inbox-local-only"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Dismiss card"].exists)
+        XCTAssertFalse(app.buttons["Archive"].exists)
+        app.buttons["Dismiss card"].tap()
+
+        XCTAssertTrue(app.staticTexts["Dismissed"].waitForExistence(timeout: 3))
+        let undo = app.buttons["Undo"]
+        XCTAssertTrue(undo.exists)
+        undo.tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 3))
+    }
+
+    @MainActor
     func testEditableExternalActionShowsExactConfirmation() {
         let app = launchApp()
         app.buttons["feed-inbox"].tap()
