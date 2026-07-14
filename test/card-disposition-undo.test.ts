@@ -17,9 +17,15 @@ describe("browser card disposition undo", () => {
   });
 
   test("an older timer cannot clear a newer operation on the same card", () => {
-    const newer = { feedId: "inbox", cardId: "shared-card", operationId: "dismiss-2" };
+    const newer = { kind: "dismiss" as const, feedId: "inbox", cardId: "shared-card", operationId: "dismiss-2" };
 
     expect(sameUndoRegistration(newer, { ...newer, operationId: "dismiss-1" })).toBe(false);
     expect(sameUndoRegistration(newer, newer)).toBe(true);
+  });
+
+  test("cleanup and dismissal registrations cannot match each other", () => {
+    const dismissal = { kind: "dismiss" as const, feedId: "inbox", cardId: "shared-card", operationId: "operation-1" };
+
+    expect(sameUndoRegistration({ ...dismissal, kind: "cleanup" }, dismissal)).toBe(false);
   });
 });

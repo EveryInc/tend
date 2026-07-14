@@ -4,6 +4,7 @@ export interface CardReference {
 }
 
 export interface CardDispositionUndo extends CardReference {
+  kind: "dismiss" | "cleanup";
   operationId: string;
 }
 
@@ -12,7 +13,9 @@ export function sameCardReference(current: CardReference | null, expected: CardR
 }
 
 export function sameUndoRegistration(current: CardDispositionUndo | null, expected: CardDispositionUndo): boolean {
-  return sameCardReference(current, expected) && current?.operationId === expected.operationId;
+  return sameCardReference(current, expected)
+    && current?.kind === expected.kind
+    && current.operationId === expected.operationId;
 }
 
 export function cardDispositionUndoPath(kind: "dismiss" | "cleanup", card: CardReference): string {

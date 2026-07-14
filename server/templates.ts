@@ -40,8 +40,10 @@ Choose concrete card actions that match the actual decision. The browser can ren
 button and each button should say what it does: \`Send reply\`, \`Draft reply\`, \`Research\`,
 \`Archive\`, \`Delegate\`, or another specific next step. Use \`queue_instruction\` for preparation
 work, \`approve_action\` for an exact visible action snapshot, and \`default_cleanup\` for the feed's
-default dismissal behavior. Do not use vague \`Approve\` or \`Decide disposition\` labels when the
-source evidence supports a more useful choice. For Gmail reply actions, record the source message's
+explicit source cleanup, such as archiving the source email. Use \`dismiss_card\` to remove a card
+from Tend review without creating work or mutating its source. Never use \`default_cleanup\` for a
+routine “clear this card” control. Do not use vague \`Approve\` or \`Decide disposition\` labels when
+the source evidence supports a more useful choice. For Gmail reply actions, record the source message's
 received-at mailbox on the card and use \`mailboxPolicy: "reply_from_source"\`.
 Default every reply draft to the owner of \`sourceMailbox\`: preserve that person's voice and
 signature unless the user's instruction explicitly changes sender. Never sign as an assistant,

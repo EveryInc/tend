@@ -182,6 +182,26 @@ describe("mobile commands", () => {
     expect((await store.readWorkItems("inbox")).filter((item) => item.cardId === "reply")).toHaveLength(0);
   });
 
+  test("maps a schema-v1 approve command for the synthetic dismiss action to local dismissal", async () => {
+    const { store, domain } = await setup();
+    const projection = (await projectMobileWorkspace(store)).cards.find((card) => card.cardId === "reply")!;
+    const dismissAction = projection.actions.find((action) => action.id === "dismiss-card")!;
+
+    const result = await domain.applyMobileCommand(command(projection, {
+      id: "10000000-0000-0000-0000-00000000000b",
+      clientRequestId: "legacy-request-dismiss",
+      kind: "approve_action",
+      actionId: "dismiss-card",
+      expectedActionDigest: dismissAction.digest,
+      instruction: undefined,
+    }));
+
+    expect(result.receipt.state).toBe("applied");
+    expect(result.workId).toBeUndefined();
+    expect(await store.readWorkItems("inbox")).toHaveLength(0);
+    expect(await store.readCard("inbox", "reply")).toMatchObject({ status: "done", completionDisposition: "dismissed" });
+  });
+
   test("rejects a dismiss command whose action digest is stale", async () => {
     const { store, domain } = await setup();
     const projection = (await projectMobileWorkspace(store)).cards.find((card) => card.cardId === "reply")!;

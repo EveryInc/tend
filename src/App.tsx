@@ -61,8 +61,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const [tab, setTab] = useState<Tab>("review");
   const [inspector, setInspector] = useState<Inspector>(null);
   const [toast, setToast] = useState("");
-  const [undoCleanup, setUndoCleanup] = useState<CardDispositionUndo | null>(null);
-  const [undoDismissal, setUndoDismissal] = useState<CardDispositionUndo | null>(null);
+  const [undoCardDisposition, setUndoCardDisposition] = useState<CardDispositionUndo | null>(null);
   const [undoQueuedWork, setUndoQueuedWork] = useState<{ feedId: string; workId: string } | null>(null);
   const [undoRevision, setUndoRevision] = useState<string | null>(null);
   const [workspaceFocus, setWorkspaceFocus] = useState<VoiceTarget | null>(null);
@@ -311,14 +310,14 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
         await flushVisibleCardEdits(card);
         const work = await post<{ id: string }>(`/api/feeds/${feed.config.id}/cards/${card.id}/actions/${encodeURIComponent(action.id)}`);
         if (action.behavior === "dismiss_card") {
-          const dismissal = { feedId: feed.config.id, cardId: card.id, operationId: crypto.randomUUID() };
-          setUndoDismissal(dismissal);
-          window.setTimeout(() => setUndoDismissal((current) => sameUndoRegistration(current, dismissal) ? null : current), 5_000);
+          const dismissal: CardDispositionUndo = { kind: "dismiss", feedId: feed.config.id, cardId: card.id, operationId: crypto.randomUUID() };
+          setUndoCardDisposition(dismissal);
+          window.setTimeout(() => setUndoCardDisposition((current) => sameUndoRegistration(current, dismissal) ? null : current), 5_000);
           showToast("Card dismissed");
         } else if (action.behavior === "default_cleanup") {
-          const cleanup = { feedId: feed.config.id, cardId: card.id, operationId: work.id };
-          setUndoCleanup(cleanup);
-          window.setTimeout(() => setUndoCleanup((current) => sameUndoRegistration(current, cleanup) ? null : current), 5_000);
+          const cleanup: CardDispositionUndo = { kind: "cleanup", feedId: feed.config.id, cardId: card.id, operationId: work.id };
+          setUndoCardDisposition(cleanup);
+          window.setTimeout(() => setUndoCardDisposition((current) => sameUndoRegistration(current, cleanup) ? null : current), 5_000);
           showToast(`${action.label} queued for Codex`);
         } else {
           const queued = { feedId: feed.config.id, workId: work.id };
@@ -351,6 +350,16 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     () => post(`/api/feeds/${card.feedId}/cards/${card.id}/return-to-review`),
     card.status === "queued" ? "Moved back to review" : "Ready for review again",
   );
+  const undoCardDispositionAction = (target: CardDispositionUndo) => void (async () => {
+    try {
+      await post(cardDispositionUndoPath(target.kind, target));
+      setUndoCardDisposition((current) => sameUndoRegistration(current, target) ? null : current);
+      showToast(target.kind === "cleanup" ? "Cleanup undone" : "Dismissal undone");
+      await refresh();
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error));
+    }
+  })();
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
@@ -502,7 +511,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
       </main>
       <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} canRouteToClaude={canRouteDockToClaude} routeToClaude={routeDockToClaude} onRouteToClaude={setRouteDockToClaude} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
-      {toast && <div className="toast">{toast}{undoCleanup && <button onClick={() => { const target = undoCleanup; void withRefresh(() => post(cardDispositionUndoPath("cleanup", target)), "Cleanup undone").then(() => setUndoCleanup((current) => sameUndoRegistration(current, target) ? null : current)); }}>Undo</button>}{undoDismissal && <button onClick={() => { const target = undoDismissal; void withRefresh(() => post(cardDispositionUndoPath("dismiss", target)), "Dismissal undone").then(() => setUndoDismissal((current) => sameUndoRegistration(current, target) ? null : current)); }}>Undo</button>}{undoQueuedWork && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoQueuedWork.feedId}/work/${undoQueuedWork.workId}/cancel`), "Instruction cancelled").then(() => setUndoQueuedWork(null))}>Undo</button>}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
+      {toast && <div className="toast">{toast}{undoCardDisposition && <button onClick={() => undoCardDispositionAction(undoCardDisposition)}>Undo</button>}{undoQueuedWork && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoQueuedWork.feedId}/work/${undoQueuedWork.workId}/cancel`), "Instruction cancelled").then(() => setUndoQueuedWork(null))}>Undo</button>}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
     </>
   );
 }

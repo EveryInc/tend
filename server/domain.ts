@@ -1864,6 +1864,12 @@ export class AttentionDomain {
         case "approve_action": {
           if (!command.actionId) throw new Error("Mobile approval needs an action id.");
           const action = requireMobileAction(projection.actions, command.actionId, command.expectedActionDigest);
+          // Mobile schema v1 mapped every non-cleanup action to approve_action. Treat its synthetic
+          // dismiss control as the local disposition while installed v1 clients age out.
+          if (action.behavior === "dismiss_card") {
+            await this.dismissCardLocked(command.feedId, command.cardId, command.id);
+            break;
+          }
           if (action.behavior !== "approve_action") throw new Error("Mobile approval action is no longer available.");
           const card = structuredClone(await this.store.readCard(command.feedId, command.cardId));
           if (card.actions?.some((item) => item.id === command.actionId && isReservedCardActionId(item.id))) {
