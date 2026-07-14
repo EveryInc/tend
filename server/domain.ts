@@ -38,6 +38,7 @@ import type {
   WorkspaceRevision,
 } from "../shared/types";
 import type { MobileActionProjection, MobileCommand, MobileCommandResult, MobileCommandReceipt } from "../shared/mobile";
+import { isReservedCardActionId, safeConfiguredCardActions } from "../shared/cardActions";
 import { containsFullEmail } from "../shared/emailThread";
 import { agentLabel, effectiveWorkLane } from "../shared/lanes";
 import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, workItemView } from "./store";
@@ -328,14 +329,12 @@ function validateCardBlocks(blocks: unknown): asserts blocks is CardBlock[] {
   }
 }
 
-const RESERVED_CARD_ACTION_IDS = new Set(["dismiss-card", "default-cleanup", "proposed-action"]);
-
 function validateCardActions(actions: CardAction[] | undefined): void {
   if (!actions) return;
   const ids = new Set<string>();
   for (const action of actions) {
     if (!action.id?.trim()) throw new Error("Card action ids must be non-empty strings.");
-    if (RESERVED_CARD_ACTION_IDS.has(action.id)) throw new Error(`Card action id "${action.id}" is reserved by Tend.`);
+    if (isReservedCardActionId(action.id)) throw new Error(`Card action id "${action.id}" is reserved by Tend.`);
     if (ids.has(action.id)) throw new Error(`Card action id "${action.id}" must be unique within a card.`);
     ids.add(action.id);
   }
@@ -343,7 +342,7 @@ function validateCardActions(actions: CardAction[] | undefined): void {
 
 function offersSourceCleanup(card: Card): boolean {
   return Boolean(
-    card.actions?.some((action) => action.behavior === "default_cleanup")
+    safeConfiguredCardActions(card.actions).some((action) => action.behavior === "default_cleanup")
     || card.proposedAction?.label === "Archive"
     || card.proposedAction?.label === "Archive this thread",
   );
@@ -1538,7 +1537,7 @@ export class AttentionDomain {
 
   async runCardAction(feedId: string, cardId: string, cardActionId: string): Promise<WorkItem | Card> {
     const card = await this.store.readCard(feedId, cardId);
-    if (card.actions?.some((action) => action.id === cardActionId && RESERVED_CARD_ACTION_IDS.has(action.id))) {
+    if (card.actions?.some((action) => action.id === cardActionId && isReservedCardActionId(action.id))) {
       throw new Error(`Card action id "${cardActionId}" is reserved by Tend.`);
     }
     if (cardActionId === "default-cleanup") return this.queueSourceCleanup(feedId, cardId);
@@ -1567,9 +1566,14 @@ export class AttentionDomain {
   }
 
   private async dismissCardLocked(feedId: string, cardId: string, sourceMobileCommandId?: string): Promise<Card> {
+    const config = await this.store.readConfig(feedId);
     const card = await this.store.readCard(feedId, cardId);
     if (card.routineActionGroupId) throw new Error("This card belongs to a routine action group. Review the group instead.");
-    if (card.status !== "to_review_new" && card.status !== "to_review_updated") {
+    if (
+      (card.status !== "to_review_new" && card.status !== "to_review_updated")
+      || card.readyForPass > config.currentPass
+      || card.sweep?.hidden
+    ) {
       throw new Error("Only a card under review can be dismissed.");
     }
     card.status = "done";
@@ -1863,8 +1867,11 @@ export class AttentionDomain {
           if (!command.actionId) throw new Error("Mobile approval needs an action id.");
           const action = requireMobileAction(projection.actions, command.actionId, command.expectedActionDigest);
           if (action.behavior !== "approve_action") throw new Error("Mobile approval action is no longer available.");
-          const cardActionId = command.actionId === "proposed-action" ? undefined : command.actionId;
           const card = structuredClone(await this.store.readCard(command.feedId, command.cardId));
+          if (card.actions?.some((item) => item.id === command.actionId && isReservedCardActionId(item.id))) {
+            throw new Error(`Card action id "${command.actionId}" is reserved by Tend.`);
+          }
+          const cardActionId = command.actionId === "proposed-action" ? undefined : command.actionId;
           const configured = configuredApprovalAction(card, cardActionId);
           const edits = command.edits ?? {};
           if (Object.keys(edits).length && !configured.artifactBlockId) {

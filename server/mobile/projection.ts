@@ -9,6 +9,7 @@ import type {
   RoutineActionGroup,
   WorkItemView,
 } from "../../shared/types";
+import { safeConfiguredCardActions } from "../../shared/cardActions";
 import {
   MOBILE_SCHEMA_VERSION,
   type MobileActionConfirmation,
@@ -215,10 +216,11 @@ function visibleCardActions(card: Card): CardAction[] {
     variant: "secondary",
     shortcut: "d",
   };
-  if (card.actions?.length) {
+  const configuredActions = safeConfiguredCardActions(card.actions);
+  if (configuredActions.length) {
     // Local dismissal is always available unless the card author supplied a custom local-dismiss
     // control. Source cleanup remains a separate, explicitly configured action.
-    return card.actions.some((action) => action.behavior === "dismiss_card") ? card.actions : [dismiss, ...card.actions];
+    return configuredActions.some((action) => action.behavior === "dismiss_card") ? configuredActions : [dismiss, ...configuredActions];
   }
   if (!card.proposedAction || card.proposedAction.label === "Decide disposition") return [dismiss];
   if (card.proposedAction.label === "Archive" || card.proposedAction.label === "Archive this thread") {

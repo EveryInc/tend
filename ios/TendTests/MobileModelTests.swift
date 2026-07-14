@@ -190,6 +190,41 @@ final class MobileModelTests: XCTestCase {
         try? FileManager.default.removeItem(at: cacheDirectory)
     }
 
+    @MainActor
+    func testFixtureDismissIsWorkFreeAndSurvivesRefreshAndUndo() async throws {
+        let repository = FixtureTendRepository()
+        let initial = try await repository.loadSnapshot()
+        let card = try XCTUnwrap(initial.cards.first { $0.cardId == "agreements" })
+        let action = try XCTUnwrap(card.dismissAction)
+        let cacheDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let model = TendAppModel(
+            repository: repository,
+            cache: MobileCache(directory: cacheDirectory),
+            allowedEmail: "dan@every.to"
+        )
+        model.snapshot = initial
+
+        let succeeded = await model.submit(action: action, for: card, edits: [:])
+        XCTAssertTrue(succeeded)
+        let dismissedSnapshot = try await repository.loadSnapshot()
+        let dismissed = try XCTUnwrap(dismissedSnapshot.cards.first { $0.key == card.key })
+        let activity = try XCTUnwrap(dismissedSnapshot.activities.first)
+        XCTAssertEqual(dismissed.status, "done")
+        XCTAssertEqual(dismissed.completionDisposition, "dismissed")
+        XCTAssertFalse(dismissed.reviewable)
+        XCTAssertNil(activity.resultWorkId)
+        XCTAssertNil(activity.workStatus)
+
+        await model.undoArchive()
+        let restoredSnapshot = try await repository.loadSnapshot()
+        let restored = try XCTUnwrap(restoredSnapshot.cards.first { $0.key == card.key })
+        XCTAssertEqual(restored.status, card.status)
+        XCTAssertEqual(restored.reviewable, card.reviewable)
+        XCTAssertEqual(restored.completionDisposition, card.completionDisposition)
+        try? FileManager.default.removeItem(at: cacheDirectory)
+    }
+
     func testMobileCardDecodesUnknownBehaviorAndOptionalDisposition() throws {
         let dismissedJSON = """
         {

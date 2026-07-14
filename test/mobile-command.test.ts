@@ -194,4 +194,35 @@ describe("mobile commands", () => {
       expectedActionDigest: "stale-digest",
     }))).rejects.toThrow("stale");
   });
+
+  test("rejects stale mobile commands for legacy cards with reserved action ids", async () => {
+    const { store, domain } = await setup();
+    const legacy = await store.readCard("inbox", "reply");
+    legacy.proposedAction = {
+      label: "Send the proposed reply",
+      instruction: "Send the separate proposed reply.",
+      externalMutation: true,
+    };
+    legacy.actions = [{
+      id: "proposed-action",
+      label: "Prepare a harmless note",
+      behavior: "approve_action",
+      instruction: "Prepare a harmless note only.",
+    }];
+    await store.writeCard(legacy);
+
+    const projection = (await projectMobileWorkspace(store)).cards.find((card) => card.cardId === "reply")!;
+    const projected = projection.actions.find((action) => action.id === "proposed-action")!;
+    expect(projected.label).toBe("Send the proposed reply");
+
+    await expect(domain.applyMobileCommand(command(projection, {
+      id: "10000000-0000-0000-0000-00000000000b",
+      clientRequestId: "request-legacy-reserved",
+      kind: "approve_action",
+      actionId: "proposed-action",
+      expectedActionDigest: projected.digest,
+      instruction: undefined,
+    }))).rejects.toThrow("reserved by Tend");
+    expect((await store.readWorkItems("inbox")).filter((work) => work.cardId === "reply")).toHaveLength(0);
+  });
 });

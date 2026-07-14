@@ -4,7 +4,7 @@ actor FixtureTendRepository: TendRepository {
     nonisolated let usesFixtures = true
 
     private var snapshot = FixtureData.snapshot
-    private var archivedCards: [UUID: MobileCard] = [:]
+    private var undoableCards: [UUID: MobileCard] = [:]
 
     func hasSession() async -> Bool { true }
     func requestSignInLink(email: String) async throws {}
@@ -25,6 +25,7 @@ actor FixtureTendRepository: TendRepository {
             instruction: command.instruction ?? action?.label,
             riskConfirmation: command.riskConfirmation
         )
+        let createsWork = command.kind != "dismiss"
         let activity = MobileActivity(
             id: command.id,
             feedId: command.feedId,
@@ -33,19 +34,20 @@ actor FixtureTendRepository: TendRepository {
             payload: payload,
             state: "applied",
             availableAt: now,
-            resultWorkId: "work-\(command.id.uuidString.lowercased())",
-            workStatus: "queued",
+            resultWorkId: createsWork ? "work-\(command.id.uuidString.lowercased())" : nil,
+            workStatus: createsWork ? "queued" : nil,
             response: nil,
             error: nil,
             createdAt: now,
             updatedAt: now
         )
         if let index = snapshot.cards.firstIndex(where: { $0.feedId == command.feedId && $0.cardId == command.cardId }) {
-            if command.kind == "archive" {
-                archivedCards[command.id] = snapshot.cards[index]
+            if command.kind == "archive" || command.kind == "dismiss" {
+                undoableCards[command.id] = snapshot.cards[index]
             }
             snapshot.cards[index].reviewable = false
-            snapshot.cards[index].status = "queued"
+            snapshot.cards[index].status = command.kind == "dismiss" ? "done" : "queued"
+            snapshot.cards[index].completionDisposition = command.kind == "dismiss" ? "dismissed" : nil
             if let feedIndex = snapshot.feeds.firstIndex(where: { $0.id == command.feedId }) {
                 snapshot.feeds[feedIndex].reviewCount = max(0, snapshot.feeds[feedIndex].reviewCount - 1)
             }
@@ -59,10 +61,10 @@ actor FixtureTendRepository: TendRepository {
             return nil
         }
         snapshot.activities[activityIndex].state = "cancelled"
-        if let archived = archivedCards.removeValue(forKey: commandID),
-           let cardIndex = snapshot.cards.firstIndex(where: { $0.key == archived.key }) {
-            snapshot.cards[cardIndex] = archived
-            if let feedIndex = snapshot.feeds.firstIndex(where: { $0.id == archived.feedId }) {
+        if let original = undoableCards.removeValue(forKey: commandID),
+           let cardIndex = snapshot.cards.firstIndex(where: { $0.key == original.key }) {
+            snapshot.cards[cardIndex] = original
+            if let feedIndex = snapshot.feeds.firstIndex(where: { $0.id == original.feedId }) {
                 snapshot.feeds[feedIndex].reviewCount += 1
             }
         }

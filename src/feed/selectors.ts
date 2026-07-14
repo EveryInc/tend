@@ -1,5 +1,6 @@
 import type { Tab } from "../app/types";
 import type { Card, CardAction, FeedView, RoutineActionGroup, WorkItemView } from "../types";
+import { safeConfiguredCardActions } from "../../shared/cardActions";
 
 export function visibleCards(feed: FeedView, tab: Tab): Card[] {
   const pass = feed.config.currentPass;
@@ -34,10 +35,11 @@ export function countFor(feed: FeedView, tab: Tab): number {
 
 export function visibleCardActions(card: Card): CardAction[] {
   const dismiss: CardAction = { id: "dismiss-card", label: "Dismiss card", behavior: "dismiss_card", variant: "secondary", shortcut: "d" };
-  if (card.actions?.length) {
+  const configuredActions = safeConfiguredCardActions(card.actions);
+  if (configuredActions.length) {
     // Local dismissal is always available unless the card author supplied a custom local-dismiss
     // control. Source cleanup remains a separate, explicitly configured action.
-    return card.actions.some((action) => action.behavior === "dismiss_card") ? card.actions : [dismiss, ...card.actions];
+    return configuredActions.some((action) => action.behavior === "dismiss_card") ? configuredActions : [dismiss, ...configuredActions];
   }
   if (!card.proposedAction || card.proposedAction.label === "Decide disposition") return [dismiss];
   if (card.proposedAction.label === "Archive" || card.proposedAction.label === "Archive this thread") {
