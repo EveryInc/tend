@@ -328,6 +328,27 @@ function validateCardBlocks(blocks: unknown): asserts blocks is CardBlock[] {
   }
 }
 
+const RESERVED_CARD_ACTION_IDS = new Set(["dismiss-card", "default-cleanup", "proposed-action"]);
+
+function validateCardActions(actions: CardAction[] | undefined): void {
+  if (!actions) return;
+  const ids = new Set<string>();
+  for (const action of actions) {
+    if (!action.id?.trim()) throw new Error("Card action ids must be non-empty strings.");
+    if (RESERVED_CARD_ACTION_IDS.has(action.id)) throw new Error(`Card action id "${action.id}" is reserved by Tend.`);
+    if (ids.has(action.id)) throw new Error(`Card action id "${action.id}" must be unique within a card.`);
+    ids.add(action.id);
+  }
+}
+
+function offersSourceCleanup(card: Card): boolean {
+  return Boolean(
+    card.actions?.some((action) => action.behavior === "default_cleanup")
+    || card.proposedAction?.label === "Archive"
+    || card.proposedAction?.label === "Archive this thread",
+  );
+}
+
 function validateSourceRunIds(sourceRunIds: unknown): string[] | undefined {
   if (sourceRunIds === undefined) return undefined;
   if (!Array.isArray(sourceRunIds) || sourceRunIds.length === 0 || sourceRunIds.some((runId) => typeof runId !== "string" || !runId.trim())) {
@@ -1437,6 +1458,7 @@ export class AttentionDomain {
       )
     );
     if (card.status === "done" && completedCleanup) throw new Error("This card's default cleanup is already complete.");
+    if (!offersSourceCleanup(card)) throw new Error("Source cleanup is not available for this card.");
     const approvalDigest = cleanupDigest(card, config.defaultCleanup);
     const active = feedWork.filter((work) =>
       work.cardId === cardId
@@ -1515,10 +1537,13 @@ export class AttentionDomain {
   }
 
   async runCardAction(feedId: string, cardId: string, cardActionId: string): Promise<WorkItem | Card> {
+    const card = await this.store.readCard(feedId, cardId);
+    if (card.actions?.some((action) => action.id === cardActionId && RESERVED_CARD_ACTION_IDS.has(action.id))) {
+      throw new Error(`Card action id "${cardActionId}" is reserved by Tend.`);
+    }
     if (cardActionId === "default-cleanup") return this.queueSourceCleanup(feedId, cardId);
     if (cardActionId === "dismiss-card") return this.dismissCard(feedId, cardId);
     if (cardActionId === "proposed-action") return this.approveAction(feedId, cardId);
-    const card = await this.store.readCard(feedId, cardId);
     const action = card.actions?.find((item) => item.id === cardActionId);
     if (!action) throw new Error("Card action not found.");
     if (action.behavior === "default_cleanup") return this.queueSourceCleanup(feedId, cardId);
@@ -2102,6 +2127,7 @@ export class AttentionDomain {
 
   async completeWork(feedId: string, workId: string, token: string, result: { response: string; blocks?: CardBlock[]; proposedAction?: ProposedAction; actions?: CardAction[]; done?: boolean; postAction?: PostActionCompletion }): Promise<WorkItem> {
     if (result.blocks) validateCardBlocks(result.blocks);
+    validateCardActions(result.actions);
     return this.store.serialize(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "working") throw new Error("Work item is not currently claimed.");
@@ -2496,6 +2522,7 @@ export class AttentionDomain {
     safeIdentifier(feedId, "Feed id");
     safeIdentifier(input.id, "Card id");
     validateCardBlocks(input.blocks);
+    validateCardActions(input.actions);
     const sourceRunIds = validateSourceRunIds(input.sourceRunIds);
     return this.store.serialize(async () => {
       const config = await this.store.readConfig(feedId);
@@ -2521,8 +2548,8 @@ export class AttentionDomain {
         readyForPass: input.readyForPass ?? existing?.readyForPass ?? config.currentPass,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
-        completedAt: input.completedAt,
-        completionDisposition: input.completionDisposition,
+        completedAt: resurfaced ? undefined : input.completedAt ?? existing?.completedAt,
+        completionDisposition: resurfaced ? undefined : input.completionDisposition ?? existing?.completionDisposition,
         routineActionGroupId: input.routineActionGroupId ?? (resurfaced ? undefined : existing?.routineActionGroupId),
         history: existing?.history ?? [],
       };

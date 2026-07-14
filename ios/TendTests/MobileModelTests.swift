@@ -151,7 +151,9 @@ final class MobileModelTests: XCTestCase {
     func testDismissCardSubmitsLocalDismissKindWithoutConnector() async throws {
         let card = try XCTUnwrap(FixtureData.cards.first { $0.cardId == "agreements" })
         let action = try XCTUnwrap(card.dismissAction)
-        let repository = CapturingRepository()
+        var cancelledActivity = FixtureData.activities[0]
+        cancelledActivity.state = "cancelled"
+        let repository = CapturingRepository(cancelResult: cancelledActivity)
         let cacheDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let model = TendAppModel(
@@ -159,14 +161,32 @@ final class MobileModelTests: XCTestCase {
             cache: MobileCache(directory: cacheDirectory),
             allowedEmail: "dan@every.to"
         )
+        model.snapshot = FixtureData.snapshot
+        let originalReviewCount = try XCTUnwrap(model.snapshot.feeds.first { $0.id == card.feedId }).reviewCount
 
         let succeeded = await model.submit(action: action, for: card, edits: [:])
         let submission = await repository.lastSubmission
+        let queuedCard = try XCTUnwrap(model.snapshot.cards.first { $0.key == card.key })
 
         XCTAssertTrue(succeeded)
         XCTAssertEqual(submission?.kind, "dismiss")
         XCTAssertNil(submission?.riskConfirmation)
         XCTAssertNil(submission?.edits)
+        XCTAssertFalse(queuedCard.reviewable)
+        XCTAssertEqual(queuedCard.status, "queued")
+        XCTAssertEqual(model.snapshot.feeds.first { $0.id == card.feedId }?.reviewCount, originalReviewCount - 1)
+        XCTAssertEqual(model.pendingUndo?.kind, "dismiss")
+
+        let pendingActivityID = try XCTUnwrap(model.pendingUndo?.activity.id)
+        await model.undoArchive()
+
+        let cancellationID = await repository.lastCancellationID
+        XCTAssertEqual(cancellationID, pendingActivityID)
+        let restoredCard = try XCTUnwrap(model.snapshot.cards.first { $0.key == card.key })
+        XCTAssertTrue(restoredCard.reviewable)
+        XCTAssertEqual(restoredCard.status, card.status)
+        XCTAssertEqual(model.snapshot.feeds.first { $0.id == card.feedId }?.reviewCount, originalReviewCount)
+        XCTAssertNil(model.pendingUndo)
         try? FileManager.default.removeItem(at: cacheDirectory)
     }
 
@@ -201,6 +221,12 @@ final class MobileModelTests: XCTestCase {
 private actor CapturingRepository: TendRepository {
     nonisolated let usesFixtures = true
     private(set) var lastSubmission: MobileCommandSubmission?
+    private(set) var lastCancellationID: UUID?
+    private let cancelResult: MobileActivity?
+
+    init(cancelResult: MobileActivity? = nil) {
+        self.cancelResult = cancelResult
+    }
 
     func hasSession() async -> Bool { true }
     func requestSignInLink(email: String) async throws {}
@@ -213,7 +239,10 @@ private actor CapturingRepository: TendRepository {
         return FixtureData.activities[0]
     }
 
-    func cancel(commandID: UUID) async throws -> MobileActivity? { nil }
+    func cancel(commandID: UUID) async throws -> MobileActivity? {
+        lastCancellationID = commandID
+        return cancelResult
+    }
     func startObserving(_ onChange: @escaping @Sendable () async -> Void) async throws {}
     func stopObserving() async {}
 }

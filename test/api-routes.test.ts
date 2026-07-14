@@ -224,7 +224,13 @@ describe("API routing and mutation hardening", () => {
   });
 
   test("source cleanup has explicit queue and undo routes", async () => {
-    const { app } = await setup();
+    const { app, store } = await setup();
+    const configuredCard = await store.readCard("inbox", "inbox-ready-to-collect");
+    configuredCard.actions = [
+      ...(configuredCard.actions ?? []),
+      { id: "archive-source", label: "Archive", behavior: "default_cleanup" },
+    ];
+    await store.writeCard(configuredCard);
 
     const queuedResponse = await app.request("/api/feeds/inbox/cards/inbox-ready-to-collect/cleanup-source", jsonPost({}));
     expect(queuedResponse.status).toBe(200);
@@ -236,5 +242,13 @@ describe("API routing and mutation hardening", () => {
     const card = await undoResponse.json() as { status: string; completionDisposition?: string };
     expect(card.status).toBe("to_review_updated");
     expect(card.completionDisposition).toBeUndefined();
+  });
+
+  test("source cleanup rejects a card that did not opt in", async () => {
+    const { app } = await setup();
+
+    const response = await app.request("/api/feeds/inbox/cards/inbox-ready-to-collect/cleanup-source", jsonPost({}));
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Source cleanup is not available for this card." });
   });
 });

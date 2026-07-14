@@ -312,12 +312,12 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
         if (action.behavior === "dismiss_card") {
           const dismissal = { feedId: feed.config.id, cardId: card.id };
           setUndoDismissal(dismissal);
-          window.setTimeout(() => setUndoDismissal((current) => current?.cardId === dismissal.cardId ? null : current), 5_000);
+          window.setTimeout(() => setUndoDismissal((current) => current?.feedId === dismissal.feedId && current.cardId === dismissal.cardId ? null : current), 5_000);
           showToast("Card dismissed");
         } else if (action.behavior === "default_cleanup") {
           const cleanup = { feedId: feed.config.id, cardId: card.id };
           setUndoCleanup(cleanup);
-          window.setTimeout(() => setUndoCleanup((current) => current?.cardId === cleanup.cardId ? null : current), 5_000);
+          window.setTimeout(() => setUndoCleanup((current) => current?.feedId === cleanup.feedId && current.cardId === cleanup.cardId ? null : current), 5_000);
           showToast(`${action.label} queued for Codex`);
         } else {
           const queued = { feedId: feed.config.id, workId: work.id };

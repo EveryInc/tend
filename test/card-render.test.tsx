@@ -153,7 +153,7 @@ test("injects a local Dismiss card control by default instead of Archive", () =>
   expect(html).not.toContain("Archive");
 });
 
-test("surfaces Archive only when the card explicitly proposes source cleanup", () => {
+test("keeps local dismissal alongside explicitly proposed source cleanup", () => {
   const card: Card = {
     id: "cleanup",
     feedId: "inbox",
@@ -181,5 +181,6 @@ test("surfaces Archive only when the card explicitly proposes source cleanup", (
     />,
   );
 
+  expect(html).toContain("Dismiss card");
   expect(html).toContain("Archive");
 });

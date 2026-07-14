@@ -12,7 +12,7 @@ import { createLocalRuntime } from "../server/runtime";
 const enabled = process.env.TEND_SUPABASE_E2E === "1";
 const integrationTest = enabled ? test : test.skip;
 
-integrationTest("local Supabase mirrors dynamic feeds and returns one phone command to Tend", async () => {
+integrationTest("local Supabase mirrors dynamic feeds and returns phone commands to Tend", async () => {
   const url = requiredEnv("TEND_TEST_SUPABASE_URL");
   const anonKey = requiredEnv("TEND_TEST_SUPABASE_ANON_KEY");
   const serviceRoleKey = requiredEnv("TEND_TEST_SUPABASE_SERVICE_ROLE_KEY");
@@ -37,6 +37,12 @@ integrationTest("local Supabase mirrors dynamic feeds and returns one phone comm
       title: "Company phone review",
       why: "The same card id must remain isolated in Company.",
       blocks: [{ id: "memo", type: "memo", text: "Company evidence." }],
+    });
+    await domain.upsertCard("inbox", {
+      id: "dismiss-e2e",
+      title: "Dismiss this locally.",
+      why: "The phone bridge must not create connector work for local dismissal.",
+      blocks: [{ id: "memo", type: "memo", text: "No source cleanup requested." }],
     });
     await domain.createFeedFromBrief("Every\nReview editorial and product opportunities.", null);
     await domain.createFeedFromBrief("Temporary Mobile Test\nExercise dynamic feed discovery.", null);
@@ -124,11 +130,57 @@ integrationTest("local Supabase mirrors dynamic feeds and returns one phone comm
     expect((await store.readWorkItems("company-attention")).some(
       (work) => work.sourceMobileCommandId === commandId,
     )).toBe(false);
+
+    const dismissProjection = (await projectMobileWorkspace(store)).cards.find(
+      (card) => card.feedId === "inbox" && card.cardId === "dismiss-e2e",
+    )!;
+    const dismissAction = dismissProjection.actions.find((action) => action.id === "dismiss-card")!;
+    const dismissCommandId = randomUUID();
+    await rest(
+      url,
+      anonKey,
+      token,
+      "/rest/v1/rpc/submit_mobile_command",
+      {
+        method: "POST",
+        body: {
+          p_command: {
+            id: dismissCommandId,
+            clientRequestId: randomUUID(),
+            deviceId: "iphone-e2e",
+            feedId: dismissProjection.feedId,
+            cardId: dismissProjection.cardId,
+            feedGeneration: dismissProjection.feedGeneration,
+            expectedCardDigest: dismissProjection.cardDigest,
+            kind: "dismiss",
+            actionId: dismissAction.id,
+            expectedActionDigest: dismissAction.digest,
+          },
+        },
+      },
+    );
+
+    await Bun.sleep(5_250);
+    expect((await worker.runOnce()).lastError).toBeUndefined();
+    const dismissActivity = await rest<Array<{ state: string; result_work_id: string | null }>>(
+      url,
+      anonKey,
+      token,
+      `/rest/v1/mobile_commands?id=eq.${dismissCommandId}&select=state,result_work_id`,
+    );
+    expect(dismissActivity).toEqual([{ state: "applied", result_work_id: null }]);
+    expect(await store.readCard("inbox", "dismiss-e2e")).toMatchObject({
+      status: "done",
+      completionDisposition: "dismissed",
+    });
+    expect((await store.readWorkItems("inbox")).some(
+      (work) => work.sourceMobileCommandId === dismissCommandId,
+    )).toBe(false);
   } finally {
     runtime.sqlite.close();
     await rm(root, { recursive: true, force: true });
   }
-});
+}, 15_000);
 
 async function rest<T>(
   url: string,

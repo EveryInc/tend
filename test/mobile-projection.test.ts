@@ -123,6 +123,13 @@ describe("mobile workspace projection", () => {
         },
       ],
     });
+    await domain.upsertCard("inbox", {
+      id: "mobile-cleanup-card",
+      title: "Archive this notice.",
+      why: "Source cleanup is explicitly available without replacing local dismissal.",
+      blocks: [{ id: "memo", type: "memo", text: "Routine notice." }],
+      actions: [{ id: "archive-source", label: "Archive", behavior: "default_cleanup", shortcut: "x" }],
+    });
     await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Collect a fresh Inbox sweep.");
     await domain.upsertRoutineActionGroup("inbox", {
       id: "cleanup",
@@ -134,12 +141,14 @@ describe("mobile workspace projection", () => {
 
     const snapshot = await projectMobileWorkspace(store);
     const card = snapshot.cards.find((item) => item.cardId === "mobile-card");
+    const cleanupCard = snapshot.cards.find((item) => item.cardId === "mobile-cleanup-card");
     const routine = snapshot.cards.find((item) => item.routineActionGroupId === "cleanup");
     const serialized = JSON.stringify(snapshot);
 
     expect(card?.reviewable).toBe(true);
     expect(card?.actions.map((action) => action.label)).toEqual(["Dismiss card", "Send reply"]);
     expect(card?.actions.find((action) => action.id === "dismiss-card")?.behavior).toBe("dismiss_card");
+    expect(cleanupCard?.actions.map((action) => action.label)).toEqual(["Dismiss card", "Archive"]);
     expect(card?.actions.find((action) => action.id === "send")?.confirmation?.recipients).toEqual(["syd@example.com"]);
     const evidenceItems = card?.blocks[0].items ?? [];
     expect((evidenceItems[0] as any).href).toBe("https://example.com/agreement");

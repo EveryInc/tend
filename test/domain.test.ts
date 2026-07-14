@@ -73,6 +73,15 @@ async function bindClaudeLane(store: AttentionStore, feedId: string, threadId = 
   });
 }
 
+async function enableSourceCleanup(store: AttentionStore, feedId: string, cardId: string): Promise<void> {
+  const card = await store.readCard(feedId, cardId);
+  card.actions = [
+    ...(card.actions ?? []).filter((action) => action.behavior !== "default_cleanup"),
+    { id: "archive-source", label: "Archive", behavior: "default_cleanup", shortcut: "x" },
+  ];
+  await store.writeCard(card);
+}
+
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
@@ -1250,6 +1259,7 @@ describe("Claude wake emission", () => {
     await bindClaudeLane(store, "inbox", "thread-claude");
 
     await domain.queueFeedInstruction("inbox", "Codex feed instruction.");
+    await enableSourceCleanup(store, "inbox", "inbox-ready-to-collect");
     await domain.queueSourceCleanup("inbox", "inbox-ready-to-collect");
     await domain.submitVoiceInstruction("inbox", { kind: "sweep", feedId: "inbox" }, "Codex sweep feedback.");
 
@@ -1755,6 +1765,7 @@ describe("approval, learning, and heartbeat safety", () => {
     const card = await store.readCard("inbox", "inbox-ready-to-collect");
     card.status = "done";
     card.completedAt = "2026-06-15T12:00:00.000Z";
+    card.actions = [{ id: "archive-source", label: "Archive", behavior: "default_cleanup" }];
     await store.writeCard(card);
 
     const cleanup = await domain.queueSourceCleanup("inbox", card.id);
@@ -1832,6 +1843,7 @@ describe("approval, learning, and heartbeat safety", () => {
 
   test("queues default cleanup for Codex and allows a brief undo", async () => {
     const { store, domain } = await setup();
+    await enableSourceCleanup(store, "inbox", "inbox-ready-to-collect");
     const cleanup = await domain.queueSourceCleanup("inbox", "inbox-ready-to-collect");
     expect(cleanup.kind).toBe("default_cleanup");
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("queued");
@@ -1995,6 +2007,7 @@ describe("approval, learning, and heartbeat safety", () => {
   test("collapses concurrent dismiss cleanup and rejects changed cleanup configuration", async () => {
     const { store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-inbox");
+    await enableSourceCleanup(store, "inbox", "inbox-ready-to-collect");
     const [first, second] = await Promise.all([
       domain.queueSourceCleanup("inbox", "inbox-ready-to-collect"),
       domain.queueSourceCleanup("inbox", "inbox-ready-to-collect"),
@@ -2013,6 +2026,7 @@ describe("approval, learning, and heartbeat safety", () => {
   test("quarantines legacy mutation work without an approval digest and continues draining", async () => {
     const { store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-inbox");
+    await enableSourceCleanup(store, "inbox", "inbox-ready-to-collect");
     const legacy = await domain.queueSourceCleanup("inbox", "inbox-ready-to-collect");
     legacy.approvalDigest = undefined;
     legacy.createdAt = new Date(Date.now() - 60_000).toISOString();
@@ -2490,6 +2504,7 @@ describe("local card dismissal (Tend-only, no source cleanup)", () => {
 
   test("explicit default cleanup still queues a verifiable connector work item, unchanged", async () => {
     const { store, domain } = await setup();
+    await enableSourceCleanup(store, "inbox", "inbox-ready-to-collect");
 
     const work = await domain.queueSourceCleanup("inbox", "inbox-ready-to-collect");
 
@@ -2499,8 +2514,9 @@ describe("local card dismissal (Tend-only, no source cleanup)", () => {
   });
 
   test("local dismiss rejects a card that is not under review", async () => {
-    const { domain } = await setup();
+    const { store, domain } = await setup();
 
+    await enableSourceCleanup(store, "inbox", "inbox-ready-to-collect");
     await domain.queueSourceCleanup("inbox", "inbox-ready-to-collect"); // queues cleanup → card leaves review
 
     await expect(domain.dismissCard("inbox", "inbox-ready-to-collect")).rejects.toThrow("under review");
@@ -2523,6 +2539,7 @@ describe("local card dismissal (Tend-only, no source cleanup)", () => {
   test("cleaning up a locally dismissed card then undoing leaves a clean reviewable card", async () => {
     const { store, domain } = await setup();
 
+    await enableSourceCleanup(store, "inbox", "inbox-ready-to-collect");
     await domain.dismissCard("inbox", "inbox-ready-to-collect");
     await domain.queueSourceCleanup("inbox", "inbox-ready-to-collect"); // queue source cleanup on the dismissed card
 
@@ -2552,5 +2569,44 @@ describe("local card dismissal (Tend-only, no source cleanup)", () => {
 
     expect(card.status).toBe("done");
     expect(card.completionDisposition).toBe("dismissed");
+  });
+
+  test("partial upserts preserve dismissal metadata while explicit resurfacing clears it", async () => {
+    const { domain } = await setup();
+    const dismissed = await domain.dismissCard("inbox", "inbox-ready-to-collect");
+
+    const updated = await domain.upsertCard("inbox", {
+      id: dismissed.id,
+      title: "Updated after dismissal",
+      why: dismissed.why,
+      blocks: dismissed.blocks,
+    });
+    expect(updated.status).toBe("done");
+    expect(updated.completedAt).toBe(dismissed.completedAt);
+    expect(updated.completionDisposition).toBe("dismissed");
+
+    const resurfaced = await domain.upsertCard("inbox", {
+      id: dismissed.id,
+      title: "Back for review",
+      why: dismissed.why,
+      blocks: dismissed.blocks,
+      status: "to_review_updated",
+    });
+    expect(resurfaced.completedAt).toBeUndefined();
+    expect(resurfaced.completionDisposition).toBeUndefined();
+  });
+
+  test("rejects card-authored ids reserved for synthetic Tend actions", async () => {
+    const { domain } = await setup();
+
+    for (const id of ["dismiss-card", "default-cleanup", "proposed-action"]) {
+      await expect(domain.upsertCard("inbox", {
+        id: `reserved-${id}`,
+        title: "Reserved action",
+        why: "Synthetic dispatch must not preempt a card-authored action.",
+        blocks: [{ id: "memo", type: "memo", text: "Reserved." }],
+        actions: [{ id, label: "Custom", behavior: "queue_instruction", instruction: "Do custom work." }],
+      })).rejects.toThrow("reserved by Tend");
+    }
   });
 });

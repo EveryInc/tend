@@ -33,18 +33,16 @@ export function countFor(feed: FeedView, tab: Tab): number {
 }
 
 export function visibleCardActions(card: Card): CardAction[] {
-  const dismiss: CardAction = { id: "dismiss-card", label: "Dismiss card", behavior: "dismiss_card", variant: "secondary", shortcut: "x" };
+  const dismiss: CardAction = { id: "dismiss-card", label: "Dismiss card", behavior: "dismiss_card", variant: "secondary", shortcut: "d" };
   if (card.actions?.length) {
-    // Respect an explicitly configured disposition (source cleanup, local dismissal, or a labelled
-    // Archive). Otherwise offer local dismissal as the safe default that never touches the source.
-    return card.actions.some((action) => action.behavior === "default_cleanup" || action.behavior === "dismiss_card" || action.label.trim().toLowerCase() === "archive")
-      ? card.actions
-      : [dismiss, ...card.actions];
+    // Local dismissal is always available unless the card author supplied a custom local-dismiss
+    // control. Source cleanup remains a separate, explicitly configured action.
+    return card.actions.some((action) => action.behavior === "dismiss_card") ? card.actions : [dismiss, ...card.actions];
   }
   if (!card.proposedAction || card.proposedAction.label === "Decide disposition") return [dismiss];
   if (card.proposedAction.label === "Archive" || card.proposedAction.label === "Archive this thread") {
     // The card explicitly proposes archiving the source, so surface the connector cleanup.
-    return [{ id: "default-cleanup", label: "Archive", behavior: "default_cleanup", variant: "primary", shortcut: "x" }];
+    return [dismiss, { id: "default-cleanup", label: "Archive", behavior: "default_cleanup", variant: "primary", shortcut: "x" }];
   }
   return [
     dismiss,

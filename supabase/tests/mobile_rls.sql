@@ -1,5 +1,5 @@
 begin;
-select plan(17);
+select plan(23);
 
 insert into public.mobile_feeds (
   user_id, feed_id, position, name, generation, payload
@@ -19,7 +19,7 @@ insert into public.mobile_cards (
     true,
     'pass:1',
     'digest-1',
-    '{"feedId":"inbox","cardId":"card-1","actions":[{"id":"default-cleanup","digest":"cleanup-1"}]}'
+    '{"feedId":"inbox","cardId":"card-1","actions":[{"id":"dismiss-card","digest":"dismiss-1"},{"id":"default-cleanup","digest":"cleanup-1"}]}'
   ),
   (
     '00000000-0000-0000-0000-000000000002',
@@ -99,6 +99,75 @@ select is(
   (select count(*) from public.mobile_commands),
   1::bigint,
   'an idempotent replay does not duplicate the command'
+);
+
+select lives_ok(
+  $$select public.submit_mobile_command(jsonb_build_object(
+    'id', '10000000-0000-0000-0000-000000000006',
+    'clientRequestId', '20000000-0000-0000-0000-000000000006',
+    'deviceId', 'iphone',
+    'feedId', 'inbox',
+    'cardId', 'card-1',
+    'feedGeneration', 'pass:1',
+    'expectedCardDigest', 'digest-1',
+    'kind', 'dismiss',
+    'actionId', 'dismiss-card',
+    'expectedActionDigest', 'dismiss-1'
+  ))$$,
+  'the authenticated user can submit an exact local-dismiss command'
+);
+
+select lives_ok(
+  $$select public.submit_mobile_command(jsonb_build_object(
+    'id', '10000000-0000-0000-0000-000000000006',
+    'clientRequestId', '20000000-0000-0000-0000-000000000006',
+    'deviceId', 'iphone',
+    'feedId', 'inbox',
+    'cardId', 'card-1',
+    'feedGeneration', 'pass:1',
+    'expectedCardDigest', 'digest-1',
+    'kind', 'dismiss',
+    'actionId', 'dismiss-card',
+    'expectedActionDigest', 'dismiss-1'
+  ))$$,
+  'replaying the same local-dismiss request is idempotent'
+);
+
+select is(
+  (select count(*) from public.mobile_commands),
+  2::bigint,
+  'local dismissal and source cleanup remain distinct commands'
+);
+
+select cmp_ok(
+  (select available_at from public.mobile_commands where id = '10000000-0000-0000-0000-000000000006'),
+  '>',
+  (select created_at from public.mobile_commands where id = '10000000-0000-0000-0000-000000000006'),
+  'local dismissal retains the brief server-side undo window'
+);
+
+select throws_ok(
+  $$select public.submit_mobile_command(jsonb_build_object(
+    'id', '10000000-0000-0000-0000-000000000007',
+    'clientRequestId', '20000000-0000-0000-0000-000000000007',
+    'deviceId', 'iphone',
+    'feedId', 'inbox',
+    'cardId', 'card-1',
+    'feedGeneration', 'pass:1',
+    'expectedCardDigest', 'digest-1',
+    'kind', 'dismiss',
+    'actionId', 'dismiss-card',
+    'expectedActionDigest', 'stale-dismiss'
+  ))$$,
+  'P0001',
+  'selected action changed after review',
+  'local dismissal rejects a stale action digest'
+);
+
+select is(
+  (select state::text from public.cancel_mobile_command('10000000-0000-0000-0000-000000000006')),
+  'cancelled',
+  'local dismissal can be cancelled during its undo window'
 );
 
 reset role;

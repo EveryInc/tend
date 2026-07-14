@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { runTendCli } from "../server/cli";
 import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS, cliCommandName } from "../server/cli/contract";
 import { MissingFlagError, formatCliError } from "../server/cli/errors";
@@ -113,5 +115,56 @@ describe("CLI contract", () => {
       explicitRuntime: true,
       fetchStatus: async () => ({ dataDir: "/tmp/live-runtime/data" }),
     })).resolves.toBeUndefined();
+  });
+
+  test("executes the renamed local-dismiss and source-cleanup commands end to end", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "tend-cli-disposition-"));
+    const run = async (args: string[]) => {
+      const subprocess = Bun.spawn({
+        cmd: [process.execPath, "tend.ts", "cli", ...args],
+        cwd: process.cwd(),
+        env: { ...process.env, ATTENTION_HOME: home },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(subprocess.stdout).text(),
+        new Response(subprocess.stderr).text(),
+        subprocess.exited,
+      ]);
+      if (exitCode !== 0) throw new Error(stderr || `CLI exited ${exitCode}`);
+      return JSON.parse(stdout);
+    };
+
+    try {
+      const card = {
+        id: "cli-disposition",
+        title: "Choose the disposition.",
+        why: "The CLI must distinguish local dismissal from source cleanup.",
+        blocks: [{ id: "memo", type: "memo", text: "Routine notice." }],
+      };
+      await run(["card:upsert", "--feed", "inbox", "--card", JSON.stringify(card)]);
+
+      const dismissed = await run(["card:dismiss", "--feed", "inbox", "--card", card.id]);
+      expect(dismissed).toMatchObject({ status: "done", completionDisposition: "dismissed" });
+
+      await run(["card:return-to-review", "--feed", "inbox", "--card", card.id]);
+      await run([
+        "card:upsert",
+        "--feed",
+        "inbox",
+        "--card",
+        JSON.stringify({ ...card, actions: [{ id: "archive-source", label: "Archive", behavior: "default_cleanup" }] }),
+      ]);
+      const cleanup = await run(["card:cleanup-source", "--feed", "inbox", "--card", card.id]);
+      expect(cleanup).toMatchObject({ kind: "default_cleanup", status: "queued" });
+      expect(cleanup.approvalDigest).toBeTruthy();
+
+      const restored = await run(["card:undo-cleanup-source", "--feed", "inbox", "--card", card.id]);
+      expect(restored).toMatchObject({ status: "to_review_updated" });
+      expect(restored.completionDisposition).toBeUndefined();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });
