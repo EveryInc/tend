@@ -61,6 +61,20 @@ Gmail, GitHub, Slack, browser, or other connector credentials.
 
 Feed state lives under `~/.attention` by default. Connector credentials stay in Codex Desktop.
 
+## Build Your Own
+
+Tell your favorite coding agent to build a core-compatible Tend in the programming language of your
+choice:
+
+> Implement Tend according to the following specification:
+> [https://github.com/EveryInc/tend/blob/main/SPEC.md](https://github.com/EveryInc/tend/blob/main/SPEC.md)
+
+The specification defines Tend's portable Observe → Review → Steer → Learn loop, core data model,
+state transitions, safety invariants, and conformance scenarios without prescribing a language,
+framework, storage engine, agent host, or visual design.
+
+Or continue below to use this repository's experimental reference implementation.
+
 ## Requirements
 
 | Path             | What You Need                                                                              |
