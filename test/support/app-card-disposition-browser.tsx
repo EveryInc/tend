@@ -1,10 +1,10 @@
-import { afterEach, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import App from "../src/App";
-import type { Card, FeedView, WorkspaceView } from "../shared/types";
+import App from "../../src/App";
+import type { Card, FeedView, WorkspaceView } from "../../shared/types";
 
 GlobalRegistrator.register();
 
@@ -15,8 +15,6 @@ class StubEventSource {
 }
 
 Object.assign(globalThis, { EventSource: StubEventSource });
-
-afterEach(() => cleanup());
 
 function workspace(): WorkspaceView {
   const card: Card = {
@@ -76,7 +74,7 @@ function workspace(): WorkspaceView {
   };
 }
 
-test("App keeps local dismissal and source cleanup undo requests distinct", async () => {
+async function run() {
   const requests: string[] = [];
   let failNextCleanupUndo = true;
   const state = workspace();
@@ -106,18 +104,29 @@ test("App keeps local dismissal and source cleanup undo requests distinct", asyn
   const view = render(<QueryClientProvider client={queryClient}><RouterProvider router={router} /></QueryClientProvider>);
 
   fireEvent.click(await view.findByRole("button", { name: "Dismiss card" }));
-  await waitFor(() => expect(requests).toContain("/api/feeds/inbox/cards/cleanup-card/actions/dismiss-card"));
+  await waitFor(() => assert(requests.includes("/api/feeds/inbox/cards/cleanup-card/actions/dismiss-card")));
   fireEvent.click(view.getByRole("button", { name: "Archive" }));
-  await waitFor(() => expect(requests).toContain("/api/feeds/inbox/cards/cleanup-card/actions/default-cleanup"));
-  expect(await view.findAllByRole("button", { name: "Undo" })).toHaveLength(1);
+  await waitFor(() => assert(requests.includes("/api/feeds/inbox/cards/cleanup-card/actions/default-cleanup")));
+  assert.equal((await view.findAllByRole("button", { name: "Undo" })).length, 1);
   fireEvent.click(view.getByRole("button", { name: "Undo" }));
   await view.findByText("Temporary cleanup undo failure");
-  expect(view.getByRole("button", { name: "Undo" })).toBeTruthy();
+  assert(view.getByRole("button", { name: "Undo" }));
   fireEvent.click(view.getByRole("button", { name: "Undo" }));
-  await waitFor(() => expect(requests.filter((url) => url.endsWith("/undo-cleanup-source"))).toHaveLength(2));
-  expect(requests).not.toContain("/api/feeds/inbox/cards/cleanup-card/return-to-review");
+  await waitFor(() => assert.equal(requests.filter((url) => url.endsWith("/undo-cleanup-source")).length, 2));
+  assert(!requests.includes("/api/feeds/inbox/cards/cleanup-card/return-to-review"));
 
   fireEvent.click(view.getByRole("button", { name: "Dismiss card" }));
   fireEvent.click(await view.findByRole("button", { name: "Undo" }));
-  await waitFor(() => expect(requests).toContain("/api/feeds/inbox/cards/cleanup-card/return-to-review"));
-});
+  await waitFor(() => assert(requests.includes("/api/feeds/inbox/cards/cleanup-card/return-to-review")));
+}
+
+try {
+  await run();
+  cleanup();
+  GlobalRegistrator.unregister();
+  process.exit(0);
+} catch (error) {
+  cleanup();
+  GlobalRegistrator.unregister();
+  throw error;
+}
