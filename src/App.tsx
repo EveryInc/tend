@@ -36,6 +36,14 @@ export function parkedClaudeWorkItems(feed: FeedView, claudeLiveness: string): P
     }));
 }
 
+export function pendingCompoundProposalsForFeed(proposals: RevisionProposal[], feedId: string): RevisionProposal[] {
+  return proposals.filter((proposal) =>
+    proposal.anchorFeedId === feedId
+    && proposal.source === "compound"
+    && proposal.status === "proposed"
+  );
+}
+
 export function ParkedClaudeWorkNotice({ items, onReassign }: { items: ParkedClaudeWork[]; onReassign: (work: WorkItemView) => void }) {
   if (!items.length) return null;
   return (
@@ -406,7 +414,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
 
   if (!state || !feed) return withRealtime(<main className="loading">Loading attention…</main>);
   const resolvedDockTarget = dockTarget ?? ladder[0];
-  const compoundProposals = state.proposals.filter((proposal) => proposal.anchorFeedId === feed.config.id && proposal.source === "compound" && proposal.status === "proposed");
+  const compoundProposals = pendingCompoundProposalsForFeed(state.proposals, feed.config.id);
   const workAgent = (work: WorkItemView) => effectiveWorkLane(work, feed.thread);
   const workAgentLabel = (work: WorkItemView) => agentLabel(workAgent(work));
   const cardQueuedFor = (cardId: string) => {

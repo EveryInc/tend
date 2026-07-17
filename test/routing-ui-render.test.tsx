@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Children, isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { FeedTabs, ParkedClaudeWorkNotice, parkedClaudeWorkItems } from "../src/App";
+import { FeedTabs, ParkedClaudeWorkNotice, parkedClaudeWorkItems, pendingCompoundProposalsForFeed } from "../src/App";
 import { Dock } from "../src/shell/Dock";
 import { TopBar } from "../src/shell/TopBar";
 import { LearningReview, RevisionProposals } from "../src/workspace/LearningReview";
@@ -72,6 +72,32 @@ test("TopBar renders Claude presence liveness and label", () => {
   expect(html).toContain("tend-agent-live");
 });
 
+test("pending compound proposals are scoped to the active feed and unresolved status", () => {
+  const proposal = (id: string, overrides: Partial<RevisionProposal> = {}): RevisionProposal => ({
+    id,
+    anchorFeedId: "inbox",
+    target: { kind: "feed", feedId: "inbox" },
+    label: "Inbox feed policy",
+    instruction: "Preserve a useful learning.",
+    previous: "Current policy text.",
+    next: "Proposed policy text.",
+    source: "compound",
+    status: "proposed",
+    createdAt: "2026-07-15T12:00:00.000Z",
+    ...overrides,
+  });
+
+  const pending = pendingCompoundProposalsForFeed([
+    proposal("pending"),
+    proposal("applied", { status: "applied" }),
+    proposal("rejected", { status: "rejected" }),
+    proposal("other-feed", { anchorFeedId: "company-attention" }),
+    proposal("voice", { source: "voice" }),
+  ], "inbox");
+
+  expect(pending.map((item) => item.id)).toEqual(["pending"]);
+});
+
 test("feed tabs keep a count-aware learning proposals control visible while proposals are pending", () => {
   const active = feed();
   let openedLearningReview = false;
@@ -87,7 +113,7 @@ test("feed tabs keep a count-aware learning proposals control visible while prop
   const withProposals = renderToStaticMarkup(
     <FeedTabs
       feed={active}
-      tab="review"
+      tab="done"
       queuedTabLabel="Queued for Codex"
       compoundProposalCount={2}
       onTab={() => {}}
