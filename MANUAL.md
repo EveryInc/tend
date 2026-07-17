@@ -177,10 +177,12 @@ a card to review does not reverse an external action that already happened.
 ### Review Passes
 
 Tend keeps the current review pass stable while Codex works. Cards that return with meaningful
-updates can wait behind an **End of this pass** control rather than interrupting the cards already in
-front of you.
+updates wait for the next pass rather than interrupting the cards already in front of you.
 
-Choose **Review ready cards** to begin the next pass. Updated cards appear under **Back for review**.
+While updates are waiting, a single compact **Review ready cards** control with a live count badge
+stays anchored just above the Dock, so you can begin the next pass from anywhere in the queue
+without scrolling to the end. Choosing it begins the next pass; updated cards appear under **Back
+for review**, and focus moves to the top of the newly revealed pass.
 
 A quiet feed is valid. Tend's global policy explicitly prefers no card over a weak card.
 

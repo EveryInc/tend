@@ -9,6 +9,7 @@ import { RoutineActionGroupView } from "./feed/RoutineActionGroupView";
 import { countFor, visibleCardActions, visibleCards, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
 import { Dock } from "./shell/Dock";
 import { InspectorPanel } from "./shell/InspectorPanel";
+import { ReviewReadyControl } from "./shell/ReviewReadyControl";
 import { TopBar } from "./shell/TopBar";
 import { useActiveCard } from "./state/activeCard";
 import { cardDispositionUndoPath, sameUndoRegistration, type CardDispositionUndo } from "./state/cardDispositionUndo";
@@ -34,6 +35,10 @@ export function parkedClaudeWorkItems(feed: FeedView, claudeLiveness: string): P
       work,
       label: work.cardId === "__feed__" ? "Feed instruction" : cardsById.get(work.cardId) ?? "Card instruction",
     }));
+}
+
+export function shouldShowReviewReady(screen: AttentionScreen, tab: Tab, readyNextPass: number): boolean {
+  return screen === "feed" && tab === "review" && readyNextPass > 0;
 }
 
 export function ParkedClaudeWorkNotice({ items, onReassign }: { items: ParkedClaudeWork[]; onReassign: (work: WorkItemView) => void }) {
@@ -74,7 +79,11 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     }
   });
   const [targetVersion, setTargetVersion] = useState(0);
+  const [startingNextPassFeedId, setStartingNextPassFeedId] = useState<string | null>(null);
   const pageRef = useRef<HTMLElement>(null);
+  const reviewStartRef = useRef<HTMLDivElement>(null);
+  const startingNextPassRef = useRef(false);
+  const revealPassRef = useRef<{ feedId: string; pass: number } | null>(null);
   const dockTargetRef = useRef<VoiceTarget | null>(dockTarget);
   const dockContextRef = useRef("");
   const dockScopeExplicitlyChangedRef = useRef(false);
@@ -360,6 +369,43 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
       showToast(error instanceof Error ? error.message : String(error));
     }
   })();
+  const startNextPass = useCallback(() => {
+    if (!feed || startingNextPassRef.current || feed.readyNextPass <= 0) return;
+    const targetFeedId = feed.config.id;
+    startingNextPassRef.current = true;
+    revealPassRef.current = { feedId: targetFeedId, pass: feed.config.currentPass + 1 };
+    setStartingNextPassFeedId(targetFeedId);
+    void (async () => {
+      try {
+        await post(`/api/feeds/${targetFeedId}/next-pass`);
+        await refresh();
+        showToast("Started the next pass");
+      } catch (error) {
+        revealPassRef.current = null;
+        showToast(error instanceof Error ? error.message : String(error));
+      } finally {
+        startingNextPassRef.current = false;
+        setStartingNextPassFeedId(null);
+      }
+    })();
+  }, [feed, refresh]);
+  useEffect(() => {
+    const target = revealPassRef.current;
+    if (!target || !feed) return;
+    if (target.feedId !== feed.config.id) {
+      revealPassRef.current = null;
+      return;
+    }
+    if (feed.config.currentPass >= target.pass) {
+      revealPassRef.current = null;
+      const anchor = reviewStartRef.current;
+      if (!anchor) return;
+      const active = document.activeElement;
+      const editing = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement;
+      if (!editing) anchor.focus({ preventScroll: true });
+      anchor.scrollIntoView({ behavior: "auto", block: "start" });
+    }
+  }, [feed]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
@@ -422,6 +468,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const fresh = cards.filter((card) => card.status !== "to_review_updated");
   const feedWork = visibleFeedWork(feed, tab);
   const parkedClaudeWork = tab === "queued" ? parkedClaudeWorkItems(feed, claudeLiveness) : [];
+  const showReviewReady = shouldShowReviewReady(screen, tab, feed.readyNextPass);
   return withRealtime(
     <>
       <TopBar state={state} onMind={openMind} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
@@ -434,7 +481,8 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
         ))}
         <button className="tab-quiet" onClick={() => openWorkspace("feed")}>Prompts & sources</button>
       </nav>
-      <main className="page" ref={pageRef}>
+      <main className={showReviewReady ? "page has-floating-action" : "page"} ref={pageRef}>
+        {tab === "review" && <div ref={reviewStartRef} className="review-start-anchor" tabIndex={-1} aria-label="Start of review pass" />}
         <RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} />
         {routineActions.map((group) => <RoutineActionGroupView key={group.id} group={group} onApprove={() => approveRoutineAction(group)} />)}
         <ParkedClaudeWorkNotice items={parkedClaudeWork} onReassign={reassignQueuedWork} />
@@ -498,18 +546,13 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
           </article>
         ))}
         {!cards.length && !routineActions.length && !feedWork.length && <div className="empty"><h2>Nothing here right now.</h2><p>{tab === "review" ? "A quiet feed is allowed. Wake the feed thread when you want Codex to collect or drain pending work." : "Move back to To review when you are ready for the next pass."}</p></div>}
-        {(feed.readyNextPass > 0 || compoundProposals.length > 0) && <section className={`end-cap ${feed.readyNextPass ? "" : "actions-only"}`}>
-          {feed.readyNextPass > 0 && <div>
-            <span>End of this pass</span>
-            <h2>{`${feed.readyNextPass} updated card${feed.readyNextPass === 1 ? "" : "s"} ready when you are.`}</h2>
-          </div>}
+        {compoundProposals.length > 0 && <section className="end-cap actions-only">
           <div className="end-actions">
-            {feed.readyNextPass > 0 && <button className="button primary" onClick={() => void withRefresh(() => post(`/api/feeds/${feed.config.id}/next-pass`), "Started the next pass")}>Review ready cards</button>}
-            {compoundProposals.length > 0 && <button className="button ghost" onClick={openLearningReview}>Review learning proposal</button>}
+            <button className="button ghost" onClick={openLearningReview}>Review learning proposal</button>
           </div>
         </section>}
       </main>
-      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} canRouteToClaude={canRouteDockToClaude} routeToClaude={routeDockToClaude} onRouteToClaude={setRouteDockToClaude} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
+      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} canRouteToClaude={canRouteDockToClaude} routeToClaude={routeDockToClaude} onRouteToClaude={setRouteDockToClaude} floatingAction={showReviewReady ? <ReviewReadyControl count={feed.readyNextPass} pending={startingNextPassFeedId === feed.config.id} onActivate={startNextPass} /> : undefined} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoCardDisposition && <button onClick={() => undoCardDispositionAction(undoCardDisposition)}>Undo</button>}{undoQueuedWork && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoQueuedWork.feedId}/work/${undoQueuedWork.workId}/cancel`), "Instruction cancelled").then(() => setUndoQueuedWork(null))}>Undo</button>}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
     </>

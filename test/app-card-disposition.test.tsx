@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from "@tanstack/react-router";
@@ -6,7 +6,11 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import App from "../src/App";
 import type { Card, FeedView, WorkspaceView } from "../shared/types";
 
-GlobalRegistrator.register();
+beforeAll(() => GlobalRegistrator.register());
+
+afterAll(async () => {
+  await GlobalRegistrator.unregister();
+});
 
 class StubEventSource {
   onerror: ((event: Event) => void) | null = null;
