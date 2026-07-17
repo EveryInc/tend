@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
+import { Children, isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ParkedClaudeWorkNotice, parkedClaudeWorkItems } from "../src/App";
+import { FeedTabs, ParkedClaudeWorkNotice, parkedClaudeWorkItems, pendingCompoundProposalsForFeed } from "../src/App";
 import { Dock } from "../src/shell/Dock";
 import { TopBar } from "../src/shell/TopBar";
-import type { Card, FeedView, WorkItemView, WorkspaceView } from "../shared/types";
+import { LearningReview, RevisionProposals } from "../src/workspace/LearningReview";
+import type { Card, FeedView, RevisionProposal, WorkItemView, WorkspaceView } from "../shared/types";
 
 function feed(overrides: Partial<FeedView> = {}): FeedView {
   return {
@@ -68,6 +70,110 @@ test("TopBar renders Claude presence liveness and label", () => {
 
   expect(html).toContain("Claude live · Preview");
   expect(html).toContain("tend-agent-live");
+});
+
+test("pending compound proposals are scoped to the active feed and unresolved status", () => {
+  const proposal = (id: string, overrides: Partial<RevisionProposal> = {}): RevisionProposal => ({
+    id,
+    anchorFeedId: "inbox",
+    target: { kind: "feed", feedId: "inbox" },
+    label: "Inbox feed policy",
+    instruction: "Preserve a useful learning.",
+    previous: "Current policy text.",
+    next: "Proposed policy text.",
+    source: "compound",
+    status: "proposed",
+    createdAt: "2026-07-15T12:00:00.000Z",
+    ...overrides,
+  });
+
+  const pending = pendingCompoundProposalsForFeed([
+    proposal("pending"),
+    proposal("applied", { status: "applied" }),
+    proposal("rejected", { status: "rejected" }),
+    proposal("other-feed", { anchorFeedId: "company-attention" }),
+    proposal("voice", { source: "voice" }),
+  ], "inbox");
+
+  expect(pending.map((item) => item.id)).toEqual(["pending"]);
+});
+
+test("feed tabs keep a count-aware learning proposals control visible while proposals are pending", () => {
+  const active = feed();
+  let openedLearningReview = false;
+  const tabs = FeedTabs({
+    feed: active,
+    tab: "review",
+    queuedTabLabel: "Queued for Codex",
+    compoundProposalCount: 2,
+    onTab: () => {},
+    onLearningProposals: () => { openedLearningReview = true; },
+    onWorkspace: () => {},
+  });
+  const withProposals = renderToStaticMarkup(
+    <FeedTabs
+      feed={active}
+      tab="done"
+      queuedTabLabel="Queued for Codex"
+      compoundProposalCount={2}
+      onTab={() => {}}
+      onLearningProposals={() => {}}
+      onWorkspace={() => {}}
+    />,
+  );
+  const withoutProposals = renderToStaticMarkup(
+    <FeedTabs
+      feed={active}
+      tab="review"
+      queuedTabLabel="Queued for Codex"
+      compoundProposalCount={0}
+      onTab={() => {}}
+      onLearningProposals={() => {}}
+      onWorkspace={() => {}}
+    />,
+  );
+
+  expect(withProposals).toContain("tab-learning");
+  expect(withProposals).toContain("Learning proposals");
+  expect(withProposals).toContain("<span>2</span>");
+  expect(withoutProposals).not.toContain("Learning proposals");
+
+  const learningButton = Children.toArray(tabs.props.children).find((child) =>
+    isValidElement<{ className?: string }>(child) && child.props.className === "tab-learning"
+  );
+  if (!isValidElement<{ onClick: () => void }>(learningButton)) throw new Error("Learning proposals control was not rendered.");
+  learningButton.props.onClick();
+  expect(openedLearningReview).toBe(true);
+});
+
+test("compound proposals stay in the proposal stack and apply only from the full learning review", () => {
+  const proposal: RevisionProposal = {
+    id: "proposal-compound",
+    anchorFeedId: "inbox",
+    target: { kind: "feed", feedId: "inbox" },
+    label: "Inbox feed policy",
+    instruction: "Preserve a useful learning.",
+    previous: "Current policy text.",
+    next: "Proposed editable policy text.",
+    source: "compound",
+    status: "proposed",
+    createdAt: "2026-07-15T12:00:00.000Z",
+  };
+  const stack = renderToStaticMarkup(
+    <RevisionProposals proposals={[proposal]} onApply={() => {}} onReject={() => {}} onReviewLearning={() => {}} />,
+  );
+  const review = renderToStaticMarkup(
+    <LearningReview feed={feed()} proposals={[proposal]} onBack={() => {}} onApply={() => {}} onReject={() => {}} />,
+  );
+
+  expect(stack).toContain("Current policy text.");
+  expect(stack).toContain("Proposed editable policy text.");
+  expect(stack).toContain("Review compounded learnings");
+  expect(stack).not.toContain("Apply revision");
+  expect(review).toContain("Current feed policy");
+  expect(review).toContain("Current policy text.");
+  expect(review).toContain("Proposed editable policy text.");
+  expect(review).toContain("Apply learning");
 });
 
 test("Dock renders Claude routing toggle and agent-aware placeholder", () => {
