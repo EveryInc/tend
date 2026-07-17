@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { usePushToTalk } from "../state/pushToTalk";
 import { sameTarget } from "../state/voiceTarget";
 import type { FeedView, VoiceTarget, WorkspaceView } from "../types";
@@ -28,6 +28,7 @@ export function Dock({
   targetVersion,
   routeToClaude,
   canRouteToClaude,
+  floatingAction,
   onTarget,
   onRouteToClaude,
   onSubmit,
@@ -40,6 +41,7 @@ export function Dock({
   targetVersion: number;
   routeToClaude: boolean;
   canRouteToClaude: boolean;
+  floatingAction?: ReactNode;
   onTarget: (target: VoiceTarget) => void;
   onRouteToClaude: (enabled: boolean) => void;
   onSubmit: (instruction: string) => void;
@@ -75,6 +77,7 @@ export function Dock({
   };
   return (
     <div className="dock">
+      {floatingAction && <div className="dock-floating-action dock-floating-action-right">{floatingAction}</div>}
       <form className={`dock-inner scope-${scopeTone}`} onSubmit={(event) => { event.preventDefault(); submit(); }}>
         <div className="dock-context">
           {isPushingToTalk && <span className="listening-dot" />}

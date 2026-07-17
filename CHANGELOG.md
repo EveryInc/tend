@@ -5,6 +5,12 @@ a promise of ongoing maintenance.
 
 ## Unreleased
 
+- Replace the end-of-pass **Review ready cards** button with a single count-aware **Review ready
+  cards** control anchored just above the Dock, so the next-pass action stays visible throughout a
+  long review queue instead of only at the bottom of the page. Activating it moves focus and scroll
+  to the top of the newly revealed pass, guards against duplicate activation, and announces the
+  ready count to assistive technology. The next-pass API, domain, and schema are unchanged.
+
 - Separate local card dismissal from source cleanup. `tend cli card:dismiss` now moves a reviewable
   card to `done` with no work item, approval digest, `action:verify`, or connector call, and is
   reversible with `card:return-to-review`. Explicit source cleanup moves to

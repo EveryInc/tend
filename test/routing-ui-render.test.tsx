@@ -1,7 +1,9 @@
 import { expect, test } from "bun:test";
+import { Children, isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ParkedClaudeWorkNotice, parkedClaudeWorkItems } from "../src/App";
 import { Dock } from "../src/shell/Dock";
+import { ReviewReadyControl } from "../src/shell/ReviewReadyControl";
 import { TopBar } from "../src/shell/TopBar";
 import type { Card, FeedView, WorkItemView, WorkspaceView } from "../shared/types";
 
@@ -68,6 +70,92 @@ test("TopBar renders Claude presence liveness and label", () => {
 
   expect(html).toContain("Claude live · Preview");
   expect(html).toContain("tend-agent-live");
+});
+
+test("review ready control is absent for a non-positive count", () => {
+  expect(renderToStaticMarkup(<ReviewReadyControl count={0} pending={false} onActivate={() => {}} />)).toBe("");
+  expect(renderToStaticMarkup(<ReviewReadyControl count={-3} pending={false} onActivate={() => {}} />)).toBe("");
+});
+
+test("review ready control renders the compact card label, icon, count badge, and singular announcement", () => {
+  const html = renderToStaticMarkup(<ReviewReadyControl count={1} pending={false} onActivate={() => {}} />);
+  expect(html).toContain("Review ready cards");
+  expect(html).toContain('class="review-ready-icon"');
+  expect(html).toContain('class="review-ready-count"');
+  expect(html).toContain(">1</span>");
+  expect(html).toContain('aria-label="Review ready cards, 1 ready"');
+  expect(html).toContain("1 updated card is ready for the next review pass.");
+  expect(html).toContain('aria-live="polite"');
+  expect(html).not.toContain("aria-busy");
+});
+
+test("review ready control group-formats a large live count in its separate badge", () => {
+  const formatted = new Intl.NumberFormat().format(1234);
+  const html = renderToStaticMarkup(<ReviewReadyControl count={1234} pending={false} onActivate={() => {}} />);
+  expect(html).toContain(`class="review-ready-count" aria-hidden="true">${formatted}</span>`);
+  expect(html).toContain(`aria-label="Review ready cards, ${formatted} ready"`);
+  expect(html).toContain(`${formatted} updated cards are ready for the next review pass.`);
+});
+
+test("review ready control shows a busy, disabled opening state while pending", () => {
+  const html = renderToStaticMarkup(<ReviewReadyControl count={6} pending onActivate={() => {}} />);
+  expect(html).toContain("Review ready cards");
+  expect(html).toContain('class="review-ready-count" aria-hidden="true">6</span>');
+  expect(html).toContain('aria-busy="true"');
+  expect(html).toContain("disabled");
+  expect(html).toContain('aria-live="polite"');
+  expect(html).toContain("Opening 6 cards…");
+});
+
+test("review ready control activates through its button callback", () => {
+  let activated = 0;
+  const element = ReviewReadyControl({ count: 6, pending: false, onActivate: () => { activated += 1; } });
+  if (!isValidElement<{ children?: unknown }>(element)) throw new Error("Review ready control was not rendered.");
+  const button = Children.toArray(element.props.children).find((child) =>
+    isValidElement<{ className?: string }>(child) && child.props.className?.includes("review-ready-button")
+  );
+  if (!isValidElement<{ onClick: () => void }>(button)) throw new Error("Review ready button was not rendered.");
+  button.props.onClick();
+  expect(activated).toBe(1);
+});
+
+test("Dock renders a floating action outside its instruction form, and nothing without one", () => {
+  const active = feed();
+  const withAction = renderToStaticMarkup(
+    <Dock
+      state={workspace(active)}
+      feed={active}
+      target={{ kind: "feed", feedId: "inbox" }}
+      ladder={[{ kind: "feed", feedId: "inbox" }, { kind: "attention" }]}
+      targetVersion={0}
+      canRouteToClaude={false}
+      routeToClaude={false}
+      floatingAction={<button type="button" className="review-ready-button">Review ready cards</button>}
+      onTarget={() => {}}
+      onSubmit={() => {}}
+      onRecollect={() => {}}
+    />,
+  );
+  const withoutAction = renderToStaticMarkup(
+    <Dock
+      state={workspace(active)}
+      feed={active}
+      target={{ kind: "feed", feedId: "inbox" }}
+      ladder={[{ kind: "feed", feedId: "inbox" }, { kind: "attention" }]}
+      targetVersion={0}
+      canRouteToClaude={false}
+      routeToClaude={false}
+      onTarget={() => {}}
+      onSubmit={() => {}}
+      onRecollect={() => {}}
+    />,
+  );
+
+  expect(withAction).toContain("dock-floating-action");
+  expect(withAction).toContain("dock-floating-action-right");
+  expect(withAction).toContain("Review ready cards");
+  expect(withAction.indexOf("dock-floating-action")).toBeLessThan(withAction.indexOf("<form"));
+  expect(withoutAction).not.toContain("dock-floating-action");
 });
 
 test("Dock renders Claude routing toggle and agent-aware placeholder", () => {

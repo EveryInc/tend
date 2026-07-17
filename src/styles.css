@@ -46,6 +46,7 @@ kbd { font: 11px/1 var(--mono); color: var(--ink-3); }
 .tabs .tab-quiet { margin-left: auto; color: var(--ink-3); }
 
 .page { max-width: 980px; margin: 0 auto; padding: 22px 34px 190px; }
+.page.has-floating-action { padding-bottom: 250px; }
 .panel-kicker, .section-label, .action-label { color: var(--ink-3); font-size: 11px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
 .section-label { display: flex; align-items: center; gap: 8px; margin: 14px 2px 11px; }
 .section-label span { display: grid; place-items: center; min-width: 19px; height: 19px; border-radius: 99px; background: var(--sand); font-size: 11px; letter-spacing: 0; }
@@ -254,7 +255,20 @@ h2 { margin: 0; font: 500 26px/1.12 var(--serif); letter-spacing: -.02em; }
 .routine-group.routine-completed { border-color: #cfddca; background: var(--sage-soft); }
 .routine-error { color: #92514b !important; font-size: 12px !important; }
 
-.dock { position: fixed; z-index: 18; inset: auto 0 0; padding: 13px 20px 16px; background: linear-gradient(to top, rgba(244,243,239,1) 70%, rgba(244,243,239,.7)); }
+.dock { position: fixed; z-index: 18; inset: auto 0 0; padding: 13px 20px calc(16px + env(safe-area-inset-bottom)); background: linear-gradient(to top, rgba(244,243,239,1) 70%, rgba(244,243,239,.7)); }
+.dock-floating-action { position: absolute; left: 50%; top: 0; transform: translate(-50%, -100%); display: flex; width: min(940px, calc(100% - 40px)); justify-content: flex-end; padding: 0 0 12px; pointer-events: none; }
+.review-ready-control { display: flex; max-width: 100%; justify-content: flex-end; }
+.review-ready-button { display: flex; min-width: 0; max-width: 100%; min-height: 56px; align-items: center; gap: 10px; padding: 6px 10px 6px 14px; border: 1px solid #d8d7d0; border-radius: 13px; appearance: none; background: #fff; color: #292925; pointer-events: auto; box-shadow: 0 2px 5px rgba(35,35,30,.08), 0 12px 30px rgba(35,35,30,.10); font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.review-ready-button:hover { border-color: #c9c7be; background: #fffefa; }
+.review-ready-button:disabled { opacity: .64; }
+.review-ready-icon { flex: 0 0 auto; width: 24px; height: 24px; fill: none; stroke: #5c5c56; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.7; }
+.review-ready-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.review-ready-count { display: grid; flex: 0 0 auto; min-width: 32px; height: 32px; place-items: center; padding: 0 8px; border-radius: 99px; background: #4f70c8; color: #fff; font-size: 13px; font-weight: 750; line-height: 1; }
+.review-ready-button:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.review-ready-button[aria-busy="true"] { cursor: progress; }
+.review-start-anchor { scroll-margin-top: 108px; }
+.review-start-anchor:focus { outline: none; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 .dock-inner { --scope-color: #5471b8; --scope-soft: #edf1fb; max-width: 940px; margin: auto; padding: 9px 11px 8px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--paper); box-shadow: inset 3px 0 var(--scope-color), 0 10px 30px rgba(35,35,30,.09); transition: border-color .18s ease, box-shadow .18s ease; }
 .dock-inner.scope-card { --scope-color: #a66f42; --scope-soft: #f8eee5; }
 .dock-inner.scope-sweep { --scope-color: #5471b8; --scope-soft: #edf1fb; }
@@ -369,7 +383,10 @@ pre { overflow: auto; padding: 12px; background: #f4f2eb; color: var(--ink-2); w
   .queued-note { margin: 15px -17px 0; padding: 13px 17px; }
   .card-action { align-items: flex-start; flex-direction: column; margin: 0 -17px; padding: 13px 17px; }
   .end-cap { align-items: flex-start; flex-direction: column; }
-  .dock { padding: 10px 9px; }
+  .dock { padding: 10px 9px calc(10px + env(safe-area-inset-bottom)); }
+  .dock-floating-action { width: calc(100% - 18px); padding-bottom: 10px; }
+  .review-ready-button { width: auto; }
+  .page.has-floating-action { padding-bottom: 240px; }
   .dock-hints { display: none; }
   .dock-footer { justify-content: flex-end; }
   .scope-buttons::before, .scope-buttons button span { display: none; }
