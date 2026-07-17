@@ -55,6 +55,25 @@ export function ParkedClaudeWorkNotice({ items, onReassign }: { items: ParkedCla
   );
 }
 
+export function FeedTabs({ feed, tab, queuedTabLabel, compoundProposalCount, onTab, onLearningProposals, onWorkspace }: { feed: FeedView; tab: Tab; queuedTabLabel: string; compoundProposalCount: number; onTab: (tab: Tab) => void; onLearningProposals: () => void; onWorkspace: () => void }) {
+  return (
+    <nav className="tabs">
+      {(["review", "queued", "working", "done"] as Tab[]).map((item) => (
+        <button key={item} className={tab === item ? "active" : ""} onClick={() => onTab(item)}>
+          {item === "review" ? "To review" : item === "queued" ? queuedTabLabel : item === "working" ? "Working" : "Done"}
+          <span>{countFor(feed, item)}</span>
+        </button>
+      ))}
+      {compoundProposalCount > 0 && (
+        <button className="tab-learning" onClick={onLearningProposals}>
+          Learning proposals <span>{compoundProposalCount}</span>
+        </button>
+      )}
+      <button className="tab-quiet" onClick={onWorkspace}>Prompts & sources</button>
+    </nav>
+  );
+}
+
 export default function App({ feedId, screen, workspaceTab }: { feedId: string; screen: AttentionScreen; workspaceTab: WorkspaceTab }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -387,7 +406,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
 
   if (!state || !feed) return withRealtime(<main className="loading">Loading attention…</main>);
   const resolvedDockTarget = dockTarget ?? ladder[0];
-  const compoundProposals = state.proposals.filter((proposal) => proposal.anchorFeedId === feed.config.id && proposal.source === "compound");
+  const compoundProposals = state.proposals.filter((proposal) => proposal.anchorFeedId === feed.config.id && proposal.source === "compound" && proposal.status === "proposed");
   const workAgent = (work: WorkItemView) => effectiveWorkLane(work, feed.thread);
   const workAgentLabel = (work: WorkItemView) => agentLabel(workAgent(work));
   const cardQueuedFor = (cardId: string) => {
@@ -425,15 +444,15 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   return withRealtime(
     <>
       <TopBar state={state} onMind={openMind} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
-      <nav className="tabs">
-        {(["review", "queued", "working", "done"] as Tab[]).map((item) => (
-          <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>
-            {item === "review" ? "To review" : item === "queued" ? queuedTabLabel : item === "working" ? "Working" : "Done"}
-            <span>{countFor(feed, item)}</span>
-          </button>
-        ))}
-        <button className="tab-quiet" onClick={() => openWorkspace("feed")}>Prompts & sources</button>
-      </nav>
+      <FeedTabs
+        feed={feed}
+        tab={tab}
+        queuedTabLabel={queuedTabLabel}
+        compoundProposalCount={compoundProposals.length}
+        onTab={setTab}
+        onLearningProposals={openLearningReview}
+        onWorkspace={() => openWorkspace("feed")}
+      />
       <main className="page" ref={pageRef}>
         <RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} />
         {routineActions.map((group) => <RoutineActionGroupView key={group.id} group={group} onApprove={() => approveRoutineAction(group)} />)}
