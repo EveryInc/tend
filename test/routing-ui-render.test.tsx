@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { Children, isValidElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ParkedClaudeWorkNotice, parkedClaudeWorkItems } from "../src/App";
+import { ParkedClaudeWorkNotice, parkedClaudeWorkItems, shouldShowReviewReady } from "../src/App";
 import { Dock } from "../src/shell/Dock";
 import { ReviewReadyControl } from "../src/shell/ReviewReadyControl";
 import { TopBar } from "../src/shell/TopBar";
@@ -70,6 +70,17 @@ test("TopBar renders Claude presence liveness and label", () => {
 
   expect(html).toContain("Claude live · Preview");
   expect(html).toContain("tend-agent-live");
+});
+
+test("review ready visibility is limited to a positive count on the feed review tab", () => {
+  expect(shouldShowReviewReady("feed", "review", 2)).toBe(true);
+  expect(shouldShowReviewReady("feed", "review", 0)).toBe(false);
+  expect(shouldShowReviewReady("feed", "review", -1)).toBe(false);
+  for (const tab of ["queued", "working", "done"] as const) {
+    expect(shouldShowReviewReady("feed", tab, 2)).toBe(false);
+  }
+  expect(shouldShowReviewReady("workspace", "review", 2)).toBe(false);
+  expect(shouldShowReviewReady("learnings", "review", 2)).toBe(false);
 });
 
 test("review ready control is absent for a non-positive count", () => {

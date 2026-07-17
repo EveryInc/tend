@@ -37,6 +37,10 @@ export function parkedClaudeWorkItems(feed: FeedView, claudeLiveness: string): P
     }));
 }
 
+export function shouldShowReviewReady(screen: AttentionScreen, tab: Tab, readyNextPass: number): boolean {
+  return screen === "feed" && tab === "review" && readyNextPass > 0;
+}
+
 export function ParkedClaudeWorkNotice({ items, onReassign }: { items: ParkedClaudeWork[]; onReassign: (work: WorkItemView) => void }) {
   if (!items.length) return null;
   return (
@@ -464,7 +468,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const fresh = cards.filter((card) => card.status !== "to_review_updated");
   const feedWork = visibleFeedWork(feed, tab);
   const parkedClaudeWork = tab === "queued" ? parkedClaudeWorkItems(feed, claudeLiveness) : [];
-  const showReviewReady = screen === "feed" && tab === "review" && feed.readyNextPass > 0;
+  const showReviewReady = shouldShowReviewReady(screen, tab, feed.readyNextPass);
   return withRealtime(
     <>
       <TopBar state={state} onMind={openMind} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
