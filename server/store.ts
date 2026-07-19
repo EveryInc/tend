@@ -42,7 +42,7 @@ import {
   setupCard,
   threadBinding,
 } from "./templates";
-import { isoNow, makeId, readJson, withMutationLock, writeJson, writeText } from "./util";
+import { isoNow, makeId, readJson, stableDigest, withMutationLock, writeJson, writeText } from "./util";
 import { defaultDictationCapability } from "./monologue";
 import { FileCardRepository, type CardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
@@ -580,6 +580,14 @@ export class AttentionStore {
     const file = this.feedPath(feedId, "raw", runId, sourceId, `${snapshotId}.json`);
     if (existsSync(file)) throw new Error("Raw snapshots are immutable.");
     await writeJson(file, value);
+  }
+
+  async ensureRawSnapshot(feedId: string, runId: string, sourceId: string, snapshotId: string, value: unknown): Promise<void> {
+    const file = this.feedPath(feedId, "raw", runId, sourceId, `${snapshotId}.json`);
+    if (!existsSync(file)) return writeJson(file, value);
+    if (stableDigest(await readJson<unknown>(file)) !== stableDigest(value)) {
+      throw new Error(`Raw snapshot identity conflict: ${runId}/${snapshotId}`);
+    }
   }
 
   async writeRun(run: SourceRun): Promise<void> {

@@ -65,8 +65,16 @@ For `sweep_rejudge` work:
 For `recollect_sources` work:
 
 - Record source runs with `tend cli source:record-run --work <work>`.
+- Give every `keep` judgment a stable, file-safe `cardId` that will be reused by `card:upsert`.
 - Record the resulting sweep with `tend cli sweep:record-batch --work <work>`.
-- Complete the work only after the source run and sweep batch are written back.
+- Upsert every required card with all source run IDs that support its kept judgments.
+- Run `tend cli sweep:status --feed <feed>` and complete the work only after it reports `committed`.
+
+`source:record-run` stages its checkpoint instead of advancing it immediately.
+`sweep:record-batch` creates a recoverable pending batch when kept judgments still need cards.
+The last required `card:upsert` atomically commits the cards, source checkpoints, and current batch.
+Retries of identical source runs and batches return the same deterministic IDs.
+For a pre-recovery current batch, `sweep:status` reports `attention_required` when a kept source run has no referencing card.
 
 ## Core Commands
 
@@ -91,6 +99,7 @@ Run `tend cli help` for the full command surface. Core feed-runner commands are:
 | Remove source | `tend cli source:remove --feed <feed> --source <source>` |
 | Record source run | `tend cli source:record-run --feed <feed> --source <source> --snapshots <json> --judgments <json> --checkpoint <json> [--context-use-file <path>]` |
 | Record sweep batch | `tend cli sweep:record-batch --feed <feed> --runs <json-array> [--context <mind-update-id>]` |
+| Inspect pending sweep presentation | `tend cli sweep:status --feed <feed>` |
 | Record sweep rejudgment | `tend cli sweep:rejudge --feed <feed> --feedback <id> --ordered-cards <json-array> --removed-cards <json-array>` |
 | Upsert card | `tend cli card:upsert --feed <feed> --card <json>` |
 | Dismiss card locally (Tend-only, no source cleanup) | `tend cli card:dismiss --feed <feed> --card <card>` |

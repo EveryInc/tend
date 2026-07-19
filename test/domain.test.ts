@@ -16,6 +16,7 @@ import { FileTextDocumentRepository, MirroredTextDocumentRepository } from "../s
 import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/repositories/workItems";
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
+import { createLocalRuntime } from "../server/runtime";
 import { AttentionStore } from "../server/store";
 import type { Card, WorkClaimedByReport, WorkItem } from "../shared/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
@@ -60,6 +61,15 @@ async function setup() {
   const store = new AttentionStore(root);
   await store.init();
   return { root, store, domain: new AttentionDomain(store) };
+}
+
+async function setupWithFailingCards() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "attention-test-"));
+  roots.push(root);
+  const cards = new FailingCardRepository(new FileCardRepository(root));
+  const store = new AttentionStore(root, { cards });
+  await store.init();
+  return { root, cards, store, domain: new AttentionDomain(store) };
 }
 
 async function bindClaudeLane(store: AttentionStore, feedId: string, threadId = `thread-${feedId}-claude`): Promise<void> {
@@ -353,17 +363,257 @@ describe("filesystem workspace", () => {
 
   test("keeps raw snapshots immutable and stores run checkpoints separately", async () => {
     const { root, domain, store } = await setup();
-    const batchId = await domain.recordSweepBatch("inbox", []);
-    const run = await domain.recordSourceRun("inbox", "gmail-inbox", [{ threadId: "gmail-1", subject: "Hello" }], [{ decision: "keep" }], { cursor: "gmail-1" });
+    const run = await domain.recordSourceRun("inbox", "gmail-inbox", [{ threadId: "gmail-1", subject: "Hello" }], [{ decision: "keep", cardId: "gmail-1" }], { cursor: "gmail-1" });
     await expect(domain.store.writeRawSnapshot("inbox", run, "gmail-inbox", "snapshot-1", { changed: true })).rejects.toThrow("immutable");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8")).cursor).toBeNull();
+    const batchId = await domain.recordSweepBatch("inbox", [run]);
+    expect((await store.readSweepState("inbox")).currentBatchId).toBeNull();
+    await domain.upsertCard("inbox", {
+      id: "gmail-1",
+      title: "Hello",
+      why: "The kept judgment needs presentation.",
+      sourceRunIds: [run],
+      blocks: [{ id: "memo", type: "memo", text: "Hello" }],
+    });
     const checkpoint = JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8"));
     expect(checkpoint.cursor).toBe("gmail-1");
     expect((await store.readSweepState("inbox")).currentBatchId).toBe(batchId);
   });
 
+  test("recovers an interrupted kept-result sweep idempotently without advancing its checkpoint", async () => {
+    const { root, domain, store } = await setup();
+    const snapshots = [{ subject: "Dispute", threadId: "paypal-1" }];
+    const judgments = [
+      { decision: "keep", cardId: "paypal-dispute-1", reason: "Needs review" },
+      { decision: "keep", cardId: "paypal-dispute-2", reason: "Needs review" },
+    ];
+    const runId = await domain.recordSourceRun("inbox", "gmail-inbox", snapshots, judgments, { cursor: "paypal-2" });
+    const retriedRunId = await domain.recordSourceRun(
+      "inbox",
+      "gmail-inbox",
+      [{ threadId: "paypal-1", subject: "Dispute" }],
+      judgments.map(({ decision, cardId, reason }) => ({ reason, cardId, decision })),
+      { cursor: "paypal-2" },
+    );
+    expect(retriedRunId).toBe(runId);
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8")).cursor).toBeNull();
+
+    const batchId = await domain.recordSweepBatch("inbox", [runId]);
+    expect(await domain.recordSweepBatch("inbox", [runId])).toBe(batchId);
+    expect(await domain.sweepCommitStatus("inbox")).toMatchObject({
+      status: "pending",
+      pendingBatchId: batchId,
+      missingCardIds: ["paypal-dispute-1", "paypal-dispute-2"],
+    });
+    expect((await store.readSweepState("inbox")).currentBatchId).toBeNull();
+    expect((await store.listCards("inbox")).filter((card) => card.id === `sweep-presentation-${batchId}`)).toHaveLength(1);
+
+    await domain.upsertCard("inbox", {
+      id: "paypal-dispute-1",
+      title: "Review PayPal dispute",
+      why: "The dispute needs a response.",
+      sourceRunIds: [runId],
+      blocks: [{ id: "memo", type: "memo", text: "First dispute" }],
+    });
+    expect((await store.readSweepState("inbox")).currentBatchId).toBeNull();
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8")).cursor).toBeNull();
+
+    const cardInput = {
+      id: "paypal-dispute-2",
+      title: "Review another PayPal dispute",
+      why: "The second dispute needs a response.",
+      sourceRunIds: [runId],
+      blocks: [{ id: "memo" as const, type: "memo" as const, text: "Second dispute" }],
+    };
+    await domain.upsertCard("inbox", cardInput);
+    await domain.upsertCard("inbox", cardInput);
+    expect(await domain.sweepCommitStatus("inbox")).toMatchObject({ status: "committed", currentBatchId: batchId, pendingBatchId: null });
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8")).cursor).toBe("paypal-2");
+    expect((await store.listCards("inbox")).filter((card) => card.id === "paypal-dispute-2")).toHaveLength(1);
+    expect((await store.readCard("inbox", `sweep-presentation-${batchId}`)).status).toBe("done");
+  });
+
+  test("survives a card write failure after batch staging and commits on retry", async () => {
+    const { root, cards, domain, store } = await setupWithFailingCards();
+    const runId = await domain.recordSourceRun(
+      "inbox",
+      "gmail-inbox",
+      [{ threadId: "failure-1" }],
+      [{ decision: "keep", cardId: "failure-card" }],
+      { cursor: "failure-1" },
+    );
+    const batchId = await domain.recordSweepBatch("inbox", [runId]);
+    cards.failWrites = true;
+    await expect(domain.upsertCard("inbox", {
+      id: "failure-card",
+      title: "Recover this card",
+      why: "The first write fails.",
+      sourceRunIds: [runId],
+      blocks: [{ id: "memo", type: "memo", text: "Evidence" }],
+    })).rejects.toThrow("simulated migrated card upsert failure");
+    expect((await store.readSweepState("inbox")).currentBatchId).toBeNull();
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8")).cursor).toBeNull();
+
+    cards.failWrites = false;
+    await domain.upsertCard("inbox", {
+      id: "failure-card",
+      title: "Recover this card",
+      why: "The retry succeeds.",
+      sourceRunIds: [runId],
+      blocks: [{ id: "memo", type: "memo", text: "Evidence" }],
+    });
+    expect((await store.readSweepState("inbox")).currentBatchId).toBe(batchId);
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8")).cursor).toBe("failure-1");
+  });
+
+  test("rolls back batch and card commits atomically when SQLite persistence fails", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "attention-sqlite-test-"));
+    roots.push(root);
+    const { sqlite, store } = await createLocalRuntime(path.join(root, "data"), path.join(root, "attention.db"));
+    const domain = new AttentionDomain(store);
+    try {
+      const runId = await domain.recordSourceRun(
+        "inbox",
+        "gmail-inbox",
+        [{ threadId: "atomic-1" }],
+        [{ decision: "keep", cardId: "atomic-card" }],
+        { cursor: "atomic-1" },
+      );
+      const originalWriteCard = store.writeCard.bind(store);
+      store.writeCard = async (card) => {
+        if (card.id.startsWith("sweep-presentation-")) throw new Error("simulated recovery card failure");
+        return originalWriteCard(card);
+      };
+      await expect(domain.recordSweepBatch("inbox", [runId])).rejects.toThrow("simulated recovery card failure");
+      expect((await store.readSweepState("inbox")).pendingBatchId).toBeNull();
+      expect((await store.readSweepState("inbox")).currentBatchId).toBeNull();
+
+      store.writeCard = originalWriteCard;
+      const batchId = await domain.recordSweepBatch("inbox", [runId]);
+      const originalWriteCheckpoint = store.writeSourceCheckpoint.bind(store);
+      store.writeSourceCheckpoint = async () => {
+        throw new Error("simulated checkpoint failure");
+      };
+      await expect(domain.upsertCard("inbox", {
+        id: "atomic-card",
+        title: "Atomic card",
+        why: "The transaction must roll back this write.",
+        sourceRunIds: [runId],
+        blocks: [{ id: "memo", type: "memo", text: "Evidence" }],
+      })).rejects.toThrow("simulated checkpoint failure");
+      expect(await store.hasCard("inbox", "atomic-card")).toBe(false);
+      expect((await store.readSweepState("inbox")).pendingBatchId).toBe(batchId);
+      expect((await store.readSweepState("inbox")).currentBatchId).toBeNull();
+      expect((await store.readSourceCheckpoint("inbox", "gmail-inbox") as { cursor: string | null }).cursor).toBeNull();
+
+      store.writeSourceCheckpoint = originalWriteCheckpoint;
+      await domain.upsertCard("inbox", {
+        id: "atomic-card",
+        title: "Atomic card",
+        why: "The retry commits card, batch, and checkpoint together.",
+        sourceRunIds: [runId],
+        blocks: [{ id: "memo", type: "memo", text: "Evidence" }],
+      });
+      expect((await store.readSweepState("inbox")).currentBatchId).toBe(batchId);
+      expect((await store.readSourceCheckpoint("inbox", "gmail-inbox") as { cursor: string }).cursor).toBe("atomic-1");
+    } finally {
+      sqlite.close();
+    }
+  });
+
+  test("refuses to complete collection work while kept judgments still lack cards", async () => {
+    const { domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const queued = await domain.queueInstruction("inbox", "inbox-ready-to-collect", "Collect a real sweep.");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    const runId = await domain.recordSourceRun(
+      "inbox",
+      "gmail-inbox",
+      [{ threadId: "completion-1" }],
+      [{ decision: "keep", cardId: "completion-card" }],
+      { cursor: "completion-1" },
+    );
+    await domain.recordSweepBatch("inbox", [runId]);
+    await expect(domain.completeWork("inbox", queued.id, claimed.capabilityToken, { response: "Looks complete." }))
+      .rejects.toThrow("kept judgments awaiting durable cards");
+    await domain.upsertCard("inbox", {
+      id: "completion-card",
+      title: "Complete the sweep",
+      why: "This card fulfills the kept judgment.",
+      sourceRunIds: [runId],
+      blocks: [{ id: "memo", type: "memo", text: "Evidence" }],
+    });
+    await expect(domain.completeWork("inbox", queued.id, claimed.capabilityToken, { response: "Now complete." })).resolves.toMatchObject({ status: "completed" });
+  });
+
+  test("surfaces unrepresented kept judgments from a pre-recovery current batch", async () => {
+    const { domain, store } = await setup();
+    await store.writeRun({
+      id: "legacy-run",
+      feedId: "inbox",
+      sourceId: "gmail-inbox",
+      snapshots: 3,
+      judgments: [{ decision: "keep" }, { decision: "keep" }, { decision: "keep" }],
+      completedAt: "2026-07-19T10:00:00.000Z",
+    });
+    await store.writeSweepBatch({
+      id: "legacy-batch",
+      feedId: "inbox",
+      sourceRunIds: ["legacy-run"],
+      createdAt: "2026-07-19T10:01:00.000Z",
+    });
+    await store.writeSweepState("inbox", {
+      currentBatchId: "legacy-batch",
+      lastFeedbackId: null,
+      recollectionOffered: false,
+      statusMessage: null,
+    });
+
+    expect(await domain.sweepCommitStatus("inbox")).toMatchObject({
+      status: "attention_required",
+      currentBatchId: "legacy-batch",
+      legacyUnrepresentedKeptJudgments: [{ runId: "legacy-run", count: 3 }],
+    });
+    const nextRun = await domain.recordSourceRun("inbox", "gmail-inbox", [], [], { cursor: "next" });
+    await expect(domain.recordSweepBatch("inbox", [nextRun])).rejects.toThrow("Recover them before recording a newer batch");
+  });
+
+  test("commits empty and multi-source sweeps only when their evidence is complete", async () => {
+    const { root, domain, store } = await setup();
+    const emptyRun = await domain.recordSourceRun("inbox", "gmail-inbox", [], [], { cursor: "empty" });
+    const emptyBatch = await domain.recordSweepBatch("inbox", [emptyRun]);
+    expect((await store.readSweepState("inbox")).currentBatchId).toBe(emptyBatch);
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8")).cursor).toBe("empty");
+
+    const second = await domain.addSourceFromBrief("inbox", "Read the dispute ledger.");
+    const gmailRun = await domain.recordSourceRun("inbox", "gmail-inbox", [{ id: "shared" }], [{ decision: "keep", cardId: "shared-card" }], { cursor: "gmail-shared" });
+    const ledgerRun = await domain.recordSourceRun("inbox", second.id, [{ id: "shared" }], [{ decision: "keep", cardId: "shared-card" }], { cursor: "ledger-shared" });
+    const batchId = await domain.recordSweepBatch("inbox", [gmailRun, ledgerRun]);
+    await expect(domain.upsertCard("inbox", {
+      id: "shared-card",
+      title: "Shared evidence",
+      why: "The first attempt omits one source run.",
+      sourceRunIds: [gmailRun],
+      blocks: [{ id: "memo", type: "memo", text: "Incomplete" }],
+    })).rejects.toThrow("source evidence is stale or not expected for presentation");
+    expect((await store.readSweepState("inbox")).pendingBatchId).toBe(batchId);
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8")).cursor).toBe("empty");
+
+    await domain.upsertCard("inbox", {
+      id: "shared-card",
+      title: "Shared evidence",
+      why: "Both source runs are represented.",
+      sourceRunIds: [gmailRun, ledgerRun],
+      blocks: [{ id: "memo", type: "memo", text: "Complete" }],
+    });
+    expect((await store.readSweepState("inbox")).currentBatchId).toBe(batchId);
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8")).cursor).toBe("gmail-shared");
+    expect(JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", second.checkpointFilename), "utf8")).cursor).toBe("ledger-shared");
+  });
+
   test("rejects source-backed card writes and actions from stale sweep runs", async () => {
     const { domain, store } = await setup();
-    const oldRun = await domain.recordSourceRun("inbox", "gmail-inbox", [{ threadId: "gmail-old", subject: "Sign this" }], [{ decision: "keep" }], { cursor: "gmail-old" });
+    const oldRun = await domain.recordSourceRun("inbox", "gmail-inbox", [{ threadId: "gmail-old", subject: "Sign this" }], [{ decision: "keep", cardId: "stale-source-action" }], { cursor: "gmail-old" });
     await domain.recordSweepBatch("inbox", [oldRun]);
     await domain.upsertCard("inbox", {
       id: "stale-source-action",
@@ -749,7 +999,8 @@ describe("filesystem workspace", () => {
   test("migrates source recipes and checkpoints from JSON files into SQLite and mirrors updates", async () => {
     const { root, domain: fileDomain } = await setup();
     const source = await fileDomain.addSourceFromBrief("inbox", "Read the important local notes.");
-    await fileDomain.recordSourceRun("inbox", source.id, [{ note: "one" }], [{ decision: "keep" }], { cursor: "note-1" });
+    const runId = await fileDomain.recordSourceRun("inbox", source.id, [{ note: "one" }], [], { cursor: "note-1" });
+    await fileDomain.recordSweepBatch("inbox", [runId]);
 
     const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
     await sqlite.init();

@@ -25,7 +25,9 @@ import type {
   RevisionProposal,
   RoutineActionGroup,
   SourceRecipe,
+  SourceRun,
   SourceRunContextUse,
+  SweepBatch,
   SweepFeedbackTrace,
   ThreadBinding,
   VoiceTarget,
@@ -44,7 +46,7 @@ import { agentLabel, effectiveWorkLane } from "../shared/lanes";
 import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, workItemView } from "./store";
 import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
-import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./util";
+import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify, stableDigest } from "./util";
 import { actionDigest, cleanupDigest, configuredApprovalAction, requiredSourceMailbox, routineActionDigest, verifySourceMailbox } from "./workflow/approvals";
 import { queuedWork } from "./workflow/workItems";
 import { mobileActionConfirmation, projectMobileCard, projectMobileRoutineAction } from "./mobile/projection";
@@ -929,9 +931,8 @@ export class AttentionDomain {
     const signalIds = value.signalIds.map((signalId, index) => requiredMindText(signalId, `Card context signal ${index + 1}`, 100));
     if (new Set(signalIds).size !== signalIds.length) throw new Error("Card contextInfluence signal ids must be unique.");
 
-    const sweep = await this.store.readSweepState(feedId);
-    if (!sweep.currentBatchId) throw new Error("A context-influenced card requires a current sweep batch.");
-    const batch = await this.store.readSweepBatch(feedId, sweep.currentBatchId);
+    const batch = await this.presentationBatchForRuns(feedId, sourceRunIds);
+    if (!batch) throw new Error("A context-influenced card requires a current or pending sweep batch.");
     if (batch.contextUpdateId !== updateId) {
       throw new Error(`Card contextInfluence must match the current sweep batch context ${batch.contextUpdateId ?? "none"}.`);
     }
@@ -1007,14 +1008,36 @@ export class AttentionDomain {
     }
 
     const sweep = await this.store.readSweepState(feedId);
-    if (!sweep.currentBatchId) return;
-    const batch = await this.store.readSweepBatch(feedId, sweep.currentBatchId);
-    const currentRunIds = new Set(batch.sourceRunIds);
-    const staleRunIds = sourceRunIds.filter((runId) => !currentRunIds.has(runId));
-    if (staleRunIds.length === 0) return;
+    if (sweep.currentBatchId) {
+      const current = await this.store.readSweepBatch(feedId, sweep.currentBatchId);
+      const currentRunIds = new Set(current.sourceRunIds);
+      if (sourceRunIds.every((runId) => currentRunIds.has(runId))) return;
+    }
+    if (sweep.pendingBatchId) {
+      const pending = await this.store.readSweepBatch(feedId, sweep.pendingBatchId);
+      const presentation = cardId ? pending.presentations?.find((item) => item.cardId === cardId) : undefined;
+      const pendingRunIds = new Set(pending.sourceRunIds);
+      if (
+        presentation &&
+        sourceRunIds.every((runId) => pendingRunIds.has(runId)) &&
+        presentation.sourceRunIds.every((runId) => sourceRunIds.includes(runId))
+      ) return;
+    }
+    const staleRunIds = sourceRunIds;
     throw new Error(
-      `Card${cardId ? ` ${cardId}` : ""} source evidence is stale: ${staleRunIds.join(", ")} ${staleRunIds.length === 1 ? "is" : "are"} not in current sweep batch ${batch.id}. Refresh the sources and upsert the card from the current batch before acting.`,
+      `Card${cardId ? ` ${cardId}` : ""} source evidence is stale or not expected for presentation: ${staleRunIds.join(", ")}. Refresh the sources or recover the pending sweep with its declared stable card IDs before acting.`,
     );
+  }
+
+  private async presentationBatchForRuns(feedId: string, sourceRunIds: string[]): Promise<SweepBatch | null> {
+    const sweep = await this.store.readSweepState(feedId);
+    for (const batchId of [sweep.pendingBatchId, sweep.currentBatchId]) {
+      if (!batchId) continue;
+      const batch = await this.store.readSweepBatch(feedId, batchId);
+      const runIds = new Set(batch.sourceRunIds);
+      if (sourceRunIds.every((runId) => runIds.has(runId))) return batch;
+    }
+    return null;
   }
 
   private async assertCardSourceCurrent(card: Card): Promise<void> {
@@ -2144,6 +2167,12 @@ export class AttentionDomain {
       if (work.status !== "working") throw new Error("Work item is not currently claimed.");
       if (work.capabilityToken !== token) throw new Error("Invalid scoped work capability token.");
       if (!result.response?.trim()) throw new Error("A work response is required.");
+      if (work.kind === "instruction" || work.kind === "scoped_instruction") {
+        const sweep = await this.store.readSweepState(feedId);
+        if (sweep.pendingBatchId) {
+          throw new Error(`Sweep ${sweep.pendingBatchId} still has kept judgments awaiting durable cards. Recover the pending presentation before completing this work.`);
+        }
+      }
       if (work.intent === "sweep_rejudge") {
         if (!work.feedbackId) throw new Error("Sweep rejudgment work is missing its feedback trace.");
         const trace = await this.store.readSweepFeedback(feedId, work.feedbackId);
@@ -2535,7 +2564,7 @@ export class AttentionDomain {
     validateCardBlocks(input.blocks);
     validateCardActions(input.actions);
     const sourceRunIds = validateSourceRunIds(input.sourceRunIds);
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       const config = await this.store.readConfig(feedId);
       const now = isoNow();
       const existing = (await this.store.hasCard(feedId, input.id)) ? await this.store.readCard(feedId, input.id) : null;
@@ -2566,6 +2595,13 @@ export class AttentionDomain {
       };
       await this.store.writeCard(card);
       await this.store.appendEvent({ feedId, cardId: card.id, type: existing ? "card.updated" : "card.created" });
+      const sweep = await this.store.readSweepState(feedId);
+      if (sweep.pendingBatchId) {
+        const pending = await this.store.readSweepBatch(feedId, sweep.pendingBatchId);
+        if (pending.presentations?.some((presentation) => presentation.cardId === card.id)) {
+          await this.reconcilePendingSweepBatchLocked(feedId, pending);
+        }
+      }
       return card;
     });
   }
@@ -2682,24 +2718,45 @@ export class AttentionDomain {
   }
 
   async recordSourceRun(feedId: string, sourceId: string, snapshots: unknown[], judgments: unknown[], checkpoint: unknown, triggerWorkId?: string, contextUse?: SourceRunContextUse): Promise<string> {
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       const feed = await this.store.readFeed(feedId);
       if (!feed.sources.some((source) => source.id === sourceId)) throw new Error(`Source recipe not found: ${sourceId}`);
       if (triggerWorkId) await this.assertClaimedRecollectionWork(feedId, triggerWorkId);
       const normalizedContextUse = contextUse
         ? normalizeContextUse(contextUse, await this.requireCurrentMindContext(contextUse.updateId), snapshots)
         : undefined;
-      const runId = makeId("run");
-      for (const [index, snapshot] of snapshots.entries()) await this.store.writeRawSnapshot(feedId, runId, sourceId, `snapshot-${index + 1}`, snapshot);
-      await this.store.writeRun({ id: runId, feedId, sourceId, snapshots: snapshots.length, judgments, ...(normalizedContextUse ? { contextUse: normalizedContextUse } : {}), ...(triggerWorkId ? { triggerWorkId } : {}), completedAt: isoNow() });
-      await this.store.writeSourceCheckpoint(feedId, sourceId, checkpoint);
-      await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "source.run_completed", detail: { runId, sourceId, triggerWorkId, snapshots: snapshots.length, judgments: judgments.length, contextUse: normalizedContextUse } });
+      const inputDigest = stableDigest({ feedId, sourceId, snapshots, judgments, checkpoint, triggerWorkId: triggerWorkId ?? null, contextUse: normalizedContextUse ?? null });
+      const runId = `run_${inputDigest.slice(0, 32)}`;
+      try {
+        const existing = await this.store.readRun(feedId, runId);
+        if (existing.inputDigest !== inputDigest) throw new Error(`Source run identity conflict: ${runId}`);
+        return runId;
+      } catch (error) {
+        const missing = (error as NodeJS.ErrnoException).code === "ENOENT" || (error instanceof Error && error.message.startsWith("Source run not found"));
+        if (!missing) throw error;
+      }
+      for (const [index, snapshot] of snapshots.entries()) {
+        await this.store.ensureRawSnapshot(feedId, runId, sourceId, `snapshot-${index + 1}`, snapshot);
+      }
+      await this.store.writeRun({
+        id: runId,
+        feedId,
+        sourceId,
+        snapshots: snapshots.length,
+        judgments,
+        inputDigest,
+        pendingCheckpoint: checkpoint,
+        ...(normalizedContextUse ? { contextUse: normalizedContextUse } : {}),
+        ...(triggerWorkId ? { triggerWorkId } : {}),
+        completedAt: isoNow(),
+      });
+      await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "source.run_staged", detail: { runId, sourceId, triggerWorkId, snapshots: snapshots.length, judgments: judgments.length, contextUse: normalizedContextUse } });
       return runId;
     });
   }
 
   async recordSweepBatch(feedId: string, sourceRunIds: string[], triggerWorkId?: string, contextUpdateId?: string): Promise<string> {
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       if (!Array.isArray(sourceRunIds) || sourceRunIds.some((runId) => typeof runId !== "string" || !runId.trim())) {
         throw new Error("Sweep batch source run IDs must be non-empty strings.");
       }
@@ -2710,8 +2767,9 @@ export class AttentionDomain {
         ? (await this.requireCurrentMindContext(requiredMindText(contextUpdateId, "Sweep batch context update", 140))).id
         : undefined;
       const researchQuestions = new Set<string>();
+      const runs: SourceRun[] = [];
       for (const runId of sourceRunIds) {
-        let run: { id: string; feedId: string; triggerWorkId?: string; completedAt?: string; contextUse?: SourceRunContextUse };
+        let run: SourceRun;
         try {
           run = await this.store.readRun(feedId, runId);
         } catch {
@@ -2729,15 +2787,200 @@ export class AttentionDomain {
         if (run.contextUse?.mode === "research" && run.contextUse.researchQuestion) {
           researchQuestions.add(run.contextUse.researchQuestion);
         }
+        runs.push(run);
       }
       if (researchQuestions.size > 1) throw new Error("One sweep may originate only one On Your Mind research question.");
-      const batchId = makeId("batch");
-      const supersededRoutineGroups = await this.staleProposedRoutineActionGroups(feedId, `Superseded by newer sweep batch ${batchId}.`);
-      await this.store.writeSweepBatch({ id: batchId, feedId, sourceRunIds, ...(normalizedContextUpdateId ? { contextUpdateId: normalizedContextUpdateId } : {}), ...(triggerWorkId ? { triggerWorkId } : {}), createdAt: isoNow() });
-      await this.store.writeSweepState(feedId, { currentBatchId: batchId, lastFeedbackId: null, recollectionOffered: false, statusMessage: null });
-      await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "sweep.batch_recorded", detail: { batchId, sourceRunIds, contextUpdateId: normalizedContextUpdateId, triggerWorkId, supersededRoutineGroups } });
+      const presentations = this.requiredBatchPresentations(runs);
+      const batchDigest = stableDigest({ feedId, sourceRunIds, contextUpdateId: normalizedContextUpdateId ?? null, triggerWorkId: triggerWorkId ?? null });
+      const batchId = `batch_${batchDigest.slice(0, 32)}`;
+      const sweep = await this.store.readSweepState(feedId);
+      if (sweep.pendingBatchId && sweep.pendingBatchId !== batchId) {
+        const status = await this.sweepCommitStatusLocked(feedId, sweep.pendingBatchId);
+        throw new Error(`Sweep ${sweep.pendingBatchId} is still pending presentation (${status.missingCardIds.join(", ") || "unknown cards"}). Recover it before recording a newer batch.`);
+      }
+      if (sweep.currentBatchId === batchId && !sweep.pendingBatchId) return batchId;
+      if (!sweep.pendingBatchId && sweep.currentBatchId) {
+        const current = await this.store.readSweepBatch(feedId, sweep.currentBatchId);
+        const legacyMissing = await this.legacyUnrepresentedKeptJudgments(feedId, current);
+        if (legacyMissing.length) {
+          throw new Error(`Current pre-recovery sweep ${current.id} has kept judgments with no referencing card (${legacyMissing.map((item) => `${item.runId}: ${item.count}`).join(", ")}). Recover them before recording a newer batch.`);
+        }
+      }
+      const batch: SweepBatch = {
+        id: batchId,
+        feedId,
+        sourceRunIds,
+        status: "pending",
+        presentations,
+        ...(normalizedContextUpdateId ? { contextUpdateId: normalizedContextUpdateId } : {}),
+        ...(triggerWorkId ? { triggerWorkId } : {}),
+        createdAt: isoNow(),
+      };
+      let pendingBatch = batch;
+      if (!sweep.pendingBatchId) {
+        await this.store.writeSweepBatch(batch);
+        await this.store.writeSweepState(feedId, {
+          ...sweep,
+          pendingBatchId: batchId,
+          statusMessage: presentations.length ? `Sweep presentation pending: ${presentations.length} kept ${presentations.length === 1 ? "judgment needs" : "judgments need"} cards.` : null,
+        });
+        await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "sweep.batch_staged", detail: { batchId, sourceRunIds, contextUpdateId: normalizedContextUpdateId, triggerWorkId, presentations } });
+      } else {
+        pendingBatch = await this.store.readSweepBatch(feedId, batchId);
+      }
+      await this.reconcilePendingSweepBatchLocked(feedId, pendingBatch);
       return batchId;
     });
+  }
+
+  async sweepCommitStatus(feedId: string): Promise<Record<string, unknown>> {
+    return this.store.serialize(async () => {
+      const sweep = await this.store.readSweepState(feedId);
+      if (sweep.pendingBatchId) return this.sweepCommitStatusLocked(feedId, sweep.pendingBatchId);
+      if (sweep.currentBatchId) {
+        const batch = await this.store.readSweepBatch(feedId, sweep.currentBatchId);
+        const legacyMissing = await this.legacyUnrepresentedKeptJudgments(feedId, batch);
+        if (legacyMissing.length) {
+          return {
+            status: "attention_required",
+            currentBatchId: sweep.currentBatchId,
+            pendingBatchId: null,
+            missingCardIds: [],
+            legacyUnrepresentedKeptJudgments: legacyMissing,
+            message: "This pre-recovery sweep has kept judgments from source runs that no card references. Recover those judgments from preserved raw evidence before collecting a newer sweep.",
+          };
+        }
+      }
+      return { status: "committed", currentBatchId: sweep.currentBatchId, pendingBatchId: null, missingCardIds: [] };
+    });
+  }
+
+  private async legacyUnrepresentedKeptJudgments(feedId: string, batch: SweepBatch): Promise<Array<{ runId: string; count: number }>> {
+    if (batch.presentations) return [];
+    const cards = await this.store.listCards(feedId);
+    const representedRunIds = new Set(cards.flatMap((card) => card.sourceRunIds ?? []));
+    const missing: Array<{ runId: string; count: number }> = [];
+    for (const runId of batch.sourceRunIds) {
+      if (representedRunIds.has(runId)) continue;
+      const run = await this.store.readRun(feedId, runId);
+      const count = run.judgments.filter((judgment) => isRecord(judgment) && judgment.decision === "keep").length;
+      if (count) missing.push({ runId, count });
+    }
+    return missing;
+  }
+
+  private requiredBatchPresentations(runs: SourceRun[]): NonNullable<SweepBatch["presentations"]> {
+    const byCard = new Map<string, Set<string>>();
+    for (const run of runs) {
+      const staged = Object.prototype.hasOwnProperty.call(run, "pendingCheckpoint");
+      for (const [index, judgment] of run.judgments.entries()) {
+        if (!isRecord(judgment) || judgment.decision !== "keep") continue;
+        if (!staged && typeof judgment.cardId !== "string") continue;
+        if (typeof judgment.cardId !== "string" || !judgment.cardId.trim()) {
+          throw new Error(`Kept judgment ${index + 1} in source run ${run.id} must include a stable cardId.`);
+        }
+        const cardId = safeIdentifier(judgment.cardId.trim(), "Kept judgment cardId");
+        const sourceRunIds = byCard.get(cardId) ?? new Set<string>();
+        sourceRunIds.add(run.id);
+        byCard.set(cardId, sourceRunIds);
+      }
+    }
+    return [...byCard.entries()].map(([cardId, runIds]) => ({ cardId, sourceRunIds: [...runIds] }));
+  }
+
+  private async missingBatchPresentations(feedId: string, batch: SweepBatch): Promise<Array<{ cardId: string; missingSourceRunIds: string[] }>> {
+    const missing: Array<{ cardId: string; missingSourceRunIds: string[] }> = [];
+    for (const presentation of batch.presentations ?? []) {
+      if (!(await this.store.hasCard(feedId, presentation.cardId))) {
+        missing.push({ cardId: presentation.cardId, missingSourceRunIds: presentation.sourceRunIds });
+        continue;
+      }
+      const card = await this.store.readCard(feedId, presentation.cardId);
+      const cardRunIds = new Set(card.sourceRunIds ?? []);
+      const missingSourceRunIds = presentation.sourceRunIds.filter((runId) => !cardRunIds.has(runId));
+      if (missingSourceRunIds.length) missing.push({ cardId: presentation.cardId, missingSourceRunIds });
+    }
+    return missing;
+  }
+
+  private async sweepCommitStatusLocked(feedId: string, pendingBatchId: string): Promise<{ status: "pending"; currentBatchId: string | null; pendingBatchId: string; missingCardIds: string[]; missingPresentations: Array<{ cardId: string; missingSourceRunIds: string[] }> }> {
+    const [sweep, batch] = await Promise.all([
+      this.store.readSweepState(feedId),
+      this.store.readSweepBatch(feedId, pendingBatchId),
+    ]);
+    const missingPresentations = await this.missingBatchPresentations(feedId, batch);
+    return {
+      status: "pending",
+      currentBatchId: sweep.currentBatchId,
+      pendingBatchId,
+      missingCardIds: missingPresentations.map((item) => item.cardId),
+      missingPresentations,
+    };
+  }
+
+  private async reconcilePendingSweepBatchLocked(feedId: string, batch: SweepBatch): Promise<void> {
+    const missing = await this.missingBatchPresentations(feedId, batch);
+    const recoveryCardId = `sweep-presentation-${batch.id}`;
+    if (missing.length) {
+      const config = await this.store.readConfig(feedId);
+      const existing = await this.store.hasCard(feedId, recoveryCardId) ? await this.store.readCard(feedId, recoveryCardId) : null;
+      const now = isoNow();
+      await this.store.writeCard({
+        id: recoveryCardId,
+        feedId,
+        kind: "feed_improvement",
+        status: "to_review_updated",
+        eyebrow: "Sweep recovery",
+        title: `Finish presenting ${missing.length} kept ${missing.length === 1 ? "result" : "results"}`,
+        why: "Tend preserved the source evidence and held the checkpoint because some kept judgments do not yet have complete cards.",
+        blocks: [
+          { id: "missing", type: "checklist", label: "Missing presentation", items: missing.map((item) => `${item.cardId}: source runs ${item.missingSourceRunIds.join(", ")}`) },
+          { id: "receipt", type: "receipt", label: "Pending sweep", text: `Batch ${batch.id} is not current yet. Retry the same stable card IDs to finish it without duplicates.` },
+        ],
+        actions: [{ id: "recover", label: "Recover sweep", behavior: "queue_instruction", instruction: `Recover pending sweep ${batch.id}. Upsert the missing stable card IDs with complete sourceRunIds, then check tend cli sweep:status --feed ${feedId}.`, variant: "primary" }],
+        readyForPass: existing?.readyForPass ?? config.currentPass,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+        history: existing?.history ?? [],
+      });
+      const sweep = await this.store.readSweepState(feedId);
+      await this.store.writeSweepState(feedId, {
+        ...sweep,
+        pendingBatchId: batch.id,
+        statusMessage: `Sweep presentation pending: ${missing.map((item) => item.cardId).join(", ")}.`,
+      });
+      return;
+    }
+
+    const committedAt = isoNow();
+    const supersededRoutineGroups = await this.staleProposedRoutineActionGroups(feedId, `Superseded by newer sweep batch ${batch.id}.`);
+    for (const runId of batch.sourceRunIds) {
+      const run = await this.store.readRun(feedId, runId);
+      if (Object.prototype.hasOwnProperty.call(run, "pendingCheckpoint")) {
+        await this.store.writeSourceCheckpoint(feedId, run.sourceId, run.pendingCheckpoint);
+        run.committedAt = committedAt;
+        await this.store.writeRun(run);
+      }
+    }
+    batch.status = "committed";
+    batch.committedAt = committedAt;
+    await this.store.writeSweepBatch(batch);
+    await this.store.writeSweepState(feedId, {
+      currentBatchId: batch.id,
+      pendingBatchId: null,
+      lastFeedbackId: null,
+      recollectionOffered: false,
+      statusMessage: null,
+    });
+    if (await this.store.hasCard(feedId, recoveryCardId)) {
+      const recovery = await this.store.readCard(feedId, recoveryCardId);
+      recovery.status = "done";
+      recovery.completedAt = committedAt;
+      recovery.completionDisposition = "completed";
+      appendHistory(recovery, "sweep.presentation_recovered", batch.id);
+      await this.store.writeCard(recovery);
+    }
+    await this.store.appendEvent({ feedId, workId: batch.triggerWorkId, type: "sweep.batch_committed", detail: { batchId: batch.id, sourceRunIds: batch.sourceRunIds, supersededRoutineGroups } });
   }
 
   private async assertClaimedRecollectionWork(feedId: string, workId: string): Promise<WorkItem> {

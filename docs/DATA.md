@@ -37,6 +37,20 @@ ATTENTION_HOME=/path/to/attention tend start
   Full filtered OCR exists only in these local records and the dedicated `/mind` detail API; it is
   omitted from publication receipts, normal feed CLI output, cards, and logs.
 
+## Recoverable Sweep Commits
+
+New source runs store their proposed checkpoint in the run record while raw snapshots remain immutable.
+The live source checkpoint does not advance until every kept judgment is represented by its declared stable card ID with complete source-run provenance.
+
+Sweep batches can be `pending` or `committed`.
+A pending batch leaves the prior current batch intact and creates a visible recovery card that lists missing presentations.
+The final required card write uses one SQLite transaction to commit cards, source checkpoints, source-run commit receipts, and current sweep state.
+Readable file mirrors are deferred until the SQLite transaction succeeds.
+
+Run and batch IDs are deterministic content identities.
+Repeating the same collection or recovery write reuses those identities, while a conflicting payload is rejected.
+Legacy run and batch records remain readable and are normalized without requiring a schema migration.
+
 ## Connector Credentials
 
 Tend does not store Gmail, GitHub, Slack, browser, or other connector credentials. Those live in the local Codex Desktop runtime.
