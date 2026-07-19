@@ -63,9 +63,10 @@ waking this same thread and saying `go deal with the feed`.
 5. Use local connectors only for the claimed item.
 6. Write results back through the relevant `tend cli` command.
 7. For `sweep_rejudge`, run `sweep:rejudge` against the returned `operatorGuidance.visibleCardIds` before completing the work.
-8. For source recollection, record source runs and a sweep batch with the claimed `--work` id before completing the work.
-   If context influenced collection, include a file-backed `contextUse` on the relevant source run
-   and pin the same update id to the sweep batch.
+8. For source recollection, give every `keep` judgment a stable `cardId`, record source runs and a sweep batch with the claimed `--work` id, and upsert every required card with complete source-run provenance.
+   If context influenced collection, include a file-backed `contextUse` on the relevant source run and pin the same update id to the sweep batch.
+   Run `tend cli sweep:status --feed <feed-id>` and do not complete the work while it reports `pending`.
+   Recover the listed stable card IDs from preserved evidence instead of collecting a newer batch.
 9. Repeat until `work:claim` returns idle.
 10. If a meaningful sweep or refresh happened, ask whether to compound learnings.
 

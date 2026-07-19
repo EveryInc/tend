@@ -426,6 +426,7 @@ export interface FeedEvent {
 
 export interface SweepState {
   currentBatchId: string | null;
+  pendingBatchId?: string | null;
   lastFeedbackId: string | null;
   recollectionOffered: boolean;
   statusMessage: string | null;
@@ -447,9 +448,12 @@ export interface SweepBatch {
   id: string;
   feedId: FeedId;
   sourceRunIds: string[];
+  status?: "pending" | "committed";
+  presentations?: Array<{ cardId: string; sourceRunIds: string[] }>;
   contextUpdateId?: string;
   triggerWorkId?: string;
   createdAt: string;
+  committedAt?: string;
 }
 
 export interface SourceRun {
@@ -458,9 +462,12 @@ export interface SourceRun {
   sourceId: string;
   snapshots: number;
   judgments: unknown[];
+  inputDigest?: string;
+  pendingCheckpoint?: unknown;
   contextUse?: SourceRunContextUse;
   triggerWorkId?: string;
   completedAt?: string;
+  committedAt?: string;
 }
 
 export interface AppFeedback {

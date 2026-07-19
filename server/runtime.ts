@@ -81,10 +81,12 @@ export async function createLocalRuntime(
   const sourceRuns = new MirroredSourceRunRepository(
     sqlite.sourceRuns(),
     new FileSourceRunRepository(dataDir),
+    mirrorWrites,
   );
   const sources = new MirroredSourceRepository(
     sqlite.sources(),
     new FileSourceRepository(dataDir),
+    mirrorWrites,
   );
   const sweeps = new MirroredSweepRepository(
     sqlite.sweeps(),

@@ -171,6 +171,22 @@ tend cli source:record-run \
   --checkpoint '<json-object>'
 ```
 
+`source:record-run` preserves raw evidence and stages the proposed checkpoint.
+It does not advance the source checkpoint until the sweep is durably presented.
+Identical retries return the same deterministic run ID.
+
+Every judgment whose decision is `keep` must declare the stable card ID that will present it:
+
+```json
+[
+  {
+    "decision": "keep",
+    "cardId": "paypal-dispute-123",
+    "reason": "The owner needs to respond before the deadline."
+  }
+]
+```
+
 When context influenced a run, write the context use to a local JSON file and pass it without shell
 interpolation:
 
@@ -209,6 +225,26 @@ tend cli sweep:record-batch \
 
 For a claimed `recollect_sources` item, add `--work <claimed-recollection-work-id>`. This binds the
 judged batch to the work item and requires each referenced run to carry the same lineage.
+
+`sweep:record-batch` commits immediately when no judgment was kept.
+When kept judgments exist, it records a pending batch and creates one visible sweep-recovery card listing missing stable card IDs.
+The prior current batch and all source checkpoints remain unchanged while presentation is pending.
+
+Upsert every required card with the same `cardId` declared by its kept judgment and with every supporting source run ID.
+For a card supported by multiple source runs, include all of those run IDs in one card payload.
+The last complete card write atomically advances all source checkpoints and makes the batch current.
+
+Check recovery state before completing collection work:
+
+```bash
+tend cli sweep:status --feed <feed-id>
+```
+
+If status is `pending`, retry the listed card IDs from the preserved source evidence.
+If status is `attention_required`, a pre-recovery batch contains kept judgments from a run that no card references.
+Inspect that run's preserved raw snapshots and judgments, then recover its cards before collecting a newer sweep.
+Do not collect a newer batch or complete collection work until status is `committed`.
+Retries are idempotent and do not duplicate source runs, batches, or cards.
 
 For claimed scoped sweep-feedback work, rejudge the visible card IDs from its trace and write back
 the explicit kept order and removed IDs. Only this claimed-work write-back may reorder or hide cards:
