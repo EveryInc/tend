@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { shouldDispatch } from "../server/dispatcher";
+import { codexRuntimeAvailable, shouldDispatch } from "../server/dispatcher";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { DrainState, ThreadBinding, WorkAgent, WorkItem, WorkStatus } from "../shared/types";
 
 const NOW = Date.parse("2026-07-05T12:00:00.000Z");
@@ -105,4 +108,18 @@ describe("shouldDispatch", () => {
 
     expect(decision).toEqual({ feedId: "inbox", reason: "queued_work", queued: 2, oldestQueuedAt: OLDER });
   });
+});
+
+test("recognizes the bundled Codex runtime when the service PATH has no codex executable", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "tend-dispatcher-codex-"));
+  try {
+    const bundledCodex = path.join(root, "ChatGPT.app", "Contents", "Resources", "codex");
+    await mkdir(path.dirname(bundledCodex), { recursive: true });
+    await writeFile(bundledCodex, "native codex");
+    await chmod(bundledCodex, 0o755);
+
+    expect(codexRuntimeAvailable({ PATH: "/usr/bin:/bin" }, path.join(root, "home"), bundledCodex)).toBeTrue();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

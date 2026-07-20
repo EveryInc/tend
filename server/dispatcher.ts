@@ -2,13 +2,9 @@ import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import { effectiveWorkLane } from "../shared/lanes";
 import type { DrainState, ThreadBinding, WorkItem } from "../shared/types";
-import { runAppServerDrain } from "./codexAppServer";
+import { resolveCodexCommand, runAppServerDrain } from "./codexAppServer";
 import type { AttentionStore } from "./store";
 import { isoNow } from "./util";
-
-declare const Bun: {
-  which(binary: string): string | null;
-};
 
 const MAX_DRAIN_LOG_BYTES = 512 * 1024;
 
@@ -27,6 +23,15 @@ export interface DrainDecision {
   reason: "queued_work";
   queued: number;
   oldestQueuedAt: string | null;
+}
+
+export function codexRuntimeAvailable(...args: Parameters<typeof resolveCodexCommand>): boolean {
+  try {
+    resolveCodexCommand(...args);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function age(now: number, iso: string | undefined): number {
@@ -101,11 +106,7 @@ export class DrainDispatcher {
 
   codexAvailable(): boolean {
     if (this.options.codexAvailable) return this.options.codexAvailable();
-    try {
-      return Bun.which("codex") !== null;
-    } catch {
-      return false;
-    }
+    return codexRuntimeAvailable();
   }
 
   private async recoverStaleRunning(): Promise<void> {
