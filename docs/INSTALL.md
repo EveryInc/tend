@@ -67,6 +67,44 @@ The binary starts the local app in the background and serves built UI assets and
 ./dist-bin/tend stop
 ```
 
+### Start Automatically At macOS Login
+
+Install Tend as a per-user macOS LaunchAgent from a source build:
+
+```sh
+./dist-bin/tend autostart install
+./dist-bin/tend autostart status
+```
+
+From an unpacked release, use the packaged executable instead:
+
+```sh
+./tend autostart install
+./tend autostart status
+```
+
+The login item runs `tend start` once when you sign in, using the current Tend executable, UI
+assets, `ATTENTION_HOME`, and API port. It does not keep connector credentials; those remain in
+Codex Desktop. Tend continues running in the background after the launcher exits.
+
+Normal service commands keep their usual behavior. `tend stop` stops Tend for the current login
+session, and `tend start` starts it again. The installed login item starts it on the next login.
+
+To disable login startup from a source build without stopping a currently running Tend service:
+
+```sh
+./dist-bin/tend autostart uninstall
+```
+
+From an unpacked release:
+
+```sh
+./tend autostart uninstall
+```
+
+Re-run `tend autostart install` after moving the Tend installation, changing `ATTENTION_HOME`, or
+changing `ATTENTION_API_PORT`, because those absolute values are recorded in the LaunchAgent.
+
 Use `./dist-bin/tend start --foreground` when you want the server attached to the current
 terminal.
 

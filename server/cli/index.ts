@@ -1,5 +1,6 @@
 import path from "node:path";
 import { attentionHome } from "../paths";
+import { autostartCommand } from "./autostart";
 import { backupExportCommand, backupImportCommand } from "./backup";
 import { doctorCommand, statusCommand } from "./health";
 import { helpCommand } from "./help";
@@ -40,6 +41,9 @@ export async function runTendCli(rawArgs: string[]): Promise<void> {
       break;
     case "doctor":
       await doctorCommand();
+      break;
+    case "autostart":
+      await autostartCommand([subcommand, ...rest].filter((value): value is string => Boolean(value)));
       break;
     case "setup":
       if (subcommand !== "codex") throw new Error("Expected: tend setup codex [--feed <id> | --chronicle]");

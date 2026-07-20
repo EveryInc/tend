@@ -89,6 +89,12 @@ cd tend-<version>-<platform>-<arch>
 ./tend health
 ```
 
+On macOS, enable automatic startup after login once:
+
+```sh
+./tend autostart install
+```
+
 Open `http://127.0.0.1:4332` in **Codex Desktop's in-app browser**.
 
 ### 2. Create a Feed

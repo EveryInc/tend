@@ -5,8 +5,15 @@ import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS, cliCommandName, cliCommandUsage } 
 import { MissingFlagError, formatCliError } from "../server/cli/errors";
 import { assertCliRuntimeMatchesLive } from "../server/cli/runtimeGuard";
 import { setupChroniclePrompt, setupCodexPrompt } from "../server/cli/setup";
+import { CLI_HELP_COMMANDS } from "../server/cli/help";
 
 describe("CLI contract", () => {
+  test("exposes macOS autostart lifecycle commands", () => {
+    expect(CLI_HELP_COMMANDS).toContain("tend autostart install");
+    expect(CLI_HELP_COMMANDS).toContain("tend autostart status");
+    expect(CLI_HELP_COMMANDS).toContain("tend autostart uninstall");
+  });
+
   test("keeps public help focused on the v0 agent surface", () => {
     const commandNames = new Set(CLI_COMMANDS.map(cliCommandName));
 

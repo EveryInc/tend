@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { attentionDataDir, attentionHome, attentionLogDir } from "../paths";
+import { currentCliCommand } from "./executable";
 import { apiPort, apiUrl, print } from "./shared";
 
 export async function startBackgroundCommand(): Promise<void> {
@@ -111,12 +112,6 @@ function backgroundCommand(command: string[]): string[] {
     logFile(),
     ...command,
   ];
-}
-
-function currentCliCommand(): string[] {
-  const scriptPath = process.argv[1] ? path.resolve(process.argv[1]) : "";
-  if (scriptPath.endsWith(".ts") && existsSync(scriptPath)) return [process.argv[0], scriptPath];
-  return [process.execPath];
 }
 
 async function serviceHealthy(): Promise<boolean> {
