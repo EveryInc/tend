@@ -3,6 +3,7 @@ import type { AttentionDomain } from "../domain";
 import type { LocalSqliteStore } from "../sqlite";
 import type { AttentionStore } from "../store";
 import type { MobileSyncStatus } from "../../shared/mobile";
+import type { StartedCodexThread } from "../codexAppServer";
 
 export type Notify = (data: unknown) => void;
 
@@ -17,6 +18,7 @@ export type LocalRouteContext = {
   store: AttentionStore;
   mobileStatus?: () => MobileSyncStatus;
   mutationToken: string;
+  startCodexThread?: (prompt: string, cwd: string) => Promise<StartedCodexThread>;
 };
 
 export async function body(c: any): Promise<Record<string, unknown>> {

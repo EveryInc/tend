@@ -9,7 +9,10 @@ import { inboxThreadFixture, recordInboxCollection } from "./support/inboxSweep"
 
 const roots: string[] = [];
 
-async function setup(notify: (data: unknown) => void = () => {}) {
+async function setup(
+  notify: (data: unknown) => void = () => {},
+  startCodexThread?: (prompt: string, cwd: string) => Promise<{ threadId: string; deepLink: string }>,
+) {
   const root = await mkdtemp(path.join(os.tmpdir(), "attention-api-test-"));
   roots.push(root);
   const store = new AttentionStore(root);
@@ -19,10 +22,12 @@ async function setup(notify: (data: unknown) => void = () => {}) {
     artifactsDir: root,
     dataDir: root,
     domain,
+    mutationToken: "test-token",
     notify,
     port: 0,
     root,
     sqlite: { status: () => ({ ok: true }) } as any,
+    startCodexThread,
     store,
   });
   return { app, domain, store };
@@ -41,6 +46,41 @@ afterEach(async () => {
 });
 
 describe("API routing and mutation hardening", () => {
+  test("starts a card-grounded Codex conversation and records its receipt", async () => {
+    const requests: Array<{ prompt: string; cwd: string }> = [];
+    const { app, domain, store } = await setup(() => {}, async (prompt, cwd) => {
+      requests.push({ prompt, cwd });
+      return { threadId: "019f-agent-thread", deepLink: "codex://threads/019f-agent-thread" };
+    });
+    const fixture = inboxThreadFixture("thread-agent");
+    await domain.finalizeInboxSweep("inbox", "gmail-inbox", [fixture.snapshot], [fixture.card], {}, await recordInboxCollection(domain, [fixture.snapshot.threadId]));
+
+    const response = await app.request(`/api/feeds/inbox/cards/${fixture.card.id}/start-agent`, jsonPost({ instruction: "Draft three possible replies and explain the tradeoffs." }));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ threadId: "019f-agent-thread", deepLink: "codex://threads/019f-agent-thread" });
+    expect(requests[0]?.prompt).toContain("Draft three possible replies and explain the tradeoffs.");
+    expect(requests[0]?.prompt).toContain(fixture.snapshot.threadText);
+    expect(requests[0]?.prompt).toContain("Do not send, reply, archive, or mutate any external service without explicit confirmation");
+    expect((await store.readCard("inbox", fixture.card.id)).agentThreads).toMatchObject([{ threadId: "019f-agent-thread" }]);
+    expect((await store.readEvents("inbox")).at(-1)).toMatchObject({ type: "codex.thread_started", cardId: fixture.card.id });
+  });
+
+  test("records no task receipt when Codex cannot launch", async () => {
+    const { app, domain, store } = await setup(() => {}, async () => {
+      throw new Error("Codex working directory is unavailable.");
+    });
+    const fixture = inboxThreadFixture("thread-agent-launch-failure");
+    await domain.finalizeInboxSweep("inbox", "gmail-inbox", [fixture.snapshot], [fixture.card], {}, await recordInboxCollection(domain, [fixture.snapshot.threadId]));
+
+    const response = await app.request(`/api/feeds/inbox/cards/${fixture.card.id}/start-agent`, jsonPost({ instruction: "Investigate the cost increase." }));
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: "Codex working directory is unavailable." });
+    expect((await store.readCard("inbox", fixture.card.id)).agentThreads ?? []).toHaveLength(0);
+    expect((await store.readEvents("inbox")).some((event) => event.type === "codex.thread_started")).toBeFalse();
+  });
+
   test("serves authoritative Inbox thread snapshots without browser caching", async () => {
     const { app, domain } = await setup();
     const fixture = inboxThreadFixture("thread-api");

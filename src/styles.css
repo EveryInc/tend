@@ -44,6 +44,7 @@ kbd { font: 11px/1 var(--mono); color: var(--ink-3); }
 .tabs button.active { color: var(--ink); border-color: var(--ink); }
 .tabs span { color: var(--ink-4); font-size: 12px; }
 .tabs .tab-quiet { margin-left: auto; color: var(--ink-3); }
+.tabs .tab-latest { color: var(--blue); font-weight: 700; }
 
 .page { max-width: 980px; margin: 0 auto; padding: 22px 34px 190px; }
 .panel-kicker, .section-label, .action-label { color: var(--ink-3); font-size: 11px; font-weight: 700; letter-spacing: .13em; text-transform: uppercase; }
@@ -60,6 +61,8 @@ kbd { font: 11px/1 var(--mono); color: var(--ink-3); }
 .kind-dot { flex: 0 0 auto; width: 10px; height: 10px; margin-top: 7px; border-radius: 50%; background: #82909b; }
 .kind-dot.proposal { background: #b98649; }
 .eyebrow { margin-bottom: 5px; color: var(--ink-3); font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+.email-card-meta { display: flex; flex-wrap: wrap; gap: 3px 7px; margin: -1px 0 6px; color: var(--ink-3); font-size: 12px; }
+.email-card-meta span:first-child { color: var(--ink-2); font-weight: 650; }
 h2 { margin: 0; font: 500 26px/1.12 var(--serif); letter-spacing: -.02em; }
 .why { max-width: 780px; margin: 15px 0 18px 22px; color: var(--ink-2); font-size: 15px; }
 .context-influence { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 10px; margin: -2px 0 18px 22px; padding: 12px 14px 13px; border: 1px solid #ded4c4; border-radius: 8px; background: #faf6ee; }
@@ -152,6 +155,14 @@ h2 { margin: 0; font: 500 26px/1.12 var(--serif); letter-spacing: -.02em; }
 .card-action b { font-size: 14px; }
 .reply-mailbox { color: var(--ink-3); font-size: 12px; }
 .action-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.agent-launcher { display: grid; flex: 1 1 100%; gap: 7px; min-width: min(420px, 100%); padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper-warm); text-align: left; }
+.agent-launcher label { color: var(--ink-2); font-size: 12px; font-weight: 700; }
+.agent-launcher textarea { width: 100%; resize: vertical; padding: 9px 10px; border: 1px solid var(--line-2); border-radius: 7px; outline: none; background: var(--paper); color: var(--ink); line-height: 1.45; }
+.agent-launcher textarea:focus { border-color: #a9b8dc; box-shadow: 0 0 0 3px var(--blue-soft); }
+.agent-launcher small { color: var(--ink-3); font-size: 11px; }
+.agent-launcher-error { color: #a14238; font-size: 12px; }
+.agent-launcher a { color: var(--blue); font-size: 12px; font-weight: 700; }
+.agent-launcher-actions { display: flex; justify-content: flex-end; gap: 7px; }
 .button { min-height: 34px; padding: 0 12px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--ink); font-size: 13px; font-weight: 600; }
 .button.ghost { border-color: var(--line-2); background: #fff; }
 .button.primary { background: #292923; color: #fff; }

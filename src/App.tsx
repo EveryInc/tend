@@ -6,12 +6,13 @@ import { agentLabel, effectiveWorkLane } from "../shared/lanes";
 import type { AttentionScreen, Inspector, Tab, WorkspaceTab } from "./app/types";
 import { CardView } from "./feed/CardView";
 import { RoutineActionGroupView } from "./feed/RoutineActionGroupView";
-import { countFor, visibleCardActions, visibleCards, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
+import { countFor, latestReviewCard, visibleCardActions, visibleCards, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
 import { Dock } from "./shell/Dock";
 import { InspectorPanel } from "./shell/InspectorPanel";
 import { TopBar } from "./shell/TopBar";
 import { useActiveCard } from "./state/activeCard";
 import { RealtimeProvider } from "./state/realtime";
+import { projectQueuedCardAction } from "./state/optimistic";
 import { preferredTarget, sameTarget } from "./state/voiceTarget";
 import type { Card, CardAction, FeedView, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkItemView, WorkspaceRevision, WorkspaceView } from "./types";
 import { FormattedText } from "./ui/FormattedText";
@@ -196,6 +197,30 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     }, duration);
   };
 
+  const focusLatestEmail = useCallback((sourceFeed: FeedView | undefined = feed) => {
+    setTab("review");
+    const latest = sourceFeed ? latestReviewCard(sourceFeed) : undefined;
+    if (latest) setActiveCardId(latest.id);
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const target = latest
+        ? pageRef.current?.querySelector<HTMLElement>(`[data-card-id="${CSS.escape(latest.id)}"]`)
+        : pageRef.current;
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
+  }, [feed, setActiveCardId]);
+
+  const reviewReadyCards = () => void (async () => {
+    try {
+      await post(`/api/feeds/${feed?.config.id}/next-pass`);
+      await refresh();
+      const current = queryClient.getQueryData<WorkspaceView>(["workspace", feed?.config.id]);
+      focusLatestEmail(current?.active);
+      showToast("Started the next pass");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error));
+    }
+  })();
+
   const changeDockTarget = useCallback((next: VoiceTarget) => {
     if (sameTarget(dockTargetRef.current, next)) return;
     dockTargetRef.current = next;
@@ -324,7 +349,10 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     void (async () => {
       try {
         await flushVisibleCardEdits(card);
-        const work = await post<{ id: string }>(`/api/feeds/${feed.config.id}/cards/${card.id}/actions/${encodeURIComponent(action.id)}`);
+        const work = await post<WorkItemView>(`/api/feeds/${feed.config.id}/cards/${card.id}/actions/${encodeURIComponent(action.id)}`);
+        queryClient.setQueryData<WorkspaceView>(["workspace", feed.config.id], (current) =>
+          current ? projectQueuedCardAction(current, card.id, work) : current,
+        );
         if (action.behavior === "default_cleanup") {
           const cleanup = { feedId: feed.config.id, cardId: card.id };
           setUndoCleanup(cleanup);
@@ -420,6 +448,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
 
   const updated = cards.filter((card) => card.status === "to_review_updated");
   const fresh = cards.filter((card) => card.status !== "to_review_updated");
+  const showReviewSections = tab === "review" && feed.config.id !== "inbox";
   const feedWork = visibleFeedWork(feed, tab);
   const parkedClaudeWork = tab === "queued" ? parkedClaudeWorkItems(feed, claudeLiveness) : [];
   return withRealtime(
@@ -432,6 +461,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
             <span>{countFor(feed, item)}</span>
           </button>
         ))}
+        {feed.config.id === "inbox" && <button className="tab-latest" onClick={() => focusLatestEmail()}>Latest email</button>}
         <button className="tab-quiet" onClick={() => openWorkspace("feed")}>Prompts & sources</button>
       </nav>
       <main className="page" ref={pageRef}>
@@ -439,10 +469,10 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
         <RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} />
         {routineActions.map((group) => <RoutineActionGroupView key={group.id} group={group} onApprove={() => approveRoutineAction(group)} />)}
         <ParkedClaudeWorkNotice items={parkedClaudeWork} onReassign={reassignQueuedWork} />
-        {tab === "review" && updated.length > 0 && <div className="section-label">Back for review <span>{updated.length}</span></div>}
+        {showReviewSections && updated.length > 0 && <div className="section-label">Back for review <span>{updated.length}</span></div>}
         {cards.map((card, index) => (
           <Fragment key={card.id}>
-            {tab === "review" && index === updated.length && fresh.length > 0 && <div className="section-label" key={`${card.id}-label`}>New <span>{fresh.length}</span></div>}
+            {showReviewSections && index === updated.length && fresh.length > 0 && <div className="section-label" key={`${card.id}-label`}>New <span>{fresh.length}</span></div>}
             <CardView key={card.id} card={card} queuedFor={cardQueuedFor(card.id)} queuedNote={editableQueuedNote(card)} active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()} onAction={(action) => runCardAction(card, action)} onReturnToReview={() => returnToReview(card)} />
           </Fragment>
         ))}
@@ -505,7 +535,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
             <h2>{`${feed.readyNextPass} updated card${feed.readyNextPass === 1 ? "" : "s"} ready when you are.`}</h2>
           </div>}
           <div className="end-actions">
-            {feed.readyNextPass > 0 && <button className="button primary" onClick={() => void withRefresh(() => post(`/api/feeds/${feed.config.id}/next-pass`), "Started the next pass")}>Review ready cards</button>}
+            {feed.readyNextPass > 0 && <button className="button primary" onClick={reviewReadyCards}>Review ready cards</button>}
             {compoundProposals.length > 0 && <button className="button ghost" onClick={openLearningReview}>Review learning proposal</button>}
           </div>
         </section>}

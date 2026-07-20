@@ -7,9 +7,11 @@ import { mindContextPublicationReceipt } from "../domain";
 import { InboxThreadSnapshotNotFoundError } from "../inboxSweep";
 import { versionInfo } from "../version";
 import { body, mutation, mutationAccessError, type LocalRouteContext } from "./shared";
+import { startCodexThread as defaultStartCodexThread } from "../codexAppServer";
 
 export function apiRoutes(context: LocalRouteContext): Hono {
   const { artifactsDir, dataDir, domain, mobileStatus, mutationToken, notify, sqlite, store } = context;
+  const startCodexThread = context.startCodexThread ?? defaultStartCodexThread;
   const app = new Hono();
 
   app.use("/api/*", async (c, next) => {
@@ -132,6 +134,35 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   app.post("/api/feeds/:feed/cards/:card/instructions", async (c) => mutation(c, notify, async () => {
     const input = await body(c);
     return domain.queueInstruction(c.req.param("feed"), c.req.param("card"), String(input.instruction ?? ""), { assignee: parseOptionalWorkAgent(input.assignee) });
+  }));
+  app.post("/api/feeds/:feed/cards/:card/start-agent", async (c) => mutation(c, notify, async () => {
+    const feedId = c.req.param("feed");
+    const cardId = c.req.param("card");
+    const instruction = String((await body(c)).instruction ?? "").trim();
+    if (!instruction) throw new Error("Tell the agent what you want it to do.");
+    const card = await store.readCard(feedId, cardId);
+    const emailBlock = card.blocks.find((block) => block.type === "email_thread");
+    let emailContext = "";
+    if (emailBlock?.type === "email_thread") {
+      if (emailBlock.text) emailContext = emailBlock.text;
+      else if (emailBlock.sourceSnapshot) {
+        emailContext = (await domain.readInboxThreadSnapshot(feedId, emailBlock.sourceSnapshot.runId, emailBlock.sourceSnapshot.sourceId, emailBlock.sourceSnapshot.snapshotId)).text;
+      }
+    }
+    const prompt = [
+      "Work on this email in a new Codex conversation.",
+      "Do not send, reply, archive, or mutate any external service without explicit confirmation in this conversation.",
+      `Requested outcome:\n${instruction}`,
+      `Card summary:\nSubject: ${card.title}\nFrom: ${card.sourceSender ?? "Unknown"}\nLatest message: ${card.sourceLatestMessageAt ?? "Unknown"}\nWhy it matters: ${card.why}`,
+      emailContext ? `Authoritative email context:\n${emailContext}` : "Authoritative email context was unavailable; ask for it before taking source-dependent action.",
+    ].join("\n\n");
+    const started = await startCodexThread(prompt, context.root);
+    const startedAt = new Date().toISOString();
+    card.agentThreads = [...(card.agentThreads ?? []), { threadId: started.threadId, instruction, startedAt }];
+    card.history.push({ at: startedAt, type: "codex.thread_started", detail: started.threadId });
+    await store.writeCard(card);
+    await store.appendEvent({ feedId, cardId, type: "codex.thread_started", detail: { threadId: started.threadId, instruction } });
+    return started;
   }));
   app.post("/api/feeds/:feed/work/:work/cancel", async (c) => mutation(c, notify, async () => domain.cancelQueuedWork(c.req.param("feed"), c.req.param("work"), String((await body(c)).reason ?? "Cancelled from the browser before Codex started work."))));
   app.post("/api/feeds/:feed/work/:work/instruction", async (c) => mutation(c, notify, async () => domain.updateQueuedWorkInstruction(c.req.param("feed"), c.req.param("work"), String((await body(c)).instruction ?? ""))));

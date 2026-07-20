@@ -35,6 +35,9 @@ function readableHistory(card: Card): Array<{ at: string; label: string; detail:
     if (entry.type === "codex.completed") {
       return [{ at: entry.at, label: "Codex did", detail: entry.detail ?? "Finished the requested work." }];
     }
+    if (entry.type === "codex.thread_started") {
+      return [{ at: entry.at, label: "Agent started", detail: entry.detail ?? "Opened a new Codex conversation." }];
+    }
     if (entry.type === "codex.stale_approval") {
       return [{ at: entry.at, label: "Needs review", detail: "The previous approval expired because the card changed. Review the current next step.", tone: "attention" as const }];
     }
@@ -311,6 +314,43 @@ function ContextInfluenceReceipt({ card }: { card: Card }) {
   );
 }
 
+function AgentLauncher({ card, onChanged }: { card: Card; onChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [instruction, setInstruction] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState("");
+  const [deepLink, setDeepLink] = useState("");
+  const start = async () => {
+    if (!instruction.trim()) return setError("Tell the agent what outcome you want.");
+    setStarting(true);
+    setError("");
+    try {
+      const result = await post<{ threadId: string; deepLink: string }>(`/api/feeds/${card.feedId}/cards/${card.id}/start-agent`, { instruction });
+      setDeepLink(result.deepLink);
+      onChanged();
+      window.location.href = result.deepLink;
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setStarting(false);
+    }
+  };
+  if (!open) return <button className="button ghost" onClick={(event) => { event.stopPropagation(); setOpen(true); }}>Start agent</button>;
+  return (
+    <section className="agent-launcher" onClick={(event) => event.stopPropagation()}>
+      <label htmlFor={`agent-instruction-${card.id}`}>Additional instructions</label>
+      <textarea id={`agent-instruction-${card.id}`} value={instruction} onChange={(event) => setInstruction(event.target.value)} placeholder="Research this, draft a response, make a plan…" rows={3} autoFocus />
+      <small>The new conversation gets the full email context. External actions still require confirmation.</small>
+      {error && <span className="agent-launcher-error">{error}</span>}
+      {deepLink && <a href={deepLink}>Open spawned conversation</a>}
+      <div className="agent-launcher-actions">
+        <button className="button ghost" disabled={starting} onClick={() => setOpen(false)}>Cancel</button>
+        <button className="button primary" disabled={starting} onClick={() => void start()}>{starting ? "Starting…" : "Start in Codex"}</button>
+      </div>
+    </section>
+  );
+}
+
 export function CardView({
   card,
   queuedNote,
@@ -334,6 +374,9 @@ export function CardView({
   const nextThing = card.proposedAction?.label === "Decide disposition"
     ? "Archive, or tell Codex what to do"
     : card.proposedAction?.label ?? actions.find((action) => action.variant === "primary")?.label ?? actions[0]?.label;
+  const receivedAt = card.sourceLatestMessageAt && Number.isFinite(Date.parse(card.sourceLatestMessageAt))
+    ? new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(card.sourceLatestMessageAt))
+    : null;
   return (
     <article className={`attention-card ${card.contextInfluence ? "has-context-influence" : ""} ${active ? "is-active" : ""}`} data-card-id={card.id} onClick={onActivate} onMouseEnter={onActivate}>
       <div className="card-rule" />
@@ -341,6 +384,13 @@ export function CardView({
         <span className={`kind-dot ${card.kind === "feed_improvement" ? "proposal" : ""}`} />
         <div>
           <div className="eyebrow">{card.eyebrow}</div>
+          {card.feedId === "inbox" && (card.sourceSender || receivedAt) && (
+            <div className="email-card-meta">
+              {card.sourceSender && <span>{card.sourceSender}</span>}
+              {card.sourceSender && receivedAt && <span aria-hidden="true">·</span>}
+              {receivedAt && <time dateTime={card.sourceLatestMessageAt}>Latest message {receivedAt}</time>}
+            </div>
+          )}
           <h2>{card.title}</h2>
         </div>
       </header>
@@ -368,6 +418,7 @@ export function CardView({
             {card.sourceMailbox && <small className="reply-mailbox">Reply from {card.sourceMailbox}</small>}
           </div>
           <div className="action-buttons">
+            <AgentLauncher card={card} onChanged={onChanged} />
             {actions.map((action) => (
               <button
                 aria-keyshortcuts={action.shortcut}

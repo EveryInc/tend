@@ -328,6 +328,9 @@ export interface Card {
   sourceMailbox?: string;
   sourceRunIds?: string[];
   sourceItemId?: string;
+  sourceSender?: string;
+  sourceLatestMessageAt?: string;
+  agentThreads?: Array<{ threadId: string; instruction: string; startedAt: string }>;
   contextInfluence?: CardContextInfluence;
   blocks: CardBlock[];
   proposedAction?: ProposedAction;

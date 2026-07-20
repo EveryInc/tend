@@ -64,6 +64,7 @@ import { FileWorkItemRepository, type WorkItemRepository } from "./repositories/
 import { FileWorkspaceFeedRepository, type WorkspaceFeedRepository } from "./repositories/workspaceFeeds";
 import type { MobileCommandReceipt } from "../shared/mobile";
 import { migrateInboxSeed } from "./migrations/inboxSeed";
+import { inboxSourceMetadata } from "./inboxMetadata";
 
 export const GLOBAL_PROMPT_NAMES = ["judge.md", "compose-card.md", "execute-work.md", "distill-policy.md", "compound.md"] as const;
 export const FEED_PROMPT_NAMES = ["judge.md", "compose-card.md"] as const;
@@ -111,6 +112,7 @@ export class AttentionStore {
   private readonly workspaceFeeds: WorkspaceFeedRepository;
   private readonly runAtomic?: AtomicRunner;
   private readonly agentWakeSeq = new Map<AgentPresence["agent"], number>();
+  private inboxMetadataBackfill?: Promise<void>;
 
   constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; mindContext?: MindContextRepository; mobileCommandReceipts?: MobileCommandReceiptRepository; revisions?: RevisionRepository; routineActionGroups?: RoutineActionGroupRepository; rawSnapshots?: RawSnapshotRepository; sourceRuns?: SourceRunRepository; sources?: SourceRepository; sweeps?: SweepRepository; textDocuments?: TextDocumentRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository; runAtomic?: AtomicRunner } = {}) {
     this.dataDir = dataDir;
@@ -152,7 +154,22 @@ export class AttentionStore {
     await this.workItems.init(feedIds);
     await this.ensureDefaultFeed("inbox");
     await this.ensureDefaultFeed("company-attention");
+    this.inboxMetadataBackfill ??= this.backfillInboxCardMetadata();
+    await this.inboxMetadataBackfill;
     await Promise.all((await this.workspaceFeeds.listFeedIds()).map((feedId) => this.ensureFeedTextDocuments(feedId)));
+  }
+
+  private async backfillInboxCardMetadata(): Promise<void> {
+    for (const card of await this.cards.list("inbox")) {
+      if (card.sourceSender && card.sourceLatestMessageAt) continue;
+      const reference = card.blocks?.find((block) => block.type === "email_thread" && block.sourceSnapshot)?.sourceSnapshot;
+      if (!reference || !(await this.rawSnapshots.has("inbox", reference.runId, reference.sourceId, reference.snapshotId))) continue;
+      const metadata = inboxSourceMetadata(await this.rawSnapshots.get("inbox", reference.runId, reference.sourceId, reference.snapshotId));
+      const sourceSender = card.sourceSender ?? metadata.sourceSender;
+      const sourceLatestMessageAt = card.sourceLatestMessageAt ?? metadata.sourceLatestMessageAt;
+      if (sourceSender === card.sourceSender && sourceLatestMessageAt === card.sourceLatestMessageAt) continue;
+      await this.cards.write({ ...card, sourceSender, sourceLatestMessageAt });
+    }
   }
 
   path(...parts: string[]): string {

@@ -141,7 +141,8 @@ checkpoint: gmail-inbox.json
 
 Enumerate the complete authoritative Gmail Inbox on every sweep, following every returned page token until no
 Inbox thread remains. The unit is a Gmail thread, not an individual message: preserve its stable
-thread ID, received-at mailbox, message timestamps, labels, and full current thread in one immutable
+thread ID, received-at mailbox, labels, full current thread, and the latest message's authoritative ISO timestamp as
+\`latestMessageAt\` in one immutable
 raw snapshot. The checkpoint may make fetching efficient, but it must never narrow coverage to only
 new mail. Reconcile the current Inbox against prior cards before completing the run.
 

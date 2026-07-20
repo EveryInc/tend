@@ -26,6 +26,7 @@ import {
 } from "../server/templates";
 import type { Card, WorkItem } from "../shared/types";
 import { inboxThreadFixture, recordInboxCollection, recordTwoPageInboxCollection } from "./support/inboxSweep";
+import { visibleCards } from "../src/feed/selectors";
 
 const roots: string[] = [];
 
@@ -160,6 +161,78 @@ describe("Inbox Sweep defaults and migrations", () => {
 });
 
 describe("Inbox Sweep finalization", () => {
+  test("derives sender and latest-message time from collected Gmail snapshot fields", async () => {
+    const { domain, store } = await setup();
+    const older = inboxThreadFixture("thread-older");
+    const newer = inboxThreadFixture("thread-newer");
+    const snapshots = [
+      { ...older.snapshot, messageTimestamps: ["2026-07-12T08:00:00"], threadText: older.snapshot.threadText.replace(/^From:.*$/m, "From: Older Sender <older@example.com>") },
+      { ...newer.snapshot, messageTimestamps: ["2026-07-12T09:00:00", "2026-07-13T08:00:00"], threadText: newer.snapshot.threadText.replace(/^From:.*$/m, "From: Newer Sender <newer@example.com>") },
+    ];
+    const cards = [
+      { ...older.card, blocks: older.card.blocks.map((block) => block.type === "email_thread" ? { ...block, text: snapshots[0].threadText } : block) },
+      { ...newer.card, blocks: newer.card.blocks.map((block) => block.type === "email_thread" ? { ...block, text: snapshots[1].threadText } : block) },
+    ];
+
+    await domain.finalizeInboxSweep(
+      "inbox",
+      "gmail-inbox",
+      snapshots,
+      cards,
+      { completed: true },
+      await recordInboxCollection(domain, ["thread-older", "thread-newer"]),
+    );
+
+    const feed = await store.readFeed("inbox");
+    expect(feed.cards.find((card) => card.id === newer.card.id)).toMatchObject({
+      sourceSender: "Newer Sender <newer@example.com>",
+      sourceLatestMessageAt: "2026-07-13T08:00:00",
+    });
+    expect(visibleCards(feed, "review").filter((card) => card.sourceItemId).map((card) => card.id)).toEqual([
+      newer.card.id,
+      older.card.id,
+    ]);
+  });
+
+  test("backfills sender and received time for cards finalized before metadata projection", async () => {
+    const { root, domain, store } = await setup();
+    const fixture = inboxThreadFixture("thread-legacy-metadata");
+    const snapshot = {
+      ...fixture.snapshot,
+      messageTimestamps: ["2026-07-11T07:00:00", "2026-07-13T10:30:00"],
+      threadText: fixture.snapshot.threadText.replace(/^From:.*$/m, "From: Legacy Sender <legacy@example.com>"),
+    };
+    const draft = {
+      ...fixture.card,
+      blocks: fixture.card.blocks.map((block) => block.type === "email_thread" ? { ...block, text: snapshot.threadText } : block),
+    };
+    await domain.finalizeInboxSweep("inbox", "gmail-inbox", [snapshot], [draft], {}, await recordInboxCollection(domain, [snapshot.threadId]));
+    const legacy = await store.readCard("inbox", fixture.card.id);
+    delete legacy.sourceSender;
+    delete legacy.sourceLatestMessageAt;
+    await store.writeCard(legacy);
+
+    const runtime = await createLocalRuntime(root, path.join(root, "attention.db"));
+    expect(await runtime.store.readCard("inbox", fixture.card.id)).toMatchObject({
+      sourceSender: "Legacy Sender <legacy@example.com>",
+      sourceLatestMessageAt: "2026-07-13T10:30:00",
+    });
+    runtime.sqlite.close();
+  });
+
+  test("rejects an invalid latest-message timestamp instead of guessing chronology", async () => {
+    const { domain } = await setup();
+    const fixture = inboxThreadFixture("thread-invalid-date");
+    await expect(domain.finalizeInboxSweep(
+      "inbox",
+      "gmail-inbox",
+      [{ ...fixture.snapshot, latestMessageAt: "yesterday-ish" }],
+      [fixture.card],
+      {},
+      await recordInboxCollection(domain, [fixture.snapshot.threadId]),
+    )).rejects.toThrow("latestMessageAt must be an ISO timestamp");
+  });
+
   test("proves a two-page chain, finalizes exact coverage, and lazy-loads from SQLite authority", async () => {
     const { domain, store } = await setup();
     const first = inboxThreadFixture("thread-1");

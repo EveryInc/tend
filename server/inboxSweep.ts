@@ -11,6 +11,7 @@ import type {
 import { validateCardActions, validateCardBlocks } from "./cardBlocks";
 import type { AttentionStore } from "./store";
 import { isoNow, makeId, safeIdentifier } from "./util";
+import { inboxSourceMetadata } from "./inboxMetadata";
 
 const INBOX_FEED_ID = "inbox";
 const EMAIL_THREAD_DISPLAY_LIMIT = 200_000;
@@ -20,6 +21,8 @@ export class InboxThreadSnapshotNotFoundError extends Error {}
 export interface InboxSnapshotInput {
   threadId: string;
   threadText: string;
+  sourceSender?: string;
+  latestMessageAt?: string;
   value: Record<string, unknown>;
 }
 
@@ -134,10 +137,11 @@ function parseSnapshots(value: unknown): InboxSnapshotInput[] {
     if (!isRecord(snapshot)) throw new Error(`Inbox snapshot ${index + 1} must be an object.`);
     const threadId = safeIdentifier(requiredText(snapshot.threadId, `Inbox snapshot ${index + 1} threadId`), `Inbox snapshot ${index + 1} threadId`);
     const threadText = requiredText(snapshot.threadText, `Inbox snapshot ${index + 1} threadText`);
+    const metadata = inboxSourceMetadata(snapshot, `Inbox snapshot ${index + 1}`);
     if (!containsFullEmail(threadText)) throw new Error(`Inbox snapshot ${index + 1} threadText needs From, To, and Subject headers.`);
     if (seen.has(threadId)) throw new Error(`Inbox snapshot threadId is duplicated: ${threadId}`);
     seen.add(threadId);
-    return { threadId, threadText, value: snapshot };
+    return { threadId, threadText, ...metadata, latestMessageAt: metadata.sourceLatestMessageAt, value: snapshot };
   });
 }
 
@@ -448,6 +452,8 @@ export class InboxSweepService {
         await this.store.writeRawSnapshot(feedId, runId, sourceId, `snapshot-${index + 1}`, snapshot.value);
       }
       const snapshotIndex = new Map(normalized.snapshots.map((snapshot, index) => [snapshot.threadId, index + 1]));
+      const latestMessageByThread = new Map(normalized.snapshots.map((snapshot) => [snapshot.threadId, snapshot.latestMessageAt]));
+      const senderByThread = new Map(normalized.snapshots.map((snapshot) => [snapshot.threadId, snapshot.sourceSender]));
       const threadCardMap = normalized.cards.map((card) => ({ threadId: card.sourceItemId, cardId: card.id }));
       await this.store.writeRun({
         id: runId,
@@ -498,6 +504,8 @@ export class InboxSweepService {
           sourceMailbox: draft.sourceMailbox,
           sourceRunIds: [runId],
           sourceItemId: draft.sourceItemId,
+          sourceSender: senderByThread.get(draft.sourceItemId) ?? existing?.sourceSender,
+          sourceLatestMessageAt: latestMessageByThread.get(draft.sourceItemId) ?? existing?.sourceLatestMessageAt,
           blocks,
           proposedAction: draft.proposedAction,
           actions: draft.actions,
