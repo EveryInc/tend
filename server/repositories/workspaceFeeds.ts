@@ -63,9 +63,12 @@ export class MirroredWorkspaceFeedRepository implements WorkspaceFeedRepository 
     await this.mirror.init(defaultFeedIds);
     const mirrorIds = await this.mirror.listFeedIds();
     await this.primary.init(mirrorIds.length ? mirrorIds : defaultFeedIds);
-    const merged = unique([...(await this.primary.listFeedIds()), ...mirrorIds]);
-    await this.primary.setFeedIds(merged);
-    await this.mirror.setFeedIds(merged);
+    const primaryIds = await this.primary.listFeedIds();
+    const merged = unique([...primaryIds, ...mirrorIds]);
+    // Every api boot and CLI command runs init, so only take a write lock when the
+    // two copies actually disagree; a busy database must not fail a no-op boot.
+    if (!sameFeedIds(primaryIds, merged)) await this.primary.setFeedIds(merged);
+    if (!sameFeedIds(mirrorIds, merged)) await this.mirror.setFeedIds(merged);
   }
 
   listFeedIds(): Promise<string[]> {
@@ -91,4 +94,8 @@ export class MirroredWorkspaceFeedRepository implements WorkspaceFeedRepository 
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values));
+}
+
+function sameFeedIds(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((feedId, index) => feedId === right[index]);
 }

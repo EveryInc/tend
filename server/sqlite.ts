@@ -961,7 +961,7 @@ class SqliteFeedEventRepository implements FeedEventRepository {
   }
 }
 
-class SqliteWorkspaceFeedRepository implements WorkspaceFeedRepository {
+export class SqliteWorkspaceFeedRepository implements WorkspaceFeedRepository {
   constructor(private readonly database: () => Database) {}
 
   async init(defaultFeedIds: string[]): Promise<void> {
@@ -977,16 +977,15 @@ class SqliteWorkspaceFeedRepository implements WorkspaceFeedRepository {
   async setFeedIds(feedIds: string[]): Promise<void> {
     const db = this.database();
     const now = new Date().toISOString();
-    db.exec("BEGIN IMMEDIATE");
-    try {
+    // db.transaction only issues ROLLBACK while a transaction is still open, so a
+    // statement that fails after SQLite has already rolled back on its own
+    // (SQLITE_BUSY, SQLITE_FULL, SQLITE_IOERR) surfaces its real error instead of
+    // "cannot rollback - no transaction is active".
+    db.transaction(() => {
       db.query("DELETE FROM workspace_feeds").run();
       const insert = db.query("INSERT INTO workspace_feeds (feed_id, position, created_at) VALUES (?, ?, ?)");
       unique(feedIds).forEach((feedId, index) => insert.run(feedId, index, now));
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
-    }
+    }).immediate();
   }
 
   async addFeedId(feedId: string): Promise<void> {
