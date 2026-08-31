@@ -4,6 +4,7 @@ import type { WorkItem } from "../shared/types";
 import { formatWorkClaimOutput } from "./operator";
 import type { AttentionStore } from "./store";
 import { digest } from "./util";
+import { configuredApprovalAction, requiredSourceMailbox } from "./workflow/approvals";
 
 export interface NativeToolCall {
   id: string;
@@ -167,6 +168,13 @@ export class NativeApprovalBroker {
     if (working.length !== 1 || (workId && working[0].id !== workId)) throw new Error("Cannot bind this native request to one verified Tend action.");
     const work = working[0];
     const card = feed.cards.find((item) => item.id === work.cardId);
+    if (work.completionCleanup && work.completionCleanup !== feed.config.defaultCleanup) {
+      throw new Error("The approved completion cleanup changed. Verify a fresh approval first.");
+    }
+    if (card && work.kind === "execute_approved_action") {
+      const mailbox = requiredSourceMailbox(feedId, card, configuredApprovalAction(card, work.cardActionId));
+      if (mailbox && mailbox !== work.verifiedMailbox) throw new Error("The source mailbox changed after verification.");
+    }
     const routineActionGroup = feed.routineActions.find((item) => item.id === work.routineActionGroupId);
     const output = formatWorkClaimOutput(feedId, work, { card, feedConfig: feed.config, routineActionGroup });
     const receipt = "operatorGuidance" in output ? output.operatorGuidance?.userAuthorization : undefined;

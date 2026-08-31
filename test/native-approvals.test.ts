@@ -89,12 +89,13 @@ describe("native approval broker", () => {
     expect(await response).toEqual({ answers: {} });
   });
 
-  for (const changed of ["artifact", "mailbox", "card", "work"] as const) {
+  for (const changed of ["artifact", "mailbox", "card", "work", "cleanup"] as const) {
     test(`invalidates a pending response when ${changed} changes`, async () => {
       const { broker, store, work } = await setup();
       const response = broker.request("inbox", request, new AbortController().signal);
       const view = await waitForView(broker);
       if (changed === "work") await store.writeWork({ ...await store.readWork("inbox", work.id), status: "approved_blocked" });
+      else if (changed === "cleanup") await store.writeConfig({ ...await store.readConfig("inbox"), defaultCleanup: "Changed cleanup." });
       else {
         const card = await store.readCard("inbox", "native-card");
         if (changed === "artifact" && card.blocks[0].type === "editable_text") card.blocks[0].value = "Changed body.";
@@ -138,6 +139,16 @@ describe("native approval broker", () => {
     await store.writeWork({ ...work, kind: "scoped_instruction", approvalDigest: undefined });
     await expect(broker.request("inbox", request, new AbortController().signal)).rejects.toThrow("verified");
   });
+
+  for (const changed of ["mailbox", "cleanup"] as const) {
+    test(`refuses ${changed} changed between verification and the native request`, async () => {
+      const { broker, store } = await setup();
+      if (changed === "mailbox") await store.writeCard({ ...await store.readCard("inbox", "native-card"), sourceMailbox: "other@example.test" });
+      else await store.writeConfig({ ...await store.readConfig("inbox"), defaultCleanup: "Changed cleanup." });
+      await expect(broker.request("inbox", request, new AbortController().signal)).rejects.toThrow();
+      expect(await broker.list("inbox")).toEqual([]);
+    });
+  }
 
   test("uses protected browser routes and returns stale submissions as errors", async () => {
     const { broker, app } = await setup();

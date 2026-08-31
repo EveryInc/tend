@@ -131,7 +131,7 @@ export async function runAppServerDrain(options: AppServerDrainOptions): Promise
     if (!child.stderr) return;
     const decoder = new TextDecoder();
     for await (const chunk of child.stderr as unknown as AsyncIterable<Uint8Array>) {
-      await log(`[app-server:err] ${decoder.decode(chunk).trimEnd()}`);
+      await log(`[app-server:err] ${decoder.decode(chunk, { stream: true }).trimEnd()}`);
     }
   })();
 
@@ -141,7 +141,7 @@ export async function runAppServerDrain(options: AppServerDrainOptions): Promise
       const decoder = new TextDecoder();
       let buffer = "";
       for await (const chunk of child.stdout as unknown as AsyncIterable<Uint8Array>) {
-        buffer += decoder.decode(chunk);
+        buffer += decoder.decode(chunk, { stream: true });
         let newline = buffer.indexOf("\n");
         while (newline >= 0) {
           const line = buffer.slice(0, newline).trim();
