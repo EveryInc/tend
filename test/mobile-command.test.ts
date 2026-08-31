@@ -125,7 +125,7 @@ describe("mobile commands", () => {
 
   test("revalidates external recipients after applying an exact artifact edit", async () => {
     const { store, domain } = await setup();
-    await domain.updateBlock("inbox", "reply", "draft", "Send this to original@example.com.");
+    await domain.updateBlock("inbox", "reply", "draft", "To: original@example.com\n\nExact reply body.");
     const projection = (await projectMobileWorkspace(store)).cards.find((card) => card.cardId === "reply")!;
     const action = projection.actions.find((item) => item.id === "send")!;
 
@@ -134,7 +134,7 @@ describe("mobile commands", () => {
       actionId: "send",
       expectedActionDigest: action.digest,
       instruction: undefined,
-      edits: { draft: "Send this to changed@example.com." },
+      edits: { draft: "To: changed@example.com\n\nExact reply body." },
       riskConfirmation: {
         kind: "external_recipient",
         recipients: ["original@example.com"],

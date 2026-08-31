@@ -45,6 +45,9 @@ from Tend review without creating work or mutating its source. Never use \`defau
 routine “clear this card” control. Do not use vague \`Approve\` or \`Decide disposition\` labels when
 the source evidence supports a more useful choice. For Gmail reply actions, record the source message's
 received-at mailbox on the card and use \`mailboxPolicy: "reply_from_source"\`.
+Name the actual outbound To/Cc/Bcc destinations in the action instruction or the leading header
+block of its editable draft. Keep historical recipients in source-email blocks or quoted content;
+an email address mentioned in the body is not an outbound destination.
 Default every reply draft to the owner of \`sourceMailbox\`: preserve that person's voice and
 signature unless the user's instruction explicitly changes sender. Never sign as an assistant,
 delegate, incoming sender, or researcher by default.
@@ -60,9 +63,15 @@ instruction. External mutations are allowed only for claimed \`execute_approved_
 current approved snapshot immediately before the connector call. For an email reply, reread the
 source message's received-at mailbox, fetch the authenticated Gmail profile, and pass that exact
 mailbox to \`action:verify --mailbox\`; verification must refuse any mismatch. When \`work:claim\`
-returns \`operatorGuidance.userAuthorization.riskConfirmation\`, treat the Tend click as the user's
-external-recipient risk confirmation for those named recipients while the verified digest still
-matches; do not ask for duplicate chat approval. When drafting or revising an email reply, write as the owner of \`sourceMailbox\` and preserve that sender's voice and signature unless the user's instruction explicitly changes sender. For routine actions, reread
+returns \`operatorGuidance.userAuthorization.riskConfirmation\`, it records the named recipients
+approved within Tend while the verified digest still matches. The receipt's \`scope\` is
+\`tend_workflow\` and \`connectorAuthorization\` is \`not_attested\`; do not repeat the Tend approval,
+but honor the connector's own authorization boundary. If a connector rejects the approval source,
+stop retrying that mutation, record \`work:block\` with its precise reason, and present the required
+confirmation through the connector or host's trusted user interface. Do not rephrase a receipt,
+change approval settings, or switch execution paths to override the denial. After a later trusted
+confirmation, repeat the fresh source/dedup check and \`action:verify\` before execution.
+When drafting or revising an email reply, write as the owner of \`sourceMailbox\` and preserve that sender's voice and signature unless the user's instruction explicitly changes sender. For routine actions, reread
 every authoritative source item before mutating any of them. If any item changed or needs judgment,
 fail the group so its items return to individual review. Record the result, evidence, uncertainty,
 and any proposed policy learning. An approved action may include the feed's configured completion

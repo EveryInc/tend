@@ -92,6 +92,11 @@ tend cli action:verify --feed <feed-id> --work <work-id> --token <capability-tok
 Repeat claim until it returns the idle handshake. An active claimed item also appears in `work:list`
 for its own lane and is replayed by `work:claim`, so restart recovery stays simple and visible.
 
+Tend's approval receipt records the local app decision. It cannot override a connector's rejection
+of that approval source. Stop retries, preserve the blocked work, and use the connector or host's
+trusted confirmation flow. See [the approval boundary](docs/approval-boundary.md) for the current
+limitation and the host integration required for one-click approval.
+
 Before Codex claims a mistaken dictated note, correct it with `work:edit` or return its card to the
 sweep with `card:return-to-review`. Returning a queued card cancels its unstarted local work. A done
 card can be returned for another review pass, but this does not reverse an external action that
