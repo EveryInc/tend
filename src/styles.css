@@ -160,6 +160,26 @@ h2 { margin: 0; font: 500 26px/1.12 var(--serif); letter-spacing: -.02em; }
 .button:disabled { cursor: default; opacity: .42; filter: none; }
 .button kbd { margin-left: 4px; color: inherit; opacity: .6; }
 .button.large { min-height: 42px; padding: 0 17px; }
+
+.native-approval { margin-bottom: 24px; padding: 25px 28px; border: 1px solid #bdc9e5; border-left: 3px solid var(--blue); border-radius: 11px; background: var(--paper); }
+.native-approval .panel-kicker { margin-bottom: 7px; color: #395aa8; }
+.native-approval p { margin: 10px 0 18px; color: var(--ink-2); }
+.native-approval header p { margin: 8px 0 0; font-weight: 600; }
+.native-approval-payload { margin: 20px 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper-warm); }
+.native-approval-payload summary { cursor: pointer; font-size: 13px; font-weight: 600; }
+.native-approval-payload code { display: block; margin-top: 4px; overflow-wrap: anywhere; color: var(--ink-2); font: 12px/1.5 var(--mono); }
+.native-approval-payload pre { max-height: 360px; overflow: auto; overflow-wrap: anywhere; }
+.native-approval fieldset { min-width: 0; margin: 22px 0; padding: 0; border: 0; }
+.native-approval legend { margin-bottom: 12px; font-size: 16px; font-weight: 650; }
+.native-approval-option { display: flex; align-items: start; gap: 11px; margin: 8px 0; padding: 13px 14px; border: 1px solid var(--line-2); border-radius: 7px; cursor: pointer; }
+.native-approval-option:has(input:checked) { border-color: var(--blue); background: var(--blue-soft); }
+.native-approval-option input { flex: 0 0 auto; margin: 4px 0 0; accent-color: var(--blue); }
+.native-approval-option small { display: block; margin-top: 3px; color: var(--ink-2); font-size: 13px; }
+.native-approval :focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+.native-approval footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 14px; padding-top: 16px; border-top: 1px solid var(--line); }
+.native-approval footer > span { color: var(--ink-2); font-size: 12px; }
+.native-approval .native-approval-error { color: #9b332e; }
+@media (max-width: 600px) { .native-approval { padding: 19px 17px; } }
 .parked-work { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 10px; margin: -5px 0 18px 22px; padding: 10px 12px; border: 1px solid #e0d4bd; border-radius: 8px; background: #faf6ed; color: #765536; font-size: 13px; }
 .parked-work ul { margin: 6px 0 0; padding-left: 18px; }
 .parked-work-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }

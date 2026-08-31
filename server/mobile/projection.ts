@@ -10,6 +10,7 @@ import type {
   WorkItemView,
 } from "../../shared/types";
 import { safeConfiguredCardActions } from "../../shared/cardActions";
+import { actionEmailRecipients } from "../../shared/emailRecipients";
 import {
   MOBILE_SCHEMA_VERSION,
   type MobileActionConfirmation,
@@ -387,28 +388,14 @@ function sanitizeHref(value?: string): { href?: string; availability?: "external
 
 export function mobileActionConfirmation(card: Card | undefined, action: ProposedAction): MobileActionConfirmation | undefined {
   if (!action.externalMutation) return undefined;
-  const sourceMailbox = card?.sourceMailbox?.trim().toLowerCase();
-  const artifact = action.artifactBlockId ? card?.blocks.find((block) => block.id === action.artifactBlockId) : undefined;
-  const recipients = uniqueEmails(action.label, action.instruction, artifact?.value, artifact?.text)
-    .filter((email) => email !== sourceMailbox);
+  const recipients = actionEmailRecipients(card, action);
   if (!recipients.length) return undefined;
   return {
     kind: "external_recipient",
     title: /\bforward/i.test(`${action.label} ${action.instruction}`) ? "Confirm forward" : "Confirm recipients",
-    message: `This will authorize one exact external mutation involving ${recipients.join(", ")}. No second chat confirmation will be requested while the card remains unchanged.`,
+    message: `Approve this exact message for ${recipients.join(", ")}. Changing the draft or recipients requires a new approval.`,
     recipients,
   };
-}
-
-function uniqueEmails(...values: Array<unknown>): string[] {
-  const emails = new Set<string>();
-  for (const value of values) {
-    if (typeof value !== "string") continue;
-    for (const match of value.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)) {
-      emails.add(match[0].toLowerCase());
-    }
-  }
-  return [...emails];
 }
 
 function feedGeneration(feed: FeedView): string {

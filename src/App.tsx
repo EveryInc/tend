@@ -6,6 +6,7 @@ import { agentLabel, effectiveWorkLane } from "../shared/lanes";
 import type { AttentionScreen, Inspector, Tab, WorkspaceTab } from "./app/types";
 import { CardView } from "./feed/CardView";
 import { RoutineActionGroupView } from "./feed/RoutineActionGroupView";
+import { NativeApprovals } from "./feed/NativeApprovals";
 import { countFor, visibleCardActions, visibleCards, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
 import { Dock } from "./shell/Dock";
 import { InspectorPanel } from "./shell/InspectorPanel";
@@ -435,6 +436,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
         <button className="tab-quiet" onClick={() => openWorkspace("feed")}>Prompts & sources</button>
       </nav>
       <main className="page" ref={pageRef}>
+        <NativeApprovals feedId={feedId} />
         <RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} />
         {routineActions.map((group) => <RoutineActionGroupView key={group.id} group={group} onApprove={() => approveRoutineAction(group)} />)}
         <ParkedClaudeWorkNotice items={parkedClaudeWork} onReassign={reassignQueuedWork} />

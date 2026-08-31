@@ -1,4 +1,5 @@
 import type { Card, CardBlock, FeedConfig, ProposedAction, RoutineActionGroup, SweepFeedbackTrace, WorkClaimResult, WorkClaimedByReport, WorkItem, WorkItemView } from "../shared/types";
+import { actionEmailRecipients } from "../shared/emailRecipients";
 import { actionDigest, cleanupDigest, configuredApprovalAction, routineActionDigest } from "./workflow/approvals";
 
 export interface IdleWorkHandshake {
@@ -33,7 +34,10 @@ export interface WorkClaimContext {
 
 export interface UserAuthorizationReceipt {
   kind: "tend_action_click";
+  scope: "tend_workflow";
+  connectorAuthorization: "not_attested";
   statement: string;
+  // Final within Tend; this does not waive a connector's own approval requirement.
   noSecondChatConfirmationNeeded: true;
   actionLabel: string;
   approvedAt: string;
@@ -77,6 +81,8 @@ const APPROVAL_INVALIDATIONS = [
   "the approval digest no longer matches",
 ];
 
+const RECEIPT_AUTHORITY = "This is final approval within Tend. A second Tend confirmation is unnecessary; this receipt does not attest connector authorization or override a connector denial.";
+
 function artifactReceipt(block?: CardBlock): UserAuthorizationReceipt["exactApprovedArtifact"] | undefined {
   if (!block) return undefined;
   return {
@@ -98,28 +104,15 @@ function cardReceipt(card: Card): NonNullable<UserAuthorizationReceipt["card"]> 
   };
 }
 
-function uniqueEmails(...values: Array<unknown>): string[] {
-  const emails = new Set<string>();
-  for (const value of values) {
-    if (typeof value !== "string") continue;
-    for (const match of value.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)) {
-      emails.add(match[0].toLowerCase());
-    }
-  }
-  return [...emails];
-}
-
-function riskConfirmation(card: Card, action: ProposedAction, artifact?: CardBlock): UserAuthorizationReceipt["riskConfirmation"] | undefined {
+function riskConfirmation(card: Card, action: ProposedAction): UserAuthorizationReceipt["riskConfirmation"] | undefined {
   if (!action.externalMutation) return undefined;
-  const sourceMailbox = card.sourceMailbox?.trim().toLowerCase();
-  const recipients = uniqueEmails(action.label, action.instruction, artifact?.value, artifact?.text)
-    .filter((recipient) => recipient !== sourceMailbox);
+  const recipients = actionEmailRecipients(card, action);
   if (!recipients.length) return undefined;
   const verb = /\bforward/i.test(`${action.label} ${action.instruction}`) ? "forwarding" : "sending";
   return {
     kind: "external_recipient",
     recipients,
-    statement: `The approved Tend action snapshot named external recipient(s) ${recipients.join(", ")}. The user click also confirmed the connector risk of ${verb} private inbound email to those recipient(s); no separate chat reconfirmation is required while action:verify still matches.`,
+    statement: `The approved Tend action snapshot named recipient(s) ${recipients.join(", ")}. The user click recorded approval in Tend for ${verb} the exact content to those recipient(s) while action:verify still matches. This does not establish a connector-native risk confirmation.`,
   };
 }
 
@@ -136,10 +129,12 @@ function buildAuthorizationReceipt(work: WorkItem, context: WorkClaimContext): U
     }
     if (work.approvalDigest !== actionDigest(context.card, work.cardActionId)) return undefined;
     const artifact = action.artifactBlockId ? context.card.blocks.find((block) => block.id === action.artifactBlockId) : undefined;
-    const risk = riskConfirmation(context.card, action, artifact);
+    const risk = riskConfirmation(context.card, action);
     return {
       kind: "tend_action_click",
-      statement: `The user clicked "${action.label}" in Tend at ${approvedAt} and authorized this one external mutation for "${context.card.title}".${work.completionCleanup ? ` If the action succeeds, this approval also includes the configured completion cleanup: "${work.completionCleanup}".` : ""}${risk ? ` ${risk.statement}` : ""} This receipt is sufficient final approval; do not ask for a second chat confirmation.`,
+      scope: "tend_workflow",
+      connectorAuthorization: "not_attested",
+      statement: `The user clicked "${action.label}" in Tend at ${approvedAt} and authorized this one external mutation for "${context.card.title}".${work.completionCleanup ? ` If the action succeeds, this approval also includes the configured completion cleanup: "${work.completionCleanup}".` : ""}${risk ? ` ${risk.statement}` : ""} ${RECEIPT_AUTHORITY}`,
       noSecondChatConfirmationNeeded: true,
       actionLabel: action.label,
       approvedAt,
@@ -160,7 +155,9 @@ function buildAuthorizationReceipt(work: WorkItem, context: WorkClaimContext): U
     const label = context.card.actions?.find((action) => action.behavior === "default_cleanup")?.label ?? "Default cleanup";
     return {
       kind: "tend_action_click",
-      statement: `The user clicked "${label}" in Tend at ${approvedAt} and authorized this one cleanup action for "${context.card.title}". This receipt is sufficient final approval; do not ask for a second chat confirmation.`,
+      scope: "tend_workflow",
+      connectorAuthorization: "not_attested",
+      statement: `The user clicked "${label}" in Tend at ${approvedAt} and authorized this one cleanup action for "${context.card.title}". ${RECEIPT_AUTHORITY}`,
       noSecondChatConfirmationNeeded: true,
       actionLabel: label,
       approvedAt,
@@ -177,7 +174,9 @@ function buildAuthorizationReceipt(work: WorkItem, context: WorkClaimContext): U
     if (work.approvalDigest !== routineActionDigest(context.routineActionGroup)) return undefined;
     return {
       kind: "tend_action_click",
-      statement: `The user clicked "${context.routineActionGroup.proposedAction.label}" in Tend at ${approvedAt} and authorized this one routine-action batch. This receipt is sufficient final approval; do not ask for a second chat confirmation.`,
+      scope: "tend_workflow",
+      connectorAuthorization: "not_attested",
+      statement: `The user clicked "${context.routineActionGroup.proposedAction.label}" in Tend at ${approvedAt} and authorized this one routine-action batch. ${RECEIPT_AUTHORITY}`,
       noSecondChatConfirmationNeeded: true,
       actionLabel: context.routineActionGroup.proposedAction.label,
       approvedAt,
