@@ -137,9 +137,9 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
         output = await domain.recordSourceRun(
           required("feed"),
           required("source"),
-          json(required("snapshots")),
-          json(required("judgments")),
-          json(required("checkpoint")),
+          await structured("snapshots"),
+          await structured("judgments"),
+          await structured("checkpoint"),
           value("work"),
           value("context-use") || value("context-use-file")
             ? await structured("context-use")

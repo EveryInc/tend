@@ -133,6 +133,17 @@ describe("feed thread operator handshake", () => {
     });
   });
 
+  test("gives Inbox recollection claims the authoritative label-ID collection order", () => {
+    const work = { id: "work-1", intent: "recollect_sources" } as WorkItem;
+    const output = formatWorkClaimOutput("inbox", work);
+
+    expect(output).toMatchObject({
+      operatorGuidance: {
+        sourceRunRule: expect.stringMatching(/first paginate gmail_search_email_ids.*cannot define the Inbox universe/),
+      },
+    });
+  });
+
   test("includes a click authorization receipt on claimed approved action work", async () => {
     const { store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-inbox");
@@ -359,6 +370,71 @@ describe("filesystem workspace", () => {
     const checkpoint = JSON.parse(await readFile(path.join(root, "feeds", "inbox", "checkpoints", "gmail-inbox.json"), "utf8"));
     expect(checkpoint.cursor).toBe("gmail-1");
     expect((await store.readSweepState("inbox")).currentBatchId).toBe(batchId);
+  });
+
+  test("requires full Gmail sweeps to start from an authoritative Inbox ID manifest", async () => {
+    const { domain, store } = await setup();
+    const checkpointBefore = await store.readSourceCheckpoint("inbox", "gmail-inbox");
+    await expect(domain.recordSourceRun("inbox", "gmail-inbox", [{ threads: [] }], [], {
+      source: "gmail_connector",
+      fullSweep: true,
+      labelThreadCount: 45,
+      enumeratedThreadCount: 40,
+      carriedForwardThreadIds: ["one", "two", "three", "four", "five"],
+    })).rejects.toThrow("must begin with an inboxEnumeration manifest");
+    expect(await store.readSourceCheckpoint("inbox", "gmail-inbox")).toEqual(checkpointBefore);
+    expect((await store.readEvents("inbox")).filter((event) => event.type === "source.run_completed")).toHaveLength(0);
+  });
+
+  test("rejects incomplete full Gmail ID manifests and accepts complete per-thread dispositions", async () => {
+    const { domain } = await setup();
+    const inboxEnumeration = {
+      method: "gmail_search_email_ids",
+      query: "",
+      labelIds: ["INBOX"],
+      labelMessageCount: 4,
+      labelThreadCount: 3,
+      messages: [
+        { messageId: "message-1", threadId: "thread-1" },
+        { messageId: "message-2", threadId: "thread-1" },
+        { messageId: "message-3", threadId: "thread-2" },
+        { messageId: "message-4", threadId: "thread-3" },
+      ],
+      readThreadIds: ["thread-1"],
+      carriedForwardThreadIds: ["thread-2"],
+    };
+    await expect(domain.recordSourceRun("inbox", "gmail-inbox", [{ threads: [] }], [], {
+      source: "gmail_connector_full_inbox_sweep",
+      fullSweep: true,
+      inboxEnumeration: {
+        ...inboxEnumeration,
+        messages: inboxEnumeration.messages.slice(0, 3),
+      },
+    })).rejects.toThrow("Inbox reports 4 messages, but only 3 authoritative message IDs were resolved to conversations");
+
+    await expect(domain.recordSourceRun("inbox", "gmail-inbox", [{ threads: [] }], [], {
+      source: "gmail_connector_full_inbox_sweep",
+      fullSweep: true,
+      inboxEnumeration: {
+        ...inboxEnumeration,
+        messages: [inboxEnumeration.messages[0], inboxEnumeration.messages[0], ...inboxEnumeration.messages.slice(2)],
+      },
+    })).rejects.toThrow("must contain each messageId exactly once");
+
+    await expect(domain.recordSourceRun("inbox", "gmail-inbox", [{ threads: [] }], [], {
+      source: "gmail_connector_full_inbox_sweep",
+      fullSweep: true,
+      inboxEnumeration,
+    })).rejects.toThrow("1 authoritative Inbox thread(s) were neither read nor explicitly carried forward");
+
+    await expect(domain.recordSourceRun("inbox", "gmail-inbox", [{ threads: [] }], [], {
+      source: "gmail_connector_full_inbox_sweep",
+      fullSweep: true,
+      inboxEnumeration: {
+        ...inboxEnumeration,
+        carriedForwardThreadIds: ["thread-2", "thread-3"],
+      },
+    })).resolves.toMatch(/^run_/);
   });
 
   test("rejects source-backed card writes and actions from stale sweep runs", async () => {

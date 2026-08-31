@@ -15,7 +15,7 @@ export const CLI_COMMANDS = [
   "feed:heartbeat:installed --feed <id> --automation <id>",
   "source:add --feed <id> --brief <plain-English source recipe>",
   "source:remove --feed <id> --source <id>",
-  "source:record-run --feed <id> --source <id> --snapshots <json> --judgments <json> --checkpoint <json> [--work <recollection-work-id>] [--context-use <json> | --context-use-file <path>]",
+  "source:record-run --feed <id> --source <id> (--snapshots <json> | --snapshots-file <path>) (--judgments <json> | --judgments-file <path>) (--checkpoint <json> | --checkpoint-file <path>) [--work <recollection-work-id>] [--context-use <json> | --context-use-file <path>]",
   "sweep:record-batch --feed <id> --runs <json-array> [--work <recollection-work-id>] [--context <mind-update-id>]",
   "sweep:rejudge --feed <id> --feedback <id> --ordered-cards <json-array> --removed-cards <json-array>",
   "source:import-json-file --feed <id> --source <id> --path <local-json-file>",

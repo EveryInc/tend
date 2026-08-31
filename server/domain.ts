@@ -176,6 +176,85 @@ function hasText(value: unknown): value is string {
   return typeof value === "string" && Boolean(value.trim());
 }
 
+function sourceRunIdList(value: unknown, label: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => !hasText(item))) {
+    throw new Error(`${label} must be an array of non-empty IDs.`);
+  }
+  const normalized = value.map((item) => (item as string).trim());
+  if (new Set(normalized).size !== normalized.length) throw new Error(`${label} must contain unique IDs.`);
+  return normalized;
+}
+
+function sourceRunCount(value: unknown, label: string): number {
+  if (!Number.isInteger(value) || (value as number) < 0) throw new Error(`${label} must be a nonnegative integer.`);
+  return value as number;
+}
+
+function sourceRunMessageThreads(value: unknown): Array<{ messageId: string; threadId: string }> {
+  if (!Array.isArray(value)) throw new Error("Full Gmail inboxEnumeration.messages must be an array.");
+  const messages = value.map((item, index) => {
+    if (!isRecord(item) || !hasText(item.messageId) || !hasText(item.threadId)) {
+      throw new Error(`Full Gmail inboxEnumeration.messages item ${index + 1} must contain non-empty messageId and threadId strings.`);
+    }
+    return { messageId: item.messageId.trim(), threadId: item.threadId.trim() };
+  });
+  if (new Set(messages.map((item) => item.messageId)).size !== messages.length) {
+    throw new Error("Full Gmail inboxEnumeration.messages must contain each messageId exactly once.");
+  }
+  return messages;
+}
+
+function assertGmailInboxSweepEnumeration(sourceId: string, checkpoint: unknown): void {
+  if (sourceId !== "gmail-inbox" || !isRecord(checkpoint)) return;
+  const fullSweep = checkpoint.fullSweep === true
+    || (typeof checkpoint.source === "string" && /full[_ -]?inbox[_ -]?sweep/i.test(checkpoint.source));
+  if (!fullSweep) return;
+
+  if (!isRecord(checkpoint.inboxEnumeration)) {
+    throw new Error(
+      "A full Gmail sweep must begin with an inboxEnumeration manifest from paginated gmail_search_email_ids(query='', label_ids=['INBOX']); search result counts are not authoritative.",
+    );
+  }
+  const enumeration = checkpoint.inboxEnumeration;
+  if (enumeration.method !== "gmail_search_email_ids" || enumeration.query !== "") {
+    throw new Error("Full Gmail inboxEnumeration must use method='gmail_search_email_ids' with an empty query.");
+  }
+  const labelIds = sourceRunIdList(enumeration.labelIds, "Full Gmail inboxEnumeration.labelIds");
+  if (labelIds.length !== 1 || labelIds[0] !== "INBOX") {
+    throw new Error("Full Gmail inboxEnumeration.labelIds must be exactly ['INBOX'].");
+  }
+
+  const labelMessageCount = sourceRunCount(enumeration.labelMessageCount, "Full Gmail inboxEnumeration.labelMessageCount");
+  const labelThreadCount = sourceRunCount(enumeration.labelThreadCount, "Full Gmail inboxEnumeration.labelThreadCount");
+  const messages = sourceRunMessageThreads(enumeration.messages);
+  const threadIds = [...new Set(messages.map((item) => item.threadId))];
+  const readThreadIds = sourceRunIdList(enumeration.readThreadIds, "Full Gmail inboxEnumeration.readThreadIds");
+  const carriedForwardThreadIds = sourceRunIdList(enumeration.carriedForwardThreadIds, "Full Gmail inboxEnumeration.carriedForwardThreadIds");
+
+  if (messages.length !== labelMessageCount) {
+    throw new Error(`Full Gmail sweep is incomplete: Inbox reports ${labelMessageCount} messages, but only ${messages.length} authoritative message IDs were resolved to conversations.`);
+  }
+  if (threadIds.length !== labelThreadCount) {
+    throw new Error(`Full Gmail sweep is incomplete: Inbox reports ${labelThreadCount} threads, but direct reads resolved ${threadIds.length}.`);
+  }
+
+  const enumeratedThreads = new Set(threadIds);
+  const readThreads = new Set(readThreadIds);
+  const carriedThreads = new Set(carriedForwardThreadIds);
+  const unknownThreads = [...readThreads, ...carriedThreads].filter((threadId) => !enumeratedThreads.has(threadId));
+  if (unknownThreads.length) {
+    throw new Error(`Full Gmail inboxEnumeration dispositions include threads outside the authoritative manifest: ${unknownThreads.join(", ")}.`);
+  }
+  const overlaps = readThreadIds.filter((threadId) => carriedThreads.has(threadId));
+  if (overlaps.length) {
+    throw new Error(`Full Gmail inboxEnumeration must classify each thread once; these are both read and carried forward: ${overlaps.join(", ")}.`);
+  }
+  const unresolvedThreads = threadIds.filter((threadId) => !readThreads.has(threadId) && !carriedThreads.has(threadId));
+  if (unresolvedThreads.length) {
+    throw new Error(`Full Gmail sweep is incomplete: ${unresolvedThreads.length} authoritative Inbox thread(s) were neither read nor explicitly carried forward: ${unresolvedThreads.join(", ")}.`);
+  }
+}
+
 function isSafeCardHref(value: string): boolean {
   if (value.startsWith("/api/artifacts/")) return true;
   try {
@@ -2686,6 +2765,7 @@ export class AttentionDomain {
       const feed = await this.store.readFeed(feedId);
       if (!feed.sources.some((source) => source.id === sourceId)) throw new Error(`Source recipe not found: ${sourceId}`);
       if (triggerWorkId) await this.assertClaimedRecollectionWork(feedId, triggerWorkId);
+      assertGmailInboxSweepEnumeration(sourceId, checkpoint);
       const normalizedContextUse = contextUse
         ? normalizeContextUse(contextUse, await this.requireCurrentMindContext(contextUse.updateId), snapshots)
         : undefined;
