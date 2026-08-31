@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { nativeQuestions, type NativeApprovalRequest, type NativeToolCall } from "./nativeApprovals";
 
 declare const Bun: {
   spawn(command: string[], options?: Record<string, unknown>): {
@@ -23,6 +24,7 @@ export interface AppServerDrainOptions {
   timeoutMs?: number;
   log?: (line: string) => void | Promise<void>;
   argv?: string[];
+  onNativeApproval?: (request: NativeApprovalRequest, signal: AbortSignal) => Promise<unknown>;
 }
 
 interface Pending {
@@ -47,11 +49,25 @@ export async function runAppServerDrain(options: AppServerDrainOptions): Promise
   let nextId = 1;
   let settled = false;
   let exitCode = 1;
+  let startingTurn = false;
+  let turnId: string | undefined;
+  const toolCalls = new Map<string, NativeToolCall>();
+  const nativeRequests = new Map<string | number, { controller: AbortController; itemId: string }>();
+  const seenRequests = new Set<string | number>();
+
+  const cancelNative = (id: string | number) => {
+    const request = nativeRequests.get(id);
+    nativeRequests.delete(id);
+    request?.controller.abort();
+  };
 
   const finish = (code: number, reason: string) => {
     if (settled) return;
     settled = true;
     exitCode = code;
+    for (const id of nativeRequests.keys()) cancelNative(id);
+    for (const entry of pending.values()) entry.reject(new Error(reason));
+    pending.clear();
     void log(`[app-server] ${reason}`);
     try {
       child.kill();
@@ -61,6 +77,7 @@ export async function runAppServerDrain(options: AppServerDrainOptions): Promise
   };
 
   const send = (message: Record<string, unknown>) => {
+    if (settled) throw new Error("App-server transport is closed.");
     child.stdin.write(`${JSON.stringify(message)}\n`);
     child.stdin.flush?.();
   };
@@ -72,13 +89,43 @@ export async function runAppServerDrain(options: AppServerDrainOptions): Promise
     return promise;
   };
 
-  const answerServerRequest = (id: unknown, method: string) => {
+  const answerServerRequest = (id: string | number, method: string, params: Record<string, unknown>) => {
+    if (seenRequests.has(id)) return;
+    seenRequests.add(id);
+    if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") {
+      const tool = typeof params.itemId === "string" ? toolCalls.get(params.itemId) : undefined;
+      // Only the host's explicit item/thread/turn identity can associate a question with a tool.
+      if (options.onNativeApproval && tool && tool.threadId === params.threadId
+        && tool.turnId === params.turnId && tool.turnId === turnId) {
+        try {
+          const questions = nativeQuestions(params);
+          const controller = new AbortController();
+          nativeRequests.set(id, { controller, itemId: tool.id });
+          void options.onNativeApproval({ requestId: id, method, tool, questions }, controller.signal)
+            .catch(() => {
+              void log("[app-server] native confirmation could not be safely presented");
+              return { answers: {} };
+            })
+            .then((result) => {
+              if (settled || nativeRequests.get(id)?.controller !== controller) return;
+              nativeRequests.delete(id);
+              try { send({ id, result }); } catch { finish(1, "native confirmation transport failed"); }
+            });
+          return;
+        } catch {
+          cancelNative(id);
+          void log("[app-server] unsupported native confirmation questions");
+        }
+      } else {
+        void log("[app-server] native question has no exact active tool association");
+      }
+    }
     void log(`[app-server] declining server request ${method}`);
-    const result = method === "execCommandApproval" || method === "applyPatchApproval"
-      ? { decision: "denied" }
-      : { decision: "decline" };
-    send({ id, result } as Record<string, unknown>);
+    const reply = declinedServerReply(method);
+    send({ id, ...reply });
   };
+
+  void child.exited.then(() => finish(1, "app-server exited before the turn completed"));
 
   const pipeStderr = (async () => {
     if (!child.stderr) return;
@@ -117,12 +164,36 @@ export async function runAppServerDrain(options: AppServerDrainOptions): Promise
             continue;
           }
           if (message.id !== undefined && typeof message.method === "string") {
-            answerServerRequest(message.id, message.method);
+            if (typeof message.id === "string" || typeof message.id === "number") {
+              answerServerRequest(message.id, message.method, (message.params ?? {}) as Record<string, unknown>);
+            }
             continue;
           }
+          const params = message.params as Record<string, any> | undefined;
+          if (params?.threadId !== options.threadId) continue;
+          if (message.method === "turn/started" && startingTurn && !turnId && typeof params.turn?.id === "string") {
+            turnId = params.turn.id;
+          }
+          if (message.method === "item/started" && turnId && params.turnId === turnId) {
+            const item = params.item;
+            if (item?.type === "mcpToolCall" && typeof item.id === "string"
+              && typeof item.server === "string" && typeof item.tool === "string") {
+              const existing = toolCalls.get(item.id);
+              if (existing) {
+                for (const [id, request] of nativeRequests) if (request.itemId === item.id) cancelNative(id);
+              }
+              toolCalls.set(item.id, { id: item.id, threadId: options.threadId, turnId,
+                server: item.server, tool: item.tool, arguments: structuredClone(item.arguments) });
+            }
+          }
+          if (message.method === "serverRequest/resolved"
+            && (typeof params.requestId === "string" || typeof params.requestId === "number")) cancelNative(params.requestId);
+          if (message.method === "item/completed" && params.turnId === turnId && typeof params.item?.id === "string") {
+            toolCalls.delete(params.item.id);
+            for (const [id, request] of nativeRequests) if (request.itemId === params.item.id) cancelNative(id);
+          }
           if (message.method === "turn/completed") {
-            const params = message.params as { threadId?: string; turn?: { status?: string } } | undefined;
-            if (params?.threadId === options.threadId) {
+            if (turnId && params.turn?.id === turnId) {
               const status = params.turn?.status ?? "unknown";
               finish(status === "completed" ? 0 : 1, `turn finished with status ${status}`);
               resolveTurn();
@@ -131,7 +202,10 @@ export async function runAppServerDrain(options: AppServerDrainOptions): Promise
         }
       }
       resolveTurn();
-    })();
+    })().catch(() => {
+      finish(1, "app-server response stream failed");
+      resolveTurn();
+    });
   });
 
   const timeout = setTimeout(() => {
@@ -144,10 +218,10 @@ export async function runAppServerDrain(options: AppServerDrainOptions): Promise
     await request("thread/resume", {
       threadId: options.threadId,
       cwd: options.cwd,
-      approvalPolicy: "never",
       persistExtendedHistory: false,
     });
-    await request("turn/start", {
+    startingTurn = true;
+    const started = await request("turn/start", {
       threadId: options.threadId,
       input: [{ type: "text", text: options.prompt }],
       sandboxPolicy: {
@@ -157,12 +231,14 @@ export async function runAppServerDrain(options: AppServerDrainOptions): Promise
         excludeTmpdirEnvVar: false,
         excludeSlashTmp: false,
       },
-    });
+    }) as { turn?: { id?: string } };
+    turnId ??= started.turn?.id;
     await turnDone;
   } catch (error) {
     finish(1, `protocol failure: ${error instanceof Error ? error.message : String(error)}`);
   } finally {
     clearTimeout(timeout);
+    for (const id of nativeRequests.keys()) cancelNative(id);
     try {
       child.stdin.end();
     } catch {
@@ -178,4 +254,13 @@ export async function runAppServerDrain(options: AppServerDrainOptions): Promise
     if (!settled) finish(1, "app-server exited before the turn completed");
   }
   return exitCode;
+}
+
+export function declinedServerReply(method: string): Record<string, unknown> {
+  if (method === "mcpServer/elicitation/request") return { result: { action: "decline", content: null } };
+  if (method === "item/tool/requestUserInput" || method === "tool/requestUserInput") return { result: { answers: {} } };
+  if (method === "execCommandApproval" || method === "applyPatchApproval") return { result: { decision: "denied" } };
+  if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") return { result: { decision: "decline" } };
+  if (method === "item/permissions/requestApproval") return { result: { permissions: {}, scope: "turn" } };
+  return { error: { code: -32601, message: "Tend does not support this server request." } };
 }

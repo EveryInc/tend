@@ -94,8 +94,10 @@ for its own lane and is replayed by `work:claim`, so restart recovery stays simp
 
 Tend's approval receipt records the local app decision. It cannot override a connector's rejection
 of that approval source. Stop retries, preserve the blocked work, and use the connector or host's
-trusted confirmation flow. See [the approval boundary](docs/approval-boundary.md) for the current
-limitation and the host integration required for one-click approval.
+trusted confirmation flow. During a Tend-owned Codex drain, a supported, exactly correlated host
+question appears above the feed for a fresh human response. Do not answer that panel on the user's
+behalf. A terminal denial with no native request stays blocked. See [the approval boundary](docs/approval-boundary.md)
+for supported requests and the remaining host integration required for one-click approval.
 
 Before Codex claims a mistaken dictated note, correct it with `work:edit` or return its card to the
 sweep with `card:return-to-review`. Returning a queued card cancels its unstarted local work. A done
