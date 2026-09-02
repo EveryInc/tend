@@ -321,6 +321,19 @@ describe("fixed CLI reader adapters (no provider calls)", () => {
     expect(() => parseClaudeResult('{"is_error":true}', "claude-fixture-model")).toThrow("did not complete");
   });
 
+  test("the Claude primary model accepts a short selector resolved to one canonical model", () => {
+    const stdout = JSON.stringify({ is_error: false, result: '{"flags":[]}', usage: { output_tokens: 12_308 }, modelUsage: {
+      "claude-haiku-4-5-20251001": { inputTokens: 6_323, outputTokens: 10, canonicalModel: "claude-haiku-4-5" },
+      "claude-fable-5-1": { inputTokens: 2, outputTokens: 12_308, cacheReadInputTokens: 1_024, canonicalModel: "claude-fable-5-1" },
+    } });
+    const result = parseClaudeResult(stdout, "fable");
+    expect(result.actualModel).toBe("claude-fable-5-1");
+    expect(result.usage).toEqual({ inputTokens: 2, outputTokens: 12_308, cachedInputTokens: 1_024 });
+    expect(() => parseClaudeResult(stdout, "fab")).toThrow("requested model");
+    expect(() => parseClaudeResult(stdout, "default")).toThrow("requested model");
+    expect(() => parseClaudeResult(stdout, "haiku")).toThrow("requested model");
+  });
+
   test("Codex remains unknown when no model is reported and refuses tool events", () => {
     const stdout = [
       JSON.stringify({ type: "item.completed", item: { type: "error", message: "Code Mode is unavailable because code-mode host is disabled." } }),
