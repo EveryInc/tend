@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { groupReadingCards } from "../../shared/readingGroups";
 import { api, post } from "../app/api";
 import type { Inspector, WorkspaceTab } from "../app/types";
-import type { SourceRecipe, ThreadBinding, VoiceTarget, WorkspaceRevision, WorkspaceView } from "../types";
+import { ReaderDetails } from "../feed/ReadingIdentity";
+import { currentReadingPreference } from "../feed/selectors";
+import type { Card, FeedView, SourceRecipe, SourceRun, ThreadBinding, VoiceTarget, WorkspaceRevision, WorkspaceView } from "../types";
 
 interface FeedWorkspaceView {
   policy: string;
@@ -13,6 +16,65 @@ interface FeedWorkspaceView {
 interface GlobalWorkspaceView {
   globalPolicy: string;
   prompts: Array<{ name: string; content: string }>;
+}
+
+export function SourceRunHistory({ runs, cards = [], reactions = {}, preferences = {} }: { runs: SourceRun[]; cards?: Card[]; reactions?: FeedView["readingReactions"]; preferences?: FeedView["readingPreferences"] }) {
+  if (!runs.length) return null;
+  const groups = groupReadingCards(cards);
+  const reactionLabel = (card: Card) => {
+    const reaction = reactions?.[card.id];
+    if (!reaction || reaction.contentRevision !== card.reading?.contentRevision) return "Unrated";
+    return reaction.reaction === "like" ? "Liked" : reaction.reaction === "not_for_me" ? "Not for me" : "Reaction cleared";
+  };
+  return (
+    <section className="workspace-section source-run-history">
+      <div className="workspace-section-head"><h2>Source run history</h2><span>{runs.length}</span></div>
+      {runs.map((run) => <details className="source-run-record" id={`source-run-${encodeURIComponent(run.id)}`} key={run.id}>
+        <summary><b>{run.sourceId}</b><span>{run.completedAt ? new Date(run.completedAt).toLocaleString() : "Completion not recorded"}</span>{run.readers && <span>{run.readers.length} {run.readers.length === 1 ? "reader" : "readers"}</span>}</summary>
+        <div className="source-run-body">
+          <p>{run.snapshots} saved {run.snapshots === 1 ? "snapshot" : "snapshots"} · <code>{run.id}</code></p>
+          {Object.entries(preferences ?? {}).filter(([, preference]) => preference.runId === run.id).map(([id, preference]) => {
+            const group = groups.find((item) => item.id === id);
+            const current = group && currentReadingPreference(group, preferences);
+            const chosen = cards.find((card) => card.id === preference.preferredCardId);
+            const chosenRevision = preference.members.find((member) => member.cardId === preference.preferredCardId)?.contentRevision;
+            const earlierRevision = chosen && chosen.reading?.contentRevision !== chosenRevision;
+            return <details className="source-run-preference source-run-card" key={id}>
+              <summary><b>{preference.preferredCardId ? "Preferred version" : "Preference cleared"}</b><span>{current ? "Current comparison" : "Earlier comparison"}</span></summary>
+              {preference.preferredCardId && <p>{earlierRevision ? "Earlier revision of: " : ""}{chosen?.title ?? preference.preferredCardId}</p>}
+              <p>{preference.members.length} versions in this choice · {new Date(preference.at).toLocaleString()}. Individual ratings are unchanged.</p>
+              {!current && <p>The versions have changed since this choice. It is not a preference for the current set.</p>}
+              {preference.reason && <p>{preference.reason}</p>}
+              <ul>{preference.members.map((member) => <li key={member.cardId}>{cards.find((card) => card.id === member.cardId)?.title ?? member.cardId}<small> · revision {member.contentRevision}</small></li>)}</ul>
+            </details>;
+          })}
+          {run.readers?.map((reader) => {
+            const written = cards.filter((card) => card.reading?.runId === run.id && card.reading.readerId === reader.readerId);
+            const liked = written.filter((card) => reactionLabel(card) === "Liked").length;
+            const disliked = written.filter((card) => reactionLabel(card) === "Not for me").length;
+            return <section className="source-run-reader" key={reader.readerId}>
+            <header><h3>{reader.label}</h3><span>{reader.status}</span></header>
+            <ReaderDetails reader={reader} />
+            {reader.error && <p className="reading-error">{reader.error}</p>}
+            {reader.outputSnapshotId && <a href={`/api/feeds/${encodeURIComponent(run.feedId)}/runs/${encodeURIComponent(run.id)}/readers/${encodeURIComponent(reader.readerId)}/output`} target="_blank" rel="noopener noreferrer">Open saved reader output</a>}
+            <p>{written.length} {written.length === 1 ? "card" : "cards"} in Tend · {liked} liked · {disliked} not for me</p>
+            {written.map((card) => <details className="source-run-card" key={card.id}>
+              <summary><b>{card.title}</b><span>{reactionLabel(card)}{card.status === "done" ? " · Done" : ""}</span></summary>
+              <p className="reading-face">{card.why}</p>
+              {card.reading?.reviewEdit && <p>Edited by {card.reading.reviewEdit.by}: {card.reading.reviewEdit.note}</p>}
+            </details>)}
+            <dl className="reader-details reader-artifacts">
+              <dt>Input snapshot</dt><dd>{reader.inputSnapshotId}</dd>
+              <dt>Input fingerprint</dt><dd>{reader.inputSha256}</dd>
+              {reader.outputSnapshotId && <><dt>Output snapshot</dt><dd>{reader.outputSnapshotId}</dd></>}
+              {reader.outputSha256 && <><dt>Output fingerprint</dt><dd>{reader.outputSha256}</dd></>}
+            </dl>
+          </section>;
+          })}
+        </div>
+      </details>)}
+    </section>
+  );
 }
 
 function WorkspaceEditor({
@@ -170,6 +232,7 @@ export function PromptWorkspace({ state, refreshVersion, tab, onTab, onBack, onI
             <div className="workspace-section-head"><h2>Prompt layers</h2><span>{feedWorkspace.prompts.length}</span></div>
             {feedWorkspace.prompts.map((prompt: any) => <WorkspaceEditor key={prompt.name} label={prompt.name} content={prompt.content} onFocus={() => onTargetFocus({ kind: "prompt_layer", feedId, promptId: prompt.name })} onSave={(content) => save(() => post(`/api/feeds/${feedId}/prompts/${encodeURIComponent(prompt.name)}`, { content }), "Feed prompt saved", reloadFeed)} onUndo={(revisionId) => save(() => post(`/api/revisions/${revisionId}/revert`), "Feed prompt restored", reloadFeed)} />)}
           </section>
+          <SourceRunHistory runs={state.active.runs} cards={state.active.cards} reactions={state.active.readingReactions} preferences={state.active.readingPreferences} />
           <section className="workspace-section">
             <h2>Home thread</h2>
             <ThreadSetupGuide feedId={feedId} feedName={state.active.config.name} thread={feedWorkspace.thread} onCopied={onSaved} />

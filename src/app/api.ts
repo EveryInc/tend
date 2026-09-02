@@ -1,6 +1,7 @@
-class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
     super(message);
+    this.name = "ApiError";
   }
 }
 
@@ -9,7 +10,7 @@ let mutationTokenPromise: Promise<string> | null = null;
 export async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   const value = await response.json();
-  if (!response.ok) throw new ApiError(value.error ?? `Request failed: ${response.status}`, response.status);
+  if (!response.ok) throw new ApiError(value.error ?? `Request failed: ${response.status}`, response.status, typeof value.code === "string" ? value.code : undefined);
   return value as T;
 }
 

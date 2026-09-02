@@ -6,7 +6,13 @@ import type {
   CardAction,
   CardBlock,
   CardContextInfluence,
+  CardReading,
+  CardReadingInput,
+  CardReaction,
+  ReadingCardSnapshot,
+  ReadingPreferenceInput,
   FeedConfig,
+  FeedEvent,
   FeedMindContext,
   FeedView,
   MindContextBinding,
@@ -40,8 +46,11 @@ import type {
 import type { MobileActionProjection, MobileCommand, MobileCommandResult, MobileCommandReceipt } from "../shared/mobile";
 import { isReservedCardActionId, safeConfiguredCardActions } from "../shared/cardActions";
 import { containsFullEmail } from "../shared/emailThread";
+import type { ReaderDraft } from "../shared/readers";
+import { readingGroupKey, sameReadingMembers } from "../shared/readingGroups";
+import { readReaderOutput } from "./readers";
 import { agentLabel, effectiveWorkLane } from "../shared/lanes";
-import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, workItemView } from "./store";
+import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, readingContentRevision, snapshotReadingCard, workItemView } from "./store";
 import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
 import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./util";
@@ -105,6 +114,75 @@ export function isClaimedWorkItem(result: WorkClaimResult): result is WorkItem {
   return Boolean(result && !("claim" in result));
 }
 
+export class ReadingCardRequestError extends Error {
+  constructor(message: string, readonly status: 400 | 404 | 409 = 400, readonly code = "invalid_reaction") {
+    super(message);
+    this.name = "ReadingCardRequestError";
+  }
+}
+
+export interface CardReactionInput {
+  clientEventId: string;
+  contentRevision: string;
+  reaction: CardReaction;
+}
+
+export interface CardReactionReceipt {
+  duplicate: boolean;
+  event: FeedEvent;
+  card: Card;
+}
+
+export interface ReadingPreferenceReceipt {
+  duplicate: boolean;
+  event: FeedEvent;
+  cards: Card[];
+}
+
+interface ReadingPreferenceEventDetail extends ReadingPreferenceInput {
+  groupKey: string;
+  preferenceSequence: number;
+  readingCards: ReadingCardSnapshot[];
+  beforeCardUpdatedAt: Record<string, string>;
+  archiveRequested: boolean;
+}
+
+function validateReadingPreference(body: unknown): ReadingPreferenceInput {
+  const invalid = (message: string): never => { throw new ReadingCardRequestError(message, 400, "invalid_preference"); };
+  if (!body || typeof body !== "object" || Array.isArray(body)) invalid("A reading preference object is required.");
+  const input = body as Record<string, unknown>;
+  for (const [key, limit] of [["clientEventId", 200], ["runId", 200], ["topicKey", 300]] as const) {
+    if (typeof input[key] !== "string" || !input[key].trim() || input[key].length > limit) invalid(`${key} must be a non-empty string of at most ${limit} characters.`);
+  }
+  if (!Array.isArray(input.members) || input.members.length < 2 || input.members.length > 64) invalid("A preference must compare between two and 64 exact card versions.");
+  const ids = new Set<string>();
+  const members = (input.members as unknown[]).map((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) invalid("Each compared member needs a cardId and contentRevision.");
+    const member = value as Record<string, unknown>;
+    if (typeof member.cardId !== "string" || !member.cardId.trim() || member.cardId.length > 200) invalid("Each compared cardId must be a non-empty string of at most 200 characters.");
+    if (typeof member.contentRevision !== "string" || !/^[a-f0-9]{64}$/.test(member.contentRevision)) invalid("Each compared contentRevision must be SHA-256.");
+    const cardId = member.cardId as string;
+    if (ids.has(cardId)) invalid("Compared card IDs must be unique.");
+    ids.add(cardId);
+    return { cardId, contentRevision: member.contentRevision as string };
+  }).sort((left, right) => left.cardId.localeCompare(right.cardId));
+  if (input.preferredCardId !== null && (typeof input.preferredCardId !== "string" || !ids.has(input.preferredCardId))) invalid("The preferred card must be one of the compared versions, or null to clear.");
+  if (input.reason !== undefined && (typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 4000)) invalid("An optional reason must be a non-empty string of at most 4000 characters.");
+  return {
+    clientEventId: input.clientEventId as string, runId: input.runId as string, topicKey: input.topicKey as string,
+    members, preferredCardId: input.preferredCardId as string | null,
+    ...(typeof input.reason === "string" ? { reason: input.reason.trim() } : {}),
+  };
+}
+
+function readingFeedbackEvents(events: FeedEvent[]): FeedEvent[] {
+  return events.filter((event) => {
+    if (event.type === "reading.preference_recorded") return Boolean(event.detail && typeof event.detail === "object" && "readingCards" in event.detail);
+    if (event.type !== "card.reaction_recorded" && event.type !== "voice.instruction_submitted") return false;
+    return Boolean(event.detail && typeof event.detail === "object" && "readingCard" in event.detail);
+  });
+}
+
 const INBOX_DEMO_REPLAY_SOURCE_IDS: Record<string, string> = {
   "demo-inbox-partnership": "gmail-thread-19e8570055b2e4ed",
   "demo-inbox-investor-followup": "gmail-thread-19e0f349c4e9039f",
@@ -166,6 +244,7 @@ const CARD_BLOCK_TYPES = new Set<CardBlock["type"]>([
   "video",
   "chart",
   "receipt",
+  "quote",
 ]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -238,6 +317,12 @@ function validateCardBlocks(blocks: unknown): asserts blocks is CardBlock[] {
       throw new Error(`${blockDescription(block, index)} has a non-string \`label\`.`);
     }
     switch (block.type) {
+      case "quote":
+        validateTextBlock(block, index);
+        if (block.attribution !== undefined && !hasText(block.attribution)) {
+          throw new Error(`${blockDescription(block, index)} needs non-empty attribution text when supplied.`);
+        }
+        break;
       case "memo":
         validateTextBlock(block, index, "Use `text`, not `title` or `body`.");
         break;
@@ -1125,15 +1210,23 @@ export class AttentionDomain {
       });
       if (target.kind === "card") {
         const card = await this.store.readCard(feedId, target.cardId);
-        if (card.status === "done") throw new Error("Done cards cannot be queued.");
+        if (card.status === "done" && !card.reading) throw new Error("Done cards cannot be queued.");
+        work.readingCard = snapshotReadingCard(card);
         card.status = "queued";
+        if (card.reading) card.completedAt = undefined;
         appendHistory(card, "user.scoped_instruction", instruction.trim());
         await this.store.writeCard(card);
       }
       await this.persistQueuedWork(feedId, work, {
         afterWrite: async () => {
           await this.store.appendEvent({ feedId, cardId, workId: work.id, type: "voice.intent_queued", detail: { target, intent: work.intent } });
-          await this.store.appendEvent({ feedId: anchorFeedId, cardId: target.kind === "card" ? target.cardId : undefined, workId: work.id, type: "voice.instruction_submitted", detail: { target, instruction: instruction.trim() } });
+          await this.store.appendEvent({
+            feedId: work.readingCard ? feedId : anchorFeedId,
+            cardId: target.kind === "card" ? target.cardId : undefined,
+            workId: work.id,
+            type: "voice.instruction_submitted",
+            detail: { target, instruction: instruction.trim(), ...(work.readingCard ? { readingCard: work.readingCard, anchorFeedId } : {}) },
+          });
         },
       });
       return { kind: "scoped_work" as const, target, work };
@@ -2002,9 +2095,11 @@ export class AttentionDomain {
     return this.store.serialize(async () => {
       const existing = (await this.store.readWorkItems(feedId)).find((work) => work.kind === "compound_learnings" && (work.status === "queued" || work.status === "working"));
       if (existing) return existing;
-      const work = queuedWork(feedId, "__feed__", "The user approved a learning pass. Review raw snapshots, runs, events, outcomes, and policy history. Distill a compact feed-policy improvement, then create an editable revision proposal with revision:propose --source compound. Do not apply it. The browser will bring the proposal back to the user for review.", {
-        kind: "compound_learnings",
-      });
+      const feedbackEvents = readingFeedbackEvents(await this.store.readEvents(feedId));
+      const instruction = "The user approved a learning pass. Review raw snapshots, runs, events, outcomes, and policy history. Distill a compact feed-policy improvement, then create an editable revision proposal with revision:propose --source compound. Do not apply it. The browser will bring the proposal back to the user for review."
+        + (feedbackEvents.length ? " The attached learningContext.readingFeedbackEvents contains the exact card faces and writers for explicit Likes, Not for me, cleared reactions, version preferences, and subsequent voice feedback, including archived cards. Treat these as feedback evidence, not action permission. Use the latest explicit reaction per card and preference per exact compared group; no reaction is not a dislike. A preferred version does not make its alternatives disliked. Join voice feedback by cardId and contentRevision. Do not infer a reason for a Like or preference, or rewrite source facts from feedback." : "");
+      const work = queuedWork(feedId, "__feed__", instruction, { kind: "compound_learnings" });
+      if (feedbackEvents.length) work.learningContext = { readingFeedbackEvents: feedbackEvents };
       await this.persistQueuedWork(feedId, work, {
         afterWrite: () => this.store.appendEvent({ feedId, workId: work.id, type: "learning.compound_queued" }),
       });
@@ -2051,6 +2146,10 @@ export class AttentionDomain {
         work = nextItems.find((item) => item.status === "queued" && callerCanSeeWork(caller, item, thread));
       }
       if (!work) return null;
+      if (work.kind === "compound_learnings") {
+        const feedbackEvents = readingFeedbackEvents(await this.store.readEvents(feedId));
+        if (feedbackEvents.length) work.learningContext = { readingFeedbackEvents: feedbackEvents };
+      }
       work.status = "working";
       work.capabilityToken = makeToken();
       work.claimedBy = claimantForWork(caller, work, thread);
@@ -2529,7 +2628,62 @@ export class AttentionDomain {
     await this.store.serialize(() => this.store.writeSourceRecipe(feedId, sourceId, content.trim()));
   }
 
-  async upsertCard(feedId: string, input: Partial<Card> & Pick<Card, "id" | "title" | "why" | "blocks">): Promise<Card> {
+  private async normalizeCardReading(feedId: string, input: CardReadingInput, sourceRunIds: string[] | undefined, face: Pick<Card, "title" | "why">): Promise<CardReading> {
+    if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("Reading-card provenance is required.");
+    for (const key of ["runId", "readerId", "draftId"] as const) {
+      if (typeof input[key] !== "string" || !input[key].trim() || input[key].length > 200) throw new Error(`Reading-card ${key} is required and must be at most 200 characters.`);
+    }
+    if (input.topicKey !== undefined && (typeof input.topicKey !== "string" || !input.topicKey.trim() || input.topicKey.length > 300)) {
+      throw new Error("Reading-card topicKey must be a non-empty string of at most 300 characters.");
+    }
+    let reviewEdit: CardReading["reviewEdit"];
+    if (input.reviewEdit !== undefined) {
+      const edit = input.reviewEdit;
+      if (!edit || typeof edit !== "object" || Array.isArray(edit)
+        || typeof edit.by !== "string" || !edit.by.trim() || edit.by.length > 100
+        || typeof edit.note !== "string" || !edit.note.trim() || edit.note.length > 1000) {
+        throw new Error("Reading-card reviewEdit requires a non-empty by (100 characters maximum) and note (1000 characters maximum).");
+      }
+      reviewEdit = { by: edit.by.trim(), note: edit.note.trim() };
+    }
+    if (!sourceRunIds?.includes(input.runId)) throw new Error("Reading-card sourceRunIds must include its reader run.");
+    const run = await this.store.readRun(feedId, input.runId);
+    if (run.feedId !== feedId) throw new Error("Reading-card run belongs to a different feed.");
+    const matches = run.readers?.filter((reader) => reader.readerId === input.readerId) ?? [];
+    const writer = matches[0];
+    if (matches.length !== 1 || writer.status !== "complete") throw new Error("Reading-card writer must reference one completed native reader receipt.");
+    if (!/^[a-f0-9]{64}$/.test(writer.inputSha256) || !writer.outputSha256 || !/^[a-f0-9]{64}$/.test(writer.outputSha256) || !writer.outputSnapshotId) {
+      throw new Error("Completed reader receipt is missing its immutable input/output record.");
+    }
+    const saved = await readReaderOutput(this.store, feedId, input.runId, input.readerId);
+    const output = saved.output;
+    if (!isRecord(output) || !Array.isArray(output.flags)) {
+      throw new ReadingCardRequestError("Saved reader output must contain a flags array before a card can be published.", 400, "invalid_reader_output");
+    }
+    const drafts = output.flags;
+    const ids = new Set<string>();
+    for (const draft of drafts) {
+      if (!isRecord(draft) || !hasText(draft.id) || draft.id.length > 200 || !hasText(draft.title) || !hasText(draft.face) || ids.has(draft.id)) {
+        throw new ReadingCardRequestError("Saved reader drafts need unique ids and nonempty title and face text.", 400, "invalid_reader_output");
+      }
+      ids.add(draft.id);
+    }
+    const draft = (drafts as ReaderDraft[]).find((item) => item.id === input.draftId);
+    if (!draft) {
+      throw new ReadingCardRequestError("The draftId does not identify a draft in this reader's saved output.", 400, "unknown_reader_draft");
+    }
+    if (!reviewEdit && (face.title !== draft.title || face.why !== draft.face)) {
+      throw new ReadingCardRequestError("Published title or face differs from the saved reader draft. Add an explicit reviewEdit naming the editor and change.", 409, "review_edit_required");
+    }
+    return {
+      runId: input.runId, readerId: input.readerId, draftId: input.draftId,
+      ...(input.topicKey ? { topicKey: input.topicKey } : {}),
+      ...(reviewEdit ? { reviewEdit } : {}),
+      contentRevision: "", writer: structuredClone(writer),
+    };
+  }
+
+  async upsertCard(feedId: string, input: Partial<Omit<Card, "reading">> & Pick<Card, "id" | "title" | "why" | "blocks"> & { reading?: CardReadingInput }): Promise<Card> {
     safeIdentifier(feedId, "Feed id");
     safeIdentifier(input.id, "Card id");
     validateCardBlocks(input.blocks);
@@ -2541,6 +2695,11 @@ export class AttentionDomain {
       const existing = (await this.store.hasCard(feedId, input.id)) ? await this.store.readCard(feedId, input.id) : null;
       if (sourceRunIds) await this.assertSourceRunIdsCurrent(feedId, sourceRunIds, input.id);
       const contextInfluence = await this.normalizeCardContextInfluence(feedId, sourceRunIds, input.contextInfluence);
+      if (existing?.reading && (existing.title !== input.title || existing.why !== input.why)) {
+        throw new ReadingCardRequestError("Reading-card content is immutable; publish changed text as a new card.", 409, "immutable_card");
+      }
+      const readingInput = input.reading ?? existing?.reading;
+      const reading = readingInput ? await this.normalizeCardReading(feedId, readingInput, sourceRunIds ?? existing?.sourceRunIds, input) : undefined;
       const resurfaced = input.status === "to_review_new" || input.status === "to_review_updated";
       const card: Card = {
         id: input.id,
@@ -2553,6 +2712,7 @@ export class AttentionDomain {
         sourceMailbox: input.sourceMailbox ?? existing?.sourceMailbox,
         sourceRunIds: sourceRunIds ?? existing?.sourceRunIds,
         contextInfluence,
+        ...(reading ? { reading } : {}),
         blocks: input.blocks,
         proposedAction: input.proposedAction,
         actions: input.actions,
@@ -2564,10 +2724,149 @@ export class AttentionDomain {
         routineActionGroupId: input.routineActionGroupId ?? (resurfaced ? undefined : existing?.routineActionGroupId),
         history: existing?.history ?? [],
       };
+      if (reading) {
+        reading.contentRevision = readingContentRevision(card);
+        if (existing) {
+          if (!existing.reading || existing.reading.contentRevision !== reading.contentRevision) {
+            throw new ReadingCardRequestError("Reading-card content is immutable; publish changed text as a new card.", 409, "immutable_card");
+          }
+          // Retrying publication cannot reopen an archived card or change its ordering.
+          return existing;
+        }
+      }
       await this.store.writeCard(card);
       await this.store.appendEvent({ feedId, cardId: card.id, type: existing ? "card.updated" : "card.created" });
       return card;
     });
+  }
+
+  async recordCardReaction(feedId: string, cardId: string, body: unknown): Promise<CardReactionReceipt> {
+    if (!body || typeof body !== "object" || Array.isArray(body)) throw new ReadingCardRequestError("A reaction object is required.");
+    const input = body as Record<string, unknown>;
+    if (typeof input.clientEventId !== "string" || !input.clientEventId.trim() || input.clientEventId.length > 200) throw new ReadingCardRequestError("A clientEventId of at most 200 characters is required.");
+    if (typeof input.contentRevision !== "string" || !/^[a-f0-9]{64}$/.test(input.contentRevision)) throw new ReadingCardRequestError("A valid contentRevision is required.");
+    if (input.reaction !== "like" && input.reaction !== "not_for_me" && input.reaction !== null) throw new ReadingCardRequestError("Reaction must be like, not_for_me, or null.");
+    const reaction = input.reaction;
+    return this.store.serializeAtomic(async () => {
+      if (!(await this.store.hasCard(feedId, cardId))) throw new ReadingCardRequestError("Reading card not found.", 404, "not_found");
+      const card = await this.store.readCard(feedId, cardId);
+      const readingCard = snapshotReadingCard(card);
+      if (!readingCard) throw new ReadingCardRequestError("This card does not accept reading reactions.", 404, "not_found");
+      const events = await this.store.readEvents(feedId);
+      const existing = events.find((event) => event.type === "card.reaction_recorded" && (event.detail as { clientEventId?: unknown } | undefined)?.clientEventId === input.clientEventId);
+      if (existing) {
+        const detail = existing.detail as Record<string, unknown>;
+        if (existing.cardId !== cardId || detail.contentRevision !== input.contentRevision || detail.reaction !== reaction) {
+          throw new ReadingCardRequestError("This clientEventId was already used for a different reaction.", 409, "client_event_conflict");
+        }
+        // Recover an interrupted archive only if nothing has changed since the recorded reaction.
+        // A later deliberate voice instruction or return-to-review must never be undone by a retry.
+        if (reaction !== null && card.updatedAt === detail.beforeCardUpdatedAt && (card.status === "to_review_new" || card.status === "to_review_updated")) {
+          card.status = "done";
+          card.completedAt = existing.at;
+          appendHistory(card, "user.reading_reaction", reaction);
+          await this.store.writeCard(card);
+        }
+        return { duplicate: true, event: existing, card };
+      }
+      if (readingCard.contentRevision !== input.contentRevision || card.reading!.contentRevision !== readingContentRevision(card)) {
+        throw new ReadingCardRequestError("This card changed. Reload it before reacting.", 409, "stale_content");
+      }
+      const hasActiveWork = (await this.store.readWorkItems(feedId)).some((work) => work.cardId === cardId && ["queued", "working", "approved_blocked"].includes(work.status));
+      if (reaction !== null && (hasActiveWork || (card.status !== "to_review_new" && card.status !== "to_review_updated" && card.status !== "done"))) {
+        throw new ReadingCardRequestError("This card has active work. Finish that work before archiving it with a reaction.", 409, "card_busy");
+      }
+      const priorReactions = events.filter((event) => event.type === "card.reaction_recorded" && event.cardId === cardId);
+      const reactionSequence = priorReactions.reduce((highest, event) => {
+        const sequence = (event.detail as { reactionSequence?: unknown } | undefined)?.reactionSequence;
+        return typeof sequence === "number" && Number.isSafeInteger(sequence) ? Math.max(highest, sequence) : highest;
+      }, priorReactions.length) + 1;
+      const event = await this.store.appendEvent({
+        feedId, cardId, type: "card.reaction_recorded",
+        detail: {
+          clientEventId: input.clientEventId, contentRevision: input.contentRevision, reaction, reactionSequence,
+          readingCard, beforeCardUpdatedAt: card.updatedAt, archiveRequested: reaction !== null,
+        },
+      });
+      if (reaction !== null && card.status !== "done") {
+        card.status = "done";
+        card.completedAt = event.at;
+        appendHistory(card, "user.reading_reaction", reaction);
+        await this.store.writeCard(card);
+      }
+      return { duplicate: false, event, card };
+    });
+  }
+
+  async recordReadingPreference(feedId: string, body: unknown): Promise<ReadingPreferenceReceipt> {
+    const input = validateReadingPreference(body);
+    return this.store.serializeAtomic(async () => {
+      const feed = await this.store.readFeed(feedId);
+      const cards = feed.cards.filter((card) => card.reading?.runId === input.runId && card.reading.topicKey === input.topicKey);
+      const members = cards.map((card) => ({ cardId: card.id, contentRevision: card.reading!.contentRevision }));
+      const events = await this.store.readEvents(feedId);
+      const preferences = events.filter((event) => {
+        const detail = event.detail as Partial<ReadingPreferenceEventDetail> | undefined;
+        return event.type === "reading.preference_recorded" && detail?.runId === input.runId && detail.topicKey === input.topicKey;
+      });
+      const existing = events.find((event) => event.type === "reading.preference_recorded"
+        && (event.detail as Partial<ReadingPreferenceEventDetail> | undefined)?.clientEventId === input.clientEventId);
+      const hasActiveWork = cards.some((card) => !["to_review_new", "to_review_updated", "done"].includes(card.status))
+        || feed.work.some((work) => cards.some((card) => card.id === work.cardId) && ["queued", "working", "approved_blocked"].includes(work.status));
+      if (existing) {
+        const detail = existing.detail as ReadingPreferenceEventDetail;
+        if (detail.runId !== input.runId || detail.topicKey !== input.topicKey || detail.preferredCardId !== input.preferredCardId
+          || detail.reason !== input.reason || !sameReadingMembers(detail.members, input.members)) {
+          throw new ReadingCardRequestError("This clientEventId was already used for a different preference.", 409, "client_event_conflict");
+        }
+        const latest = preferences.reduce((latest, event) => {
+          const sequence = (event.detail as ReadingPreferenceEventDetail).preferenceSequence;
+          return sequence > (latest.detail as ReadingPreferenceEventDetail).preferenceSequence ? event : latest;
+        }, existing);
+        // Finish a partial archive only for this still-current comparison and unchanged cards.
+        // Old retries never hide a new variant, reverse a clear, or clobber later voice work.
+        if (input.preferredCardId !== null && latest.id === existing.id && sameReadingMembers(members, input.members) && !hasActiveWork) {
+          for (const card of cards) {
+            if (card.updatedAt === detail.beforeCardUpdatedAt[card.id] && (card.status === "to_review_new" || card.status === "to_review_updated")) {
+              await this.archiveReadingPreferenceCard(card, existing, input.preferredCardId);
+            }
+          }
+        }
+        return { duplicate: true, event: existing, cards };
+      }
+      const expectedIds = new Set(input.members.map((member) => member.cardId));
+      if (cards.length !== input.members.length || cards.some((card) => !expectedIds.has(card.id))) {
+        throw new ReadingCardRequestError("The compared versions changed. Reload the full reading group before preferring a version.", 409, "stale_members");
+      }
+      if (!sameReadingMembers(members, input.members) || cards.some((card) => card.reading!.contentRevision !== readingContentRevision(card))) {
+        throw new ReadingCardRequestError("A compared card changed. Reload the reading group before preferring a version.", 409, "stale_content");
+      }
+      if (input.preferredCardId !== null && hasActiveWork) {
+        throw new ReadingCardRequestError("A compared card has active work. Finish that work before archiving the group with a preference.", 409, "card_busy");
+      }
+      const preferenceSequence = preferences.reduce((highest, event) => {
+        const sequence = (event.detail as Partial<ReadingPreferenceEventDetail>).preferenceSequence;
+        return typeof sequence === "number" && Number.isSafeInteger(sequence) ? Math.max(highest, sequence) : highest;
+      }, preferences.length) + 1;
+      const detail: ReadingPreferenceEventDetail = {
+        ...input, groupKey: readingGroupKey(input.runId, input.topicKey), preferenceSequence,
+        readingCards: cards.map((card) => snapshotReadingCard(card)!),
+        beforeCardUpdatedAt: Object.fromEntries(cards.map((card) => [card.id, card.updatedAt])),
+        archiveRequested: input.preferredCardId !== null,
+      };
+      const event = await this.store.appendEvent({ feedId, type: "reading.preference_recorded", detail });
+      if (input.preferredCardId !== null) {
+        for (const card of cards) if (card.status !== "done") await this.archiveReadingPreferenceCard(card, event, input.preferredCardId);
+      }
+      return { duplicate: false, event, cards };
+    });
+  }
+
+  private async archiveReadingPreferenceCard(card: Card, event: FeedEvent, preferredCardId: string): Promise<void> {
+    card.status = "done";
+    card.completedAt = event.at;
+    appendHistory(card, "user.reading_preference", card.id === preferredCardId ? "Preferred this version." : "Archived with the compared versions; no dislike recorded.");
+    await this.store.writeCard(card);
   }
 
   async createImprovementCard(feedId: string, title: string, brief: string, instruction: string): Promise<Card> {

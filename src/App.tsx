@@ -7,7 +7,7 @@ import type { AttentionScreen, Inspector, Tab, WorkspaceTab } from "./app/types"
 import { CardView } from "./feed/CardView";
 import { RoutineActionGroupView } from "./feed/RoutineActionGroupView";
 import { NativeApprovals } from "./feed/NativeApprovals";
-import { countFor, visibleCardActions, visibleCards, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
+import { countFor, currentReadingPreference, selectedGroupCard, visibleCardActions, visibleCardGroups, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
 import { Dock } from "./shell/Dock";
 import { InspectorPanel } from "./shell/InspectorPanel";
 import { TopBar } from "./shell/TopBar";
@@ -19,6 +19,14 @@ import type { Card, CardAction, FeedView, RevisionProposal, RoutineActionGroup, 
 import { FormattedText } from "./ui/FormattedText";
 import { LearningReview, RevisionProposals } from "./workspace/LearningReview";
 import { PromptWorkspace } from "./workspace/PromptWorkspace";
+
+type ReadingFeedbackTarget = { feedId: string; cardId: string };
+function readSession<T>(key: string, fallback: T): T {
+  try { return JSON.parse(sessionStorage.getItem(key) ?? "null") ?? fallback; } catch { return fallback; }
+}
+function writeSession(key: string, value: unknown) {
+  try { sessionStorage.setItem(key, JSON.stringify(value)); } catch { /* A blocked storage area must not prevent reading. */ }
+}
 
 type VoiceInstructionResult =
   | { kind: "scoped_work"; work: WorkItemView }
@@ -66,6 +74,21 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const [undoQueuedWork, setUndoQueuedWork] = useState<{ feedId: string; workId: string } | null>(null);
   const [undoRevision, setUndoRevision] = useState<string | null>(null);
   const [workspaceFocus, setWorkspaceFocus] = useState<VoiceTarget | null>(null);
+  const [readingFeedbackTarget, setReadingFeedbackTarget] = useState<ReadingFeedbackTarget | null>(() => {
+    const saved = readSession<ReadingFeedbackTarget | null>("attention.readingFeedbackTarget", null);
+    return saved?.feedId === feedId ? saved : null;
+  });
+  const readingFeedbackGenerationRef = useRef(0);
+  const rememberReadingFeedback = useCallback((target: ReadingFeedbackTarget | null) => {
+    readingFeedbackGenerationRef.current += 1;
+    setReadingFeedbackTarget(target);
+    writeSession("attention.readingFeedbackTarget", target);
+  }, []);
+  const [readingSelections, setReadingSelections] = useState<Record<string, Record<string, string>>>(() => readSession("attention.readingSelections", {}));
+  // A reload restores the selected target, not textarea contents. An empty restored dock
+  // must not make later Like/Prefer taps act as if an unfinished reason were still present.
+  const readingDraftStartedRef = useRef(false);
+  const [dockFocusRequest, setDockFocusRequest] = useState(0);
   const [routeDockToClaude, setRouteDockToClaude] = useState(false);
   const [dockTarget, setDockTarget] = useState<VoiceTarget | null>(() => {
     try {
@@ -81,13 +104,19 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const dockScopeExplicitlyChangedRef = useRef(false);
   const toastTimerRef = useRef<number | null>(null);
   const knownCompoundProposalIdsRef = useRef(new Map<string, Set<string>>());
+  const previousFeedRef = useRef(feedId);
 
   useEffect(() => {
     setTab("review");
     setWorkspaceFocus(null);
     setInspector(null);
     setRouteDockToClaude(false);
-  }, [feedId]);
+    if (previousFeedRef.current !== feedId) {
+      rememberReadingFeedback(null);
+      readingDraftStartedRef.current = false;
+    }
+    previousFeedRef.current = feedId;
+  }, [feedId, rememberReadingFeedback]);
 
   const workspaceQuery = useQuery({
     queryKey: ["workspace", feedId],
@@ -109,11 +138,26 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   useEffect(() => {
     if (!canRouteDockToClaude) setRouteDockToClaude(false);
   }, [canRouteDockToClaude]);
-  const cards = useMemo(() => feed ? visibleCards(feed, tab) : [], [feed, tab]);
+  const cardGroups = useMemo(() => feed ? visibleCardGroups(feed, tab) : [], [feed, tab]);
+  const cards = useMemo(() => cardGroups.map((group) => selectedGroupCard(group, readingSelections[feedId]?.[group.id], feed?.readingPreferences)), [cardGroups, feed?.readingPreferences, feedId, readingSelections]);
   const routineActions = useMemo(() => feed ? visibleRoutineActions(feed, tab) : [], [feed, tab]);
   const cardIds = useMemo(() => cards.map((card) => card.id), [cards]);
   const { activeCardId, setActiveCardId, navTo } = useActiveCard(pageRef, cardIds);
   const activeCard = cards.find((card) => card.id === activeCardId) ?? cards[0];
+  const selectReadingVersion = (groupId: string, cardId: string) => {
+    setReadingSelections((current) => {
+      const next = { ...current, [feedId]: { ...current[feedId], [groupId]: cardId } };
+      writeSession("attention.readingSelections", next);
+      return next;
+    });
+    setActiveCardId(cardId);
+  };
+  // A rating can move a reading card to Done before its spoken feedback is submitted. Keep that
+  // explicitly targeted card in the dock's ladder instead of silently talking to the next card.
+  const feedbackCard = readingFeedbackTarget && readingFeedbackTarget.feedId === feed?.config.id
+    ? feed?.cards.find((card) => card.id === readingFeedbackTarget.cardId && card.reading)
+    : undefined;
+  const voiceCard = feedbackCard ?? activeCard;
   const editableQueuedNote = useCallback((card: Card): WorkItemView | undefined => {
     if (!feed) return undefined;
     return [...feed.work].reverse().find((work) =>
@@ -126,7 +170,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const ladder = useMemo<VoiceTarget[]>(() => {
     if (!feed) return [{ kind: "attention" }];
     if (screen === "feed") return [
-      ...(activeCard ? [{ kind: "card" as const, feedId: feed.config.id, cardId: activeCard.id }] : []),
+      ...(voiceCard ? [{ kind: "card" as const, feedId: feed.config.id, cardId: voiceCard.id }] : []),
       { kind: "sweep", feedId: feed.config.id, ...(feed.sweep.currentBatchId ? { batchId: feed.sweep.currentBatchId } : {}) },
       { kind: "feed", feedId: feed.config.id },
       { kind: "attention" },
@@ -138,7 +182,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
       ? workspaceFocus
       : { kind: "feed" as const, feedId: feed.config.id };
     return focus.kind === "feed" ? [focus, { kind: "attention" }] : [focus, { kind: "feed", feedId: feed.config.id }, { kind: "attention" }];
-  }, [activeCard, feed, screen, workspaceFocus, workspaceTab]);
+  }, [voiceCard, feed, screen, workspaceFocus, workspaceTab]);
 
   const changeFeed = (id: string) => {
     setTab("review");
@@ -197,26 +241,52 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   }, [feed?.config.id, feedId]);
 
   const selectDockTarget = useCallback((next: VoiceTarget) => {
+    rememberReadingFeedback(null);
+    readingDraftStartedRef.current = false;
     dockScopeExplicitlyChangedRef.current = true;
     changeDockTarget(next);
-  }, [changeDockTarget]);
+  }, [changeDockTarget, rememberReadingFeedback]);
+
+  const targetReadingFeedback = (card: Card, focus: boolean) => {
+    setActiveCardId(card.id);
+    rememberReadingFeedback({ feedId: card.feedId, cardId: card.id });
+    dockScopeExplicitlyChangedRef.current = true;
+    changeDockTarget({ kind: "card", feedId: card.feedId, cardId: card.id });
+    if (focus) {
+      readingDraftStartedRef.current = true;
+      setDockFocusRequest((request) => request + 1);
+    }
+  };
+  const startReadingFeedback = (target: VoiceTarget) => {
+    if (target.kind !== "card" || !feed) return;
+    const card = feed.cards.find((item) => item.id === target.cardId && item.reading);
+    if (card) {
+      readingDraftStartedRef.current = true;
+      targetReadingFeedback(card, false);
+    }
+  };
 
   useEffect(() => {
     if (!feed) return;
     const context = `${screen}:${feed.config.id}:${screen === "workspace" ? workspaceTab : ""}`;
     if (dockContextRef.current !== context) {
+      const initial = !dockContextRef.current;
       dockContextRef.current = context;
+      dockScopeExplicitlyChangedRef.current = initial && Boolean(feedbackCard);
+      if (!initial) {
+        rememberReadingFeedback(null);
+        readingDraftStartedRef.current = false;
+      }
+    }
+    if (screen === "feed" && dockTarget?.kind === "card" && !voiceCard) {
       dockScopeExplicitlyChangedRef.current = false;
     }
-    if (screen === "feed" && dockTarget?.kind === "card" && !activeCard) {
-      dockScopeExplicitlyChangedRef.current = false;
-    }
-    const candidate = screen === "feed" && dockScopeExplicitlyChangedRef.current && dockTarget?.kind === "card" && activeCard
-      ? { kind: "card" as const, feedId: feed.config.id, cardId: activeCard.id }
+    const candidate = screen === "feed" && dockScopeExplicitlyChangedRef.current && dockTarget?.kind === "card" && voiceCard
+      ? { kind: "card" as const, feedId: feed.config.id, cardId: voiceCard.id }
       : dockTarget;
     const next = preferredTarget(candidate, ladder, dockScopeExplicitlyChangedRef.current);
     if (!sameTarget(next, dockTarget)) changeDockTarget(next);
-  }, [activeCard, changeDockTarget, dockTarget, feed, ladder, screen, workspaceTab]);
+  }, [voiceCard, changeDockTarget, dockTarget, feed, feedbackCard, ladder, rememberReadingFeedback, screen, workspaceTab]);
 
   const withRefresh = async (callback: () => Promise<unknown>, message: string) => {
     try {
@@ -230,6 +300,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
 
   const instruct = (instruction: string) => {
     if (!feed || !dockTarget) return;
+    const feedbackGeneration = readingFeedbackGenerationRef.current;
     void (async () => {
       try {
         const assignee = canRouteDockToClaude && routeDockToClaude ? "claude" : undefined;
@@ -242,6 +313,10 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
           showToast(result.work.intent === "sweep_rejudge" ? `Feedback queued for ${agentName}` : `Queued for ${agentName}`);
         } else {
           showToast("Revision proposal ready for approval");
+        }
+        if (sameTarget(dockTargetRef.current, dockTarget) && readingFeedbackGenerationRef.current === feedbackGeneration) {
+          rememberReadingFeedback(null);
+          readingDraftStartedRef.current = false;
         }
         await refresh();
       } catch (error) {
@@ -419,8 +494,8 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     </>
   );
 
-  const updated = cards.filter((card) => card.status === "to_review_updated");
-  const fresh = cards.filter((card) => card.status !== "to_review_updated");
+  const updated = cardGroups.filter((group) => group.visibleCards.some((card) => card.status === "to_review_updated"));
+  const fresh = cardGroups.filter((group) => !group.visibleCards.some((card) => card.status === "to_review_updated") && group.visibleCards.some((card) => card.status === "to_review_new"));
   const feedWork = visibleFeedWork(feed, tab);
   const parkedClaudeWork = tab === "queued" ? parkedClaudeWorkItems(feed, claudeLiveness) : [];
   return withRealtime(
@@ -442,9 +517,17 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
         <ParkedClaudeWorkNotice items={parkedClaudeWork} onReassign={reassignQueuedWork} />
         {tab === "review" && updated.length > 0 && <div className="section-label">Back for review <span>{updated.length}</span></div>}
         {cards.map((card, index) => (
-          <Fragment key={card.id}>
+          <Fragment key={cardGroups[index].id}>
             {tab === "review" && index === updated.length && fresh.length > 0 && <div className="section-label" key={`${card.id}-label`}>New <span>{fresh.length}</span></div>}
-            <CardView key={card.id} card={card} queuedFor={cardQueuedFor(card.id)} queuedNote={editableQueuedNote(card)} active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()} onAction={(action) => runCardAction(card, action)} onReturnToReview={() => returnToReview(card)} />
+            <CardView
+              card={card} queuedFor={cardQueuedFor(card.id)} queuedNote={editableQueuedNote(card)}
+              active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()}
+              onAction={(action) => runCardAction(card, action)} onReturnToReview={() => returnToReview(card)}
+              readingReaction={feed.readingReactions?.[card.id]} onReadingFeedback={() => targetReadingFeedback(card, true)}
+              onReadingReaction={() => { if (!readingDraftStartedRef.current) targetReadingFeedback(card, false); }}
+              readingGroup={cardGroups[index]} readingPreference={currentReadingPreference(cardGroups[index], feed.readingPreferences)}
+              onReadingVersion={(cardId) => selectReadingVersion(cardGroups[index].id, cardId)}
+            />
           </Fragment>
         ))}
         {feedWork.map((work) => (
@@ -511,7 +594,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
           </div>
         </section>}
       </main>
-      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} canRouteToClaude={canRouteDockToClaude} routeToClaude={routeDockToClaude} onRouteToClaude={setRouteDockToClaude} onTarget={selectDockTarget} onSubmit={instruct} onRecollect={recollect} />
+      <Dock state={state} feed={feed} target={resolvedDockTarget} ladder={ladder} targetVersion={targetVersion} canRouteToClaude={canRouteDockToClaude} routeToClaude={routeDockToClaude} onRouteToClaude={setRouteDockToClaude} focusRequest={dockFocusRequest} onTarget={selectDockTarget} onDraftStart={startReadingFeedback} onSubmit={instruct} onRecollect={recollect} />
       <InspectorPanel value={inspector} state={state} onClose={() => setInspector(null)} onChanged={(next) => { if (next) changeFeed(next); void refresh(next); }} />
       {toast && <div className="toast">{toast}{undoCardDisposition && <button onClick={() => undoCardDispositionAction(undoCardDisposition)}>Undo</button>}{undoQueuedWork && <button onClick={() => void withRefresh(() => post(`/api/feeds/${undoQueuedWork.feedId}/work/${undoQueuedWork.workId}/cancel`), "Instruction cancelled").then(() => setUndoQueuedWork(null))}>Undo</button>}{undoRevision && <button onClick={() => void withRefresh(() => post(`/api/revisions/${undoRevision}/revert`), "Revision restored").then(() => setUndoRevision(null))}>Undo</button>}</div>}
     </>

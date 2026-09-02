@@ -22,6 +22,8 @@ export interface ClaimedWorkOutput extends WorkItem {
     visibleCardIds?: string[];
     sourceRunRule?: string;
     postActionRule?: string;
+    readingCardRule?: string;
+    readingFeedbackRule?: string;
   };
 }
 
@@ -240,6 +242,13 @@ export function formatWorkClaimOutput(feedId: string, work: WorkClaimResult, con
   if (work.intent === "recollect_sources") {
     operatorGuidance.requiredWriteBack = "Record one or more source runs with `source:record-run --work <workId>`, then create a sweep batch with `sweep:record-batch --work <workId>` before `work:complete`.";
     operatorGuidance.sourceRunRule = "Source recollection work must complete with a new sweep batch recorded for this exact work item.";
+  }
+
+  if (work.readingCard) {
+    operatorGuidance.readingCardRule = "readingCard is the exact published face and writer for this voice instruction, even if a Like previously archived it. Preserve that immutable card. Complete feedback work with a response; any corrected card needs a new id and source-backed publication. This instruction does not change the external-action approval rules.";
+  }
+  if (work.kind === "compound_learnings" && work.learningContext?.readingFeedbackEvents.length) {
+    operatorGuidance.readingFeedbackRule = "Review learningContext.readingFeedbackEvents, including archived Likes, exact compared-face preferences, and voice comments. A cleared reaction or an untouched card is not a dislike; neither is an alternative to a preferred version. Do not invent reasons for taps. Use the latest explicit reaction per card (highest reactionSequence), and the latest preference per run/topic group (highest preferenceSequence), scoped only to its exact member IDs and revisions. Join voice feedback by cardId and contentRevision. Return a policy proposal for approval, never an automatic policy change.";
   }
 
   return Object.keys(operatorGuidance).length ? { ...work, operatorGuidance } : work;

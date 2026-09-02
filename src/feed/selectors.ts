@@ -1,4 +1,6 @@
 import type { Tab } from "../app/types";
+import { groupReadingCards, sameReadingMembers, type ReadingCardGroup } from "../../shared/readingGroups";
+import type { ReadingGroupMember, ReadingPreferenceState } from "../../shared/types";
 import type { Card, CardAction, FeedView, RoutineActionGroup, WorkItemView } from "../types";
 import { safeConfiguredCardActions } from "../../shared/cardActions";
 
@@ -18,6 +20,46 @@ export function visibleCards(feed: FeedView, tab: Tab): Card[] {
   return feed.cards.filter((card) => card.status === "done" && !card.routineActionGroupId);
 }
 
+export interface VisibleCardGroup extends ReadingCardGroup {
+  visibleCards: Card[];
+}
+
+// Tab eligibility stays unchanged. A visible idea also carries its archived alternatives so a
+// previous Like does not remove a version from a later comparison.
+export function visibleCardGroups(feed: FeedView, tab: Tab): VisibleCardGroup[] {
+  const byCard = new Map<string, ReadingCardGroup>();
+  for (const group of groupReadingCards(feed.cards)) {
+    for (const card of group.cards) byCard.set(card.id, group);
+  }
+  const visible = new Map<string, VisibleCardGroup>();
+  for (const card of visibleCards(feed, tab)) {
+    const group = byCard.get(card.id)!;
+    const existing = visible.get(group.id);
+    if (existing) existing.visibleCards.push(card);
+    else visible.set(group.id, { ...group, visibleCards: [card] });
+  }
+  return [...visible.values()];
+}
+
+export function readingMembers(group: ReadingCardGroup): ReadingGroupMember[] {
+  return group.cards.flatMap((card) => card.reading ? [{ cardId: card.id, contentRevision: card.reading.contentRevision }] : []);
+}
+
+export function currentReadingPreference(group: ReadingCardGroup, preferences?: FeedView["readingPreferences"]): ReadingPreferenceState | undefined {
+  const preference = preferences?.[group.id];
+  return preference && group.cards.length > 1 && preference.runId === group.runId
+    && preference.topicKey === group.topicKey && sameReadingMembers(preference.members, readingMembers(group))
+    ? preference : undefined;
+}
+
+export function selectedGroupCard(group: VisibleCardGroup, selectedId?: string, preferences?: FeedView["readingPreferences"]): Card {
+  const preferredId = currentReadingPreference(group, preferences)?.preferredCardId;
+  return group.cards.find((card) => card.id === selectedId)
+    ?? group.cards.find((card) => card.id === preferredId)
+    ?? group.cards.find((card) => group.visibleCards.some((visible) => visible.id === card.id))
+    ?? group.cards[0];
+}
+
 export function visibleRoutineActions(feed: FeedView, tab: Tab): RoutineActionGroup[] {
   const status = tab === "review" ? "proposed" : tab === "done" ? "completed" : tab;
   return feed.routineActions.filter((group) => group.status === status);
@@ -30,10 +72,12 @@ export function visibleFeedWork(feed: FeedView, tab: Tab): WorkItemView[] {
 }
 
 export function countFor(feed: FeedView, tab: Tab): number {
-  return visibleCards(feed, tab).length + visibleRoutineActions(feed, tab).length + visibleFeedWork(feed, tab).length;
+  return visibleCardGroups(feed, tab).length + visibleRoutineActions(feed, tab).length + visibleFeedWork(feed, tab).length;
 }
 
 export function visibleCardActions(card: Card): CardAction[] {
+  // Reading reactions are local; never inherit a proposed action or source-cleanup shortcut.
+  if (card.reading) return [];
   const dismiss: CardAction = { id: "dismiss-card", label: "Dismiss card", behavior: "dismiss_card", variant: "secondary", shortcut: "d" };
   const configuredActions = safeConfiguredCardActions(card.actions);
   if (configuredActions.length) {

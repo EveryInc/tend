@@ -2,7 +2,10 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { AttentionDomain } from "../server/domain";
+import { AttentionDomain, isClaimedWorkItem, ReadingCardRequestError } from "../server/domain";
+import { ReaderRunner, readerHash } from "../server/readers";
+import type { ReaderConfig, ReaderReceipt } from "../shared/readers";
+import { groupReadingCards, readingGroupKey, sameReadingMembers } from "../shared/readingGroups";
 import { drainPrompt } from "../server/dispatcher";
 import { formatWorkClaimOutput, formatWorkListOutput } from "../server/operator";
 import { FileCardRepository, MirroredCardRepository, type CardRepository } from "../server/repositories/cards";
@@ -17,7 +20,7 @@ import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/re
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
-import type { Card, WorkClaimedByReport, WorkItem } from "../shared/types";
+import type { Card, CardReading, ReadingPreferenceInput, WorkClaimedByReport, WorkItem } from "../shared/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
 import { readClaudeWakeLines } from "./support/agents";
 
@@ -25,6 +28,7 @@ const roots: string[] = [];
 
 class FailingCardRepository implements CardRepository {
   failWrites = false;
+  failCardId: string | null = null;
 
   constructor(private readonly delegate: CardRepository) {}
 
@@ -45,7 +49,7 @@ class FailingCardRepository implements CardRepository {
   }
 
   write(card: Card): Promise<void> {
-    if (this.failWrites) return Promise.reject(new Error("simulated migrated card upsert failure"));
+    if (this.failWrites || card.id === this.failCardId) return Promise.reject(new Error("simulated migrated card upsert failure"));
     return this.delegate.write(card);
   }
 
@@ -84,6 +88,542 @@ async function enableSourceCleanup(store: AttentionStore, feedId: string, cardId
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+});
+
+async function claimReadingWork(domain: AttentionDomain, feedId: string, threadId: string): Promise<WorkItem> {
+  const work = await domain.claimWork(feedId, threadId);
+  if (!isClaimedWorkItem(work)) throw new Error("Expected a claimed reading work item.");
+  return work;
+}
+
+async function readingFixture(store: AttentionStore, domain: AttentionDomain, reviewEdit?: CardReading["reviewEdit"]) {
+  const runId = await domain.recordSourceRun("company-attention", "company-attention", [{ transcript: "A complete synthetic fixture transcript." }], [], {});
+  const title = "The fixture recorder captured a spoken test sentence.";
+  const face = "The fixture computer spoke aloud so the recorder could capture a test phrase.";
+  const packet = "Read the complete synthetic fixture transcript.";
+  const output = { flags: ["f1", "f2", "new", "new-version"].map((id) => ({ id, title, face })) };
+  const rawOutput = JSON.stringify(output);
+  const writer: ReaderReceipt = {
+    readerId: "reader-primary", label: "Primary fixture reader", adapter: "claude", requestedModel: "fixture-claude-model",
+    actualModel: "fixture-claude-model", requestedEffort: "high", status: "complete",
+    inputSha256: readerHash(packet), outputSha256: readerHash(rawOutput), inputSnapshotId: "reader-input",
+    outputSnapshotId: "reader-output-reader-primary", authentication: "claude_subscription",
+  };
+  await store.writeRawSnapshot("company-attention", runId, "company-attention", writer.inputSnapshotId, { type: "reader-input", inputSha256: writer.inputSha256, packet });
+  await store.writeRawSnapshot("company-attention", runId, "company-attention", writer.outputSnapshotId!, {
+    type: "reader-output", readerId: writer.readerId, inputSha256: writer.inputSha256, outputSha256: writer.outputSha256, output, rawOutput,
+  });
+  await store.writeRun({ ...await store.readRun("company-attention", runId), readers: [writer] });
+  await domain.recordSweepBatch("company-attention", [runId]);
+  const input = {
+    id: "reading-card", title, why: face,
+    eyebrow: "Fixture meeting",
+    blocks: [{ id: "source", type: "evidence" as const, items: [{ label: "Synthetic source, line 3", href: "https://example.com/meeting" }] }],
+    sourceRunIds: [runId], reading: { runId, readerId: writer.readerId, draftId: "f1", topicKey: "recorder-fixture", ...(reviewEdit ? { reviewEdit } : {}) },
+  };
+  const card = await domain.upsertCard("company-attention", input);
+  return { runId, writer, input, card };
+}
+
+async function readingGroupFixture(store: AttentionStore, domain: AttentionDomain) {
+  const fixture = await readingFixture(store, domain, { by: "Fixture reviewer", note: "Checked the synthetic attribution." });
+  const title = "A second view of the fixture recorder test.";
+  const face = "The fixture test used a synthetic spoken phrase as input.";
+  const output = { flags: [{ id: "c1", title, face }] };
+  const rawOutput = JSON.stringify(output);
+  const otherWriter: ReaderReceipt = {
+    ...fixture.writer, readerId: "reader-secondary", label: "Secondary fixture reader", adapter: "codex",
+    requestedModel: "fixture-codex-model", actualModel: "fixture-codex-model", authentication: "codex_login",
+    outputSha256: readerHash(rawOutput), outputSnapshotId: "reader-output-reader-secondary",
+  };
+  await store.writeRawSnapshot("company-attention", fixture.runId, "company-attention", otherWriter.outputSnapshotId!, {
+    type: "reader-output", readerId: otherWriter.readerId, inputSha256: otherWriter.inputSha256, outputSha256: otherWriter.outputSha256, output, rawOutput,
+  });
+  await store.writeRun({ ...await store.readRun("company-attention", fixture.runId), readers: [fixture.writer, otherWriter] });
+  const alternative = await domain.upsertCard("company-attention", {
+    ...fixture.input, id: "reading-alternative", title, why: face,
+    reading: { ...fixture.input.reading, readerId: otherWriter.readerId, draftId: "c1", reviewEdit: undefined },
+  });
+  const request: ReadingPreferenceInput = {
+    clientEventId: "preference-one", runId: fixture.runId, topicKey: fixture.card.reading!.topicKey!,
+    members: [fixture.card, alternative].map((card) => ({ cardId: card.id, contentRevision: card.reading!.contentRevision })),
+    preferredCardId: alternative.id,
+  };
+  return { ...fixture, alternative, otherWriter, request };
+}
+
+describe("native reading cards", () => {
+  test("requires real saved draft membership and explicit attribution for a changed face", async () => {
+    const { store, domain } = await setup();
+    const { card, input, writer, runId } = await readingFixture(store, domain);
+    const reviewEdit = { by: "Fixture coordinator", note: "Reframed the fixture example after checking its source." };
+    await expect(domain.upsertCard("company-attention", {
+      ...input, id: "invented-origin", reading: { ...input.reading, draftId: "not-in-saved-output", reviewEdit },
+    })).rejects.toMatchObject({ code: "unknown_reader_draft" });
+    for (const change of [{ title: "A coordinator-written headline." }, { why: "A coordinator-written face." }]) {
+      await expect(domain.upsertCard("company-attention", { ...input, id: "uncredited-edit", ...change })).rejects.toMatchObject({ code: "review_edit_required" });
+    }
+    const edited = await domain.upsertCard("company-attention", {
+      ...input, id: "credited-edit", title: "A coordinator-written headline.", reading: { ...input.reading, reviewEdit },
+    });
+    expect(edited.reading).toMatchObject({ draftId: "f1", writer, reviewEdit });
+    expect(await store.readCard("company-attention", card.id)).toEqual(card);
+    const saved = JSON.parse(await readFile(store.feedPath("company-attention", "raw", runId, "company-attention", writer.outputSnapshotId! + ".json"), "utf8"));
+    expect(JSON.parse(saved.rawOutput).flags[0]).toMatchObject({ id: "f1", title: input.title, face: input.why });
+    expect(await store.hasCard("company-attention", "invented-origin")).toBe(false);
+    expect(await store.hasCard("company-attention", "uncredited-edit")).toBe(false);
+  });
+
+  test("does not trust an altered parsed output mirror when attributing a draft", async () => {
+    const { store, domain } = await setup();
+    const { input, writer, runId } = await readingFixture(store, domain);
+    const filename = store.feedPath("company-attention", "raw", runId, "company-attention", writer.outputSnapshotId! + ".json");
+    const snapshot = JSON.parse(await readFile(filename, "utf8"));
+    snapshot.output.flags[0].title = "An unverified parsed mirror headline.";
+    await writeFile(filename, JSON.stringify(snapshot));
+    await expect(domain.upsertCard("company-attention", { ...input, id: "mirror-forgery", title: snapshot.output.flags[0].title })).rejects.toMatchObject({ code: "review_edit_required" });
+    const exact = await domain.upsertCard("company-attention", { ...input, id: "verified-raw-copy" });
+    expect(exact.title).toBe(input.title);
+    expect(exact.reading?.writer).toEqual(writer);
+  });
+
+  test("accepts a small generic attributed quote block and rejects invalid quote text", async () => {
+    const { domain } = await setup();
+    const input = {
+      id: "synthetic-quote", title: "A source quote.", why: "Synthetic quote fixture.",
+      blocks: [{ id: "quote", type: "quote" as const, text: "A synthetic quotation.", attribution: "Fixture speaker" }],
+    };
+    expect((await domain.upsertCard("company-attention", input)).blocks).toEqual(input.blocks);
+    await expect(domain.upsertCard("company-attention", { ...input, blocks: [{ ...input.blocks[0], text: undefined }] })).rejects.toThrow("text");
+    await expect(domain.upsertCard("company-attention", { ...input, blocks: [{ ...input.blocks[0], attribution: " " }] })).rejects.toThrow("attribution");
+  });
+
+  test("runs a custom feed through mocked readers, comparison, voice and Compound without touching another feed", async () => {
+    const { store, domain } = await setup();
+    const untouched = await store.readFeed("company-attention");
+    const feed = await domain.createFeedFromBrief("Independent fixture reading\nRead only synthetic source examples.", "custom-reader-thread");
+    const source = await domain.addSourceFromBrief(feed.id, "Synthetic meetings\nUse only the fixture source.");
+    const runId = await domain.recordSourceRun(feed.id, source.id, [{ transcript: "The complete synthetic meeting transcript." }], [], {});
+    await domain.recordSweepBatch(feed.id, [runId]);
+    const readers: ReaderConfig[] = [
+      { id: "custom-a", label: "First fixture reader", adapter: "codex", model: "fixture-model-a", effort: "high" },
+      { id: "custom-b", label: "Second fixture reader", adapter: "claude", model: "fixture-model-b", effort: "high" },
+    ];
+    const seen: string[] = [];
+    const adapter = async (config: ReaderConfig, packet: string) => {
+      seen.push(packet);
+      const output = { flags: [{ id: "draft-one", title: "Observation by " + config.id, face: "A concrete synthetic example from " + config.id }] };
+      return { output, rawOutput: JSON.stringify(output), ...(config.id === "custom-a" ? { actualModel: config.model } : {}) };
+    };
+    const runner = new ReaderRunner(store, { adapters: { codex: adapter, claude: adapter }, timeoutMs: 10_000 });
+    const packet = "Read all of this complete synthetic meeting transcript.";
+    try {
+      await runner.start({ feedId: feed.id, sourceRunId: runId, packet, readers });
+      await runner.waitForRun(feed.id, runId);
+      expect(seen).toEqual([packet, packet]);
+      const cards: Card[] = [];
+      for (const config of readers) {
+        cards.push(await domain.upsertCard(feed.id, {
+          id: "card-" + config.id, title: "Observation by " + config.id, why: "A concrete synthetic example from " + config.id,
+          sourceRunIds: [runId], blocks: [{ id: "source", type: "evidence", items: ["Synthetic meeting, line 1."] }],
+          reading: { runId, readerId: config.id, draftId: "draft-one", topicKey: "synthetic-example" },
+        }));
+      }
+      expect(cards[0].reading?.writer.actualModel).toBe("fixture-model-a");
+      expect(cards[1].reading?.writer.actualModel).toBeUndefined();
+      expect(cards[1].reading?.writer.requestedModel).toBe("fixture-model-b");
+      await domain.recordCardReaction(feed.id, cards[0].id, { clientEventId: "custom-like", contentRevision: cards[0].reading!.contentRevision, reaction: "like" });
+      await domain.recordReadingPreference(feed.id, {
+        clientEventId: "custom-choice", runId, topicKey: "synthetic-example",
+        members: cards.map((card) => ({ cardId: card.id, contentRevision: card.reading!.contentRevision })),
+        preferredCardId: cards[1].id,
+      });
+      const voice = await domain.submitVoiceInstruction(feed.id, { kind: "card", feedId: feed.id, cardId: cards[1].id }, "Both are useful; the second is easier to understand.");
+      const claimed = await claimReadingWork(domain, feed.id, "custom-reader-thread");
+      expect(claimed.id).toBe(voice.work.id);
+      await domain.completeWork(feed.id, claimed.id, claimed.capabilityToken, { response: "Recorded the explicit fixture feedback.", done: true });
+      const compound = await domain.queueCompound(feed.id);
+      expect(compound.learningContext!.readingFeedbackEvents.map((event) => event.type)).toEqual(expect.arrayContaining(["card.reaction_recorded", "reading.preference_recorded", "voice.instruction_submitted"]));
+      const fresh = await store.readFeed(feed.id);
+      expect(fresh.cards.filter((card) => card.reading).every((card) => card.status === "done")).toBe(true);
+      expect(fresh.readingReactions?.[cards[0].id]?.reaction).toBe("like");
+      expect(fresh.readingReactions?.[cards[1].id]).toBeUndefined();
+      expect(await store.readFeed("company-attention")).toEqual(untouched);
+    } finally {
+      await runner.close();
+      await runner.waitForRun(feed.id, runId);
+    }
+  });
+
+  test("binds the writer to a completed native run and preserves immutable reading content", async () => {
+    const { store, domain } = await setup();
+    const { card, input, writer, runId } = await readingFixture(store, domain);
+    expect(card.reading?.writer).toEqual(writer);
+    expect(card.reading?.reviewEdit).toBeUndefined();
+    expect(card.reading?.contentRevision).toMatch(/^[a-f0-9]{64}$/);
+    expect(card.title).toBe(input.title);
+    expect(card.why).toBe(input.why);
+    expect((await domain.upsertCard("company-attention", input)).updatedAt).toBe(card.updatedAt);
+    await expect(domain.upsertCard("company-attention", { ...input, why: "A changed claim." })).rejects.toMatchObject({ code: "immutable_card" });
+    await expect(store.writeCard({ ...card, title: "A changed headline." })).rejects.toThrow("immutable");
+    await expect(store.writeCard({ ...card, reading: undefined })).rejects.toThrow("provenance cannot be removed");
+    await expect(domain.upsertCard("company-attention", { ...input, id: "missing-run", sourceRunIds: undefined })).rejects.toThrow("must include its reader run");
+    await store.writeRun({ ...await store.readRun("company-attention", runId), readers: [{ ...writer, status: "failed" }] });
+    await expect(domain.upsertCard("company-attention", { ...input, id: "failed-reader" })).rejects.toThrow("completed native reader receipt");
+    expect(await store.readCard("company-attention", card.id)).toEqual(card);
+  });
+
+  test("preserves bounded review-edit attribution as part of immutable reading content", async () => {
+    const { store, domain } = await setup();
+    const reviewEdit = { by: "Codex coordinator", note: "Corrected the speaker attribution against the transcript." };
+    const { card, input, writer } = await readingFixture(store, domain, { by: ` ${reviewEdit.by} `, note: ` ${reviewEdit.note} ` });
+    expect((await store.readCard("company-attention", card.id)).reading).toMatchObject({ writer, reviewEdit });
+    expect((await domain.upsertCard("company-attention", input)).reading).toEqual(card.reading);
+    await expect(domain.upsertCard("company-attention", { ...input, reading: { ...input.reading, reviewEdit: undefined } })).rejects.toMatchObject({ code: "immutable_card" });
+    await expect(domain.upsertCard("company-attention", { ...input, reading: { ...input.reading, reviewEdit: { ...reviewEdit, by: "Someone else" } } })).rejects.toMatchObject({ code: "immutable_card" });
+    await expect(store.writeCard({ ...card, reading: { ...card.reading!, reviewEdit: { ...reviewEdit, note: "A different edit." } } })).rejects.toThrow("immutable");
+    for (const invalid of [null, [], "editor", {}, { by: " ", note: "Correction" }, { by: "Editor", note: " " }, { by: "x".repeat(101), note: "Correction" }, { by: "Editor", note: "x".repeat(1001) }]) {
+      await expect(domain.upsertCard("company-attention", { ...input, id: "invalid-review-edit", reading: { ...input.reading, reviewEdit: invalid as any } })).rejects.toThrow("reviewEdit");
+    }
+    expect(await store.hasCard("company-attention", "invalid-review-edit")).toBe(false);
+  });
+
+  test("records an explicit reaction and exact face, archives locally, and never queues cleanup or changes policy", async () => {
+    const { store, domain } = await setup();
+    const { card, input, writer } = await readingFixture(store, domain);
+    const before = await store.readFeed("company-attention");
+    const request = { clientEventId: "like-1", contentRevision: card.reading!.contentRevision, reaction: "like" as const };
+    const result = await domain.recordCardReaction("company-attention", card.id, request);
+    expect(result.card.status).toBe("done");
+    expect(result.event.detail).toMatchObject({
+      reaction: "like", contentRevision: request.contentRevision, reactionSequence: 1,
+      readingCard: { cardId: card.id, face: { title: input.title, body: input.why, sourceLabel: input.eyebrow, blocks: input.blocks }, reading: { writer } },
+    });
+    expect(result.card.history.at(-1)).toMatchObject({ type: "user.reading_reaction", detail: "like" });
+    const replay = await domain.recordCardReaction("company-attention", card.id, request);
+    expect(replay.duplicate).toBe(true);
+    expect(replay.event.id).toBe(result.event.id);
+    expect(replay.card.updatedAt).toBe(result.card.updatedAt);
+    expect((await domain.upsertCard("company-attention", input)).status).toBe("done");
+    const after = await store.readFeed("company-attention");
+    expect(after.readingReactions?.[card.id]).toMatchObject({ reaction: "like", eventId: result.event.id });
+    expect(after.work).toEqual(before.work);
+    expect(after.policy).toBe(before.policy);
+    expect(after.sweep).toEqual(before.sweep);
+    expect((await store.readEvents("company-attention")).filter((event) => event.type === "card.reaction_recorded")).toHaveLength(1);
+  });
+
+  test("keeps cleared, negative, and untouched reactions distinct and protects retry identity", async () => {
+    const { store, domain } = await setup();
+    const { card, input } = await readingFixture(store, domain);
+    const alternative = await domain.upsertCard("company-attention", { ...input, id: "alternative", reading: { ...input.reading, draftId: "f2" } });
+    const request = { clientEventId: "tap-1", contentRevision: card.reading!.contentRevision, reaction: "not_for_me" as const };
+    const first = await domain.recordCardReaction("company-attention", card.id, request);
+    await expect(domain.recordCardReaction("company-attention", card.id, { ...request, reaction: "like" })).rejects.toMatchObject({ status: 409, code: "client_event_conflict" });
+    await expect(domain.recordCardReaction("company-attention", alternative.id, { ...request, contentRevision: alternative.reading!.contentRevision })).rejects.toMatchObject({ code: "client_event_conflict" });
+    const cleared = await domain.recordCardReaction("company-attention", card.id, { ...request, clientEventId: "tap-2", reaction: null });
+    expect(cleared.event.detail).toMatchObject({ reactionSequence: 2 });
+    expect(cleared.card.status).toBe("done");
+    expect(cleared.card.updatedAt).toBe(first.card.updatedAt);
+    const feed = await store.readFeed("company-attention");
+    expect(feed.readingReactions?.[card.id]?.reaction).toBeNull();
+    expect(feed.readingReactions?.[alternative.id]).toBeUndefined();
+    await domain.recordCardReaction("company-attention", card.id, request);
+    expect((await store.readFeed("company-attention")).readingReactions?.[card.id]?.reaction).toBeNull();
+  });
+
+  test("rejects stale, invalid, and non-reading reactions without recording feedback", async () => {
+    const { store, domain } = await setup();
+    const { card } = await readingFixture(store, domain);
+    const beforeEvents = await store.readEvents("company-attention");
+    const request = { clientEventId: "stale-tap", contentRevision: "c".repeat(64), reaction: "like" };
+    await expect(domain.recordCardReaction("company-attention", card.id, request)).rejects.toMatchObject({ status: 409, code: "stale_content" });
+    await expect(domain.recordCardReaction("company-attention", card.id, { ...request, reaction: "not" })).rejects.toBeInstanceOf(ReadingCardRequestError);
+    await expect(domain.recordCardReaction("company-attention", card.id, { ...request, reaction: undefined })).rejects.toBeInstanceOf(ReadingCardRequestError);
+    await expect(domain.recordCardReaction("company-attention", "company-source-confirmation", request)).rejects.toMatchObject({ status: 404 });
+    expect(await store.readEvents("company-attention")).toEqual(beforeEvents);
+    expect((await store.readCard("company-attention", card.id)).status).toBe("to_review_new");
+  });
+
+  test("recovers a recorded Like after an archive write fails without overriding later voice input", async () => {
+    const { root } = await setup();
+    const cards = new FailingCardRepository(new FileCardRepository(root));
+    const store = new AttentionStore(root, { cards });
+    await store.init();
+    const domain = new AttentionDomain(store);
+    const { card } = await readingFixture(store, domain);
+    const request = { clientEventId: "retry-archive", contentRevision: card.reading!.contentRevision, reaction: "like" as const };
+    cards.failWrites = true;
+    await expect(domain.recordCardReaction("company-attention", card.id, request)).rejects.toThrow("simulated migrated card upsert failure");
+    const recorded = (await store.readEvents("company-attention")).filter((event) => event.type === "card.reaction_recorded");
+    expect(recorded).toHaveLength(1);
+    expect((await store.readCard("company-attention", card.id)).status).toBe("to_review_new");
+    cards.failWrites = false;
+    const retried = await domain.recordCardReaction("company-attention", card.id, request);
+    expect(retried.duplicate).toBe(true);
+    expect(retried.event.id).toBe(recorded[0].id);
+    expect(retried.card.status).toBe("done");
+    await domain.submitVoiceInstruction("company-attention", { kind: "card", feedId: "company-attention", cardId: card.id }, "I liked the example, but I already knew it.");
+    const oldRetry = await domain.recordCardReaction("company-attention", card.id, request);
+    expect(oldRetry.card.status).toBe("queued");
+    await expect(domain.recordCardReaction("company-attention", card.id, { ...request, clientEventId: "new-busy-tap" })).rejects.toMatchObject({ code: "card_busy" });
+    const cleared = await domain.recordCardReaction("company-attention", card.id, { ...request, clientEventId: "clear-while-queued", reaction: null });
+    expect(cleared.card.status).toBe("queued");
+  });
+
+  test("brings archived Likes and exact subsequent voice feedback into the normal Compound claim", async () => {
+    const { store, domain } = await setup();
+    const reviewEdit = { by: "Codex coordinator", note: "Corrected the speaker attribution against the transcript." };
+    const { card, input, writer } = await readingFixture(store, domain, reviewEdit);
+    await domain.bindFeed("company-attention", "reading-thread");
+    const policy = (await store.readFeed("company-attention")).policy;
+    const like = await domain.recordCardReaction("company-attention", card.id, { clientEventId: "like-before-voice", contentRevision: card.reading!.contentRevision, reaction: "like" });
+    expect(like.event.detail).toMatchObject({ readingCard: { reading: { writer, reviewEdit } } });
+    const voice = await domain.submitVoiceInstruction("company-attention", { kind: "card", feedId: "company-attention", cardId: card.id }, "This is easy to understand, but I was in this meeting.");
+    expect(voice.work.readingCard).toMatchObject({ contentRevision: card.reading!.contentRevision, face: { title: input.title, body: input.why }, reading: { writer, reviewEdit } });
+    expect((await store.readCard("company-attention", card.id)).status).toBe("queued");
+    const voiceClaim = await claimReadingWork(domain, "company-attention", "reading-thread");
+    expect(voiceClaim.id).toBe(voice.work.id);
+    await expect(domain.completeWork("company-attention", voice.work.id, voiceClaim.capabilityToken, {
+      response: "Attempted to rewrite the source.", done: true, blocks: [{ id: "rewrite", type: "memo", text: "Different source." }],
+    })).rejects.toThrow("immutable");
+    expect((await store.readCard("company-attention", card.id)).blocks).toEqual(input.blocks);
+    await domain.completeWork("company-attention", voice.work.id, voiceClaim.capabilityToken, { response: "Recorded the explicit feedback; no source or policy changes.", done: true });
+    const compound = await domain.queueCompound("company-attention");
+    const feedback = compound.learningContext!.readingFeedbackEvents;
+    expect(feedback.map((event) => event.type)).toEqual(["card.reaction_recorded", "voice.instruction_submitted"]);
+    expect(feedback[0].detail).toMatchObject({ readingCard: { reading: { writer, reviewEdit } } });
+    expect(feedback[1].detail).toMatchObject({ instruction: "This is easy to understand, but I was in this meeting.", readingCard: { reading: { writer, reviewEdit }, face: { body: input.why } } });
+    const claimed = await claimReadingWork(domain, "company-attention", "reading-thread");
+    expect(claimed?.id).toBe(compound.id);
+    expect(formatWorkClaimOutput("company-attention", claimed)).toMatchObject({ learningContext: { readingFeedbackEvents: feedback } });
+    expect(formatWorkClaimOutput("company-attention", claimed)).toMatchObject({ operatorGuidance: { readingFeedbackRule: expect.stringContaining("never an automatic policy change") } });
+    expect(compound.instruction).toContain("no reaction is not a dislike");
+    expect((await store.readFeed("company-attention")).policy).toBe(policy);
+    expect((await store.readEvents("company-attention")).some((event) => event.type === "policy.applied" || event.type === "revision.applied")).toBe(false);
+    const legacy = await store.readCard("company-attention", "company-source-confirmation");
+    legacy.status = "done";
+    await store.writeCard(legacy);
+    await expect(domain.submitVoiceInstruction("company-attention", { kind: "card", feedId: "company-attention", cardId: legacy.id }, "Legacy card feedback.")).rejects.toThrow("Done cards cannot be queued");
+  });
+
+  test("persists reading identity and feedback through the existing SQLite authority and mirrors", async () => {
+    const { root } = await setup();
+    const sqlite = new LocalSqliteStore(path.join(root, "attention.db"));
+    await sqlite.init();
+    const options = {
+      cards: new MirroredCardRepository(sqlite.cards(), new FileCardRepository(root)),
+      events: new MirroredFeedEventRepository(sqlite.feedEvents(), new FileFeedEventRepository(root)),
+      sourceRuns: new MirroredSourceRunRepository(sqlite.sourceRuns(), new FileSourceRunRepository(root)),
+    };
+    const store = new AttentionStore(root, options);
+    await store.init();
+    try {
+      const domain = new AttentionDomain(store);
+      const { card } = await readingFixture(store, domain);
+      const result = await domain.recordCardReaction("company-attention", card.id, { clientEventId: "durable-like", contentRevision: card.reading!.contentRevision, reaction: "like" });
+      const reopened = new AttentionStore(root, options);
+      await reopened.init();
+      expect((await reopened.readCard("company-attention", card.id)).reading).toEqual(card.reading);
+      expect((await reopened.readFeed("company-attention")).readingReactions?.[card.id]?.eventId).toBe(result.event.id);
+      const mirroredCard = JSON.parse(await readFile(path.join(root, "feeds", "company-attention", "cards", `${card.id}.json`), "utf8"));
+      expect(mirroredCard.reading).toEqual(card.reading);
+      expect((await new FileFeedEventRepository(root).list("company-attention")).find((event) => event.id === result.event.id)).toEqual(result.event);
+      // Same timestamp, with IDs that sort in reverse causal order in SQLite.
+      for (const [id, reactionSequence, reaction] of [["reaction-z-first", 2, "not_for_me"], ["reaction-a-last", 3, null]] as const) {
+        await options.events.append({
+          ...result.event, id,
+          detail: { ...(result.event.detail as Record<string, unknown>), clientEventId: id, reactionSequence, reaction },
+        });
+      }
+      expect((await reopened.readFeed("company-attention")).readingReactions?.[card.id]).toMatchObject({ eventId: "reaction-a-last", reaction: null });
+      const next = await domain.recordCardReaction("company-attention", card.id, { clientEventId: "after-tied-votes", contentRevision: card.reading!.contentRevision, reaction: "like" });
+      expect(next.event.detail).toMatchObject({ reactionSequence: 4 });
+      expect((await reopened.readFeed("company-attention")).readingReactions?.[card.id]?.eventId).toBe(next.event.id);
+    } finally {
+      sqlite.close();
+    }
+  });
+});
+
+describe("native reading version preferences", () => {
+  test("groups only explicit same-run topics, leaves singletons alone, and orders versions stably without author positions", async () => {
+    const { store, domain } = await setup();
+    const { card, alternative } = await readingGroupFixture(store, domain);
+    const sameMeetingOtherTopic = { ...card, id: "other-topic", reading: { ...card.reading!, topicKey: "a-different-idea" } };
+    const otherRun = { ...card, id: "other-run", reading: { ...card.reading!, runId: "other-run" } };
+    const noTopic = { ...card, id: "no-topic", reading: { ...card.reading!, topicKey: undefined } };
+    const blankTopic = { ...card, id: "blank-topic", reading: { ...card.reading!, topicKey: " " } };
+    const ordinary = { ...card, id: "ordinary", reading: undefined };
+    const all = [card, sameMeetingOtherTopic, alternative, otherRun, noTopic, blankTopic, ordinary];
+    const groups = groupReadingCards(all);
+    expect(groups).toHaveLength(6);
+    const paired = groups.find((group) => group.cards.length === 2)!;
+    expect(paired.id).toBe(readingGroupKey(card.reading!.runId, card.reading!.topicKey!));
+    expect(paired.cards.map((item) => item.id).sort()).toEqual([card.id, alternative.id].sort());
+    expect(groupReadingCards([...all].reverse()).find((group) => group.id === paired.id)?.cards.map((item) => item.id)).toEqual(paired.cards.map((item) => item.id));
+    expect(all[0]).toBe(card);
+    expect(groups.filter((group) => !group.runId).map((group) => group.cards[0].id)).toEqual(["no-topic", "blank-topic", "ordinary"]);
+    const firstAuthors = new Set(Array.from({ length: 30 }, (_, index) => {
+      const variants = [card, alternative].map((item) => ({ ...item, reading: { ...item.reading!, topicKey: `topic-${index}` } }));
+      return groupReadingCards(variants)[0].cards[0].reading!.readerId;
+    }));
+    expect(firstAuthors.size).toBe(2);
+  });
+
+  test("archives the exact comparison locally, preserves individual Likes, and leaves alternatives otherwise unrated", async () => {
+    const { root, store, domain } = await setup();
+    const { card, alternative, writer, otherWriter, request } = await readingGroupFixture(store, domain);
+    const like = await domain.recordCardReaction("company-attention", card.id, { clientEventId: "independent-like", contentRevision: card.reading!.contentRevision, reaction: "like" });
+    const before = await store.readFeed("company-attention");
+    const result = await domain.recordReadingPreference("company-attention", { ...request, reason: "The other version makes the example clearer." });
+    expect(result.cards.every((item) => item.status === "done")).toBe(true);
+    expect(result.event.detail).toMatchObject({ preferredCardId: alternative.id, members: expect.arrayContaining(request.members), preferenceSequence: 1, reason: "The other version makes the example clearer." });
+    const compared = (result.event.detail as { readingCards: Array<{ cardId: string; face: { title: string }; reading: CardReading }> }).readingCards;
+    expect(compared.find((item) => item.cardId === card.id)).toMatchObject({ face: { title: card.title }, reading: { writer, reviewEdit: card.reading!.reviewEdit } });
+    expect(compared.find((item) => item.cardId === alternative.id)).toMatchObject({ face: { title: alternative.title }, reading: { writer: otherWriter } });
+    const after = await store.readFeed("company-attention");
+    expect(after.readingReactions?.[card.id]?.eventId).toBe(like.event.id);
+    expect(after.readingReactions?.[alternative.id]).toBeUndefined();
+    expect(after.work).toEqual(before.work);
+    expect(after.policy).toBe(before.policy);
+    expect(after.sweep).toEqual(before.sweep);
+    expect(after.runs).toEqual(before.runs);
+    const key = readingGroupKey(request.runId, request.topicKey);
+    expect(after.readingPreferences?.[key]).toMatchObject({ preferredCardId: alternative.id, eventId: result.event.id, members: expect.arrayContaining(request.members) });
+    const reopened = new AttentionStore(root);
+    await reopened.init();
+    expect((await reopened.readFeed("company-attention")).readingPreferences?.[key]).toEqual(after.readingPreferences?.[key]);
+  });
+
+  test("retries by exact comparison and reason, replaces preferences, and clears without reopening or changing Likes", async () => {
+    const { store, domain } = await setup();
+    const { card, alternative, request } = await readingGroupFixture(store, domain);
+    const first = await domain.recordReadingPreference("company-attention", request);
+    const retry = await domain.recordReadingPreference("company-attention", { ...request, members: [...request.members].reverse() });
+    expect(retry.duplicate).toBe(true);
+    expect(retry.event.id).toBe(first.event.id);
+    expect(retry.cards.map((item) => item.updatedAt)).toEqual(first.cards.map((item) => item.updatedAt));
+    for (const changed of [{ preferredCardId: card.id }, { reason: "A different note." }, { topicKey: "other-topic" }]) {
+      await expect(domain.recordReadingPreference("company-attention", { ...request, ...changed })).rejects.toMatchObject({ code: "client_event_conflict" });
+    }
+    const second = await domain.recordReadingPreference("company-attention", { ...request, clientEventId: "preference-two", preferredCardId: card.id });
+    expect(second.event.detail).toMatchObject({ preferenceSequence: 2 });
+    const cleared = await domain.recordReadingPreference("company-attention", { ...request, clientEventId: "preference-clear", preferredCardId: null });
+    expect(cleared.event.detail).toMatchObject({ preferenceSequence: 3, preferredCardId: null });
+    expect(cleared.cards.every((item) => item.status === "done")).toBe(true);
+    expect(cleared.cards.map((item) => item.updatedAt)).toEqual(first.cards.map((item) => item.updatedAt));
+    await domain.recordReadingPreference("company-attention", request);
+    const feed = await store.readFeed("company-attention");
+    expect(feed.readingPreferences?.[readingGroupKey(request.runId, request.topicKey)]?.preferredCardId).toBeNull();
+    expect(feed.readingReactions?.[card.id]).toBeUndefined();
+    expect(feed.readingReactions?.[alternative.id]).toBeUndefined();
+    expect((await store.readEvents("company-attention")).filter((event) => event.type === "reading.preference_recorded")).toHaveLength(3);
+  });
+
+  test("rejects invalid, incomplete, foreign, or stale compared versions before recording a preference", async () => {
+    const { store, domain } = await setup();
+    const { card, input, request } = await readingGroupFixture(store, domain);
+    for (const value of [null, [], { ...request, topicKey: " " }, { ...request, members: request.members.slice(0, 1) }, { ...request, members: [request.members[0], request.members[0]] }, { ...request, preferredCardId: "not-a-member" }, { ...request, reason: {} }]) {
+      await expect(domain.recordReadingPreference("company-attention", value)).rejects.toMatchObject({ status: 400, code: "invalid_preference" });
+    }
+    await expect(domain.recordReadingPreference("company-attention", { ...request, members: [request.members[0], { ...request.members[1], contentRevision: "e".repeat(64) }] })).rejects.toMatchObject({ code: "stale_content" });
+    const otherTopic = await domain.upsertCard("company-attention", { ...input, id: "foreign-topic", reading: { ...input.reading, topicKey: "unrelated-idea" } });
+    await expect(domain.recordReadingPreference("company-attention", { ...request, preferredCardId: card.id, members: [request.members[0], { cardId: otherTopic.id, contentRevision: otherTopic.reading!.contentRevision }] })).rejects.toMatchObject({ code: "stale_members" });
+    await expect(domain.recordReadingPreference("company-attention", { ...request, runId: "different-run" })).rejects.toMatchObject({ code: "stale_members" });
+    await domain.upsertCard("company-attention", { ...input, id: "a-new-version", reading: { ...input.reading, draftId: "new-version" } });
+    await expect(domain.recordReadingPreference("company-attention", request)).rejects.toMatchObject({ code: "stale_members" });
+    expect((await store.readEvents("company-attention")).some((event) => event.type === "reading.preference_recorded")).toBe(false);
+  });
+
+  test("blocks active group work, including a queued item whose card already says Done", async () => {
+    const { store, domain } = await setup();
+    const { alternative, request } = await readingGroupFixture(store, domain);
+    await domain.submitVoiceInstruction("company-attention", { kind: "card", feedId: "company-attention", cardId: alternative.id }, "Please explain this version.");
+    await expect(domain.recordReadingPreference("company-attention", request)).rejects.toMatchObject({ code: "card_busy" });
+    const card = await store.readCard("company-attention", alternative.id);
+    card.status = "done";
+    await store.writeCard(card);
+    await expect(domain.recordReadingPreference("company-attention", request)).rejects.toMatchObject({ code: "card_busy" });
+    expect((await store.readEvents("company-attention")).some((event) => event.type === "reading.preference_recorded")).toBe(false);
+    const cleared = await domain.recordReadingPreference("company-attention", { ...request, preferredCardId: null });
+    expect(cleared.cards.find((item) => item.id !== alternative.id)?.status).toBe("to_review_new");
+    expect((await store.readWorkItems("company-attention"))[0].status).toBe("queued");
+  });
+
+  test("recovers a partially archived preference without duplicating the event or touching later voice work", async () => {
+    const { root } = await setup();
+    const cards = new FailingCardRepository(new FileCardRepository(root));
+    const store = new AttentionStore(root, { cards });
+    await store.init();
+    const domain = new AttentionDomain(store);
+    const { request } = await readingGroupFixture(store, domain);
+    const group = (await store.readFeed("company-attention")).cards.filter((card) => request.members.some((member) => member.cardId === card.id));
+    cards.failCardId = group.at(-1)!.id;
+    await expect(domain.recordReadingPreference("company-attention", request)).rejects.toThrow("simulated migrated card upsert failure");
+    const partial = await store.readFeed("company-attention");
+    expect(partial.cards.filter((card) => request.members.some((member) => member.cardId === card.id) && card.status === "done")).toHaveLength(1);
+    const recorded = (await store.readEvents("company-attention")).filter((event) => event.type === "reading.preference_recorded");
+    expect(recorded).toHaveLength(1);
+    cards.failCardId = null;
+    const retried = await domain.recordReadingPreference("company-attention", request);
+    expect(retried.duplicate).toBe(true);
+    expect(retried.event.id).toBe(recorded[0].id);
+    expect(retried.cards.every((card) => card.status === "done")).toBe(true);
+    await domain.submitVoiceInstruction("company-attention", { kind: "card", feedId: "company-attention", cardId: group[0].id }, "One more comment after preferring this.");
+    const oldRetry = await domain.recordReadingPreference("company-attention", request);
+    expect(oldRetry.cards.find((card) => card.id === group[0].id)?.status).toBe("queued");
+    expect((await store.readEvents("company-attention")).filter((event) => event.type === "reading.preference_recorded")).toHaveLength(1);
+  });
+
+  test("a cleared partial preference cannot re-archive on an old retry", async () => {
+    const { root } = await setup();
+    const cards = new FailingCardRepository(new FileCardRepository(root));
+    const store = new AttentionStore(root, { cards });
+    await store.init();
+    const domain = new AttentionDomain(store);
+    const { request } = await readingGroupFixture(store, domain);
+    cards.failWrites = true;
+    await expect(domain.recordReadingPreference("company-attention", request)).rejects.toThrow("simulated migrated card upsert failure");
+    cards.failWrites = false;
+    await domain.recordReadingPreference("company-attention", { ...request, clientEventId: "clear-partial", preferredCardId: null });
+    const oldRetry = await domain.recordReadingPreference("company-attention", request);
+    expect(oldRetry.cards.every((card) => card.status === "to_review_new")).toBe(true);
+    expect((await store.readFeed("company-attention")).readingPreferences?.[readingGroupKey(request.runId, request.topicKey)]?.preferredCardId).toBeNull();
+  });
+
+  test("an old preference remains scoped to its compared versions when a new variant appears", async () => {
+    const { store, domain } = await setup();
+    const { input, request } = await readingGroupFixture(store, domain);
+    await domain.recordReadingPreference("company-attention", request);
+    const added = await domain.upsertCard("company-attention", { ...input, id: "new-after-preference", reading: { ...input.reading, draftId: "new" } });
+    await domain.recordReadingPreference("company-attention", request);
+    expect((await store.readCard("company-attention", added.id)).status).toBe("to_review_new");
+    const feed = await store.readFeed("company-attention");
+    const preference = feed.readingPreferences![readingGroupKey(request.runId, request.topicKey)];
+    const group = groupReadingCards(feed.cards).find((item) => item.id === readingGroupKey(request.runId, request.topicKey))!;
+    expect(preference.members).toHaveLength(2);
+    expect(sameReadingMembers(preference.members, group.cards.map((card) => ({ cardId: card.id, contentRevision: card.reading!.contentRevision })))).toBe(false);
+  });
+
+  test("includes exact preference comparisons and subsequent voice feedback in the existing Compound claim", async () => {
+    const { store, domain } = await setup();
+    const { card, request } = await readingGroupFixture(store, domain);
+    await domain.bindFeed("company-attention", "preference-thread");
+    const preference = await domain.recordReadingPreference("company-attention", { ...request, reason: "I like the other version better." });
+    const voice = await domain.submitVoiceInstruction("company-attention", { kind: "card", feedId: "company-attention", cardId: card.id }, "Both are good; the other version is clearer.");
+    const voiceClaim = await claimReadingWork(domain, "company-attention", "preference-thread");
+    await domain.completeWork("company-attention", voice.work.id, voiceClaim.capabilityToken, { response: "Recorded the comment without changing the cards.", done: true });
+    const compound = await domain.queueCompound("company-attention");
+    const claimed = await claimReadingWork(domain, "company-attention", "preference-thread");
+    expect(claimed?.id).toBe(compound.id);
+    const feedback = claimed!.learningContext!.readingFeedbackEvents;
+    expect(feedback.map((event) => event.type)).toEqual(["reading.preference_recorded", "voice.instruction_submitted"]);
+    expect(feedback[0].id).toBe(preference.event.id);
+    expect(feedback[1].detail).toMatchObject({ instruction: "Both are good; the other version is clearer.", readingCard: { cardId: card.id, contentRevision: card.reading!.contentRevision } });
+    expect(formatWorkClaimOutput("company-attention", claimed)).toMatchObject({ operatorGuidance: { readingFeedbackRule: expect.stringContaining("neither is an alternative") } });
+    expect((await store.readFeed("company-attention")).readingReactions).toEqual({});
+  });
 });
 
 describe("feed thread operator handshake", () => {

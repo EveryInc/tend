@@ -1,10 +1,12 @@
-import { type RefObject, useEffect, useState } from "react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 
 export function useActiveCard(pageRef: RefObject<HTMLElement>, cardIds: string[]) {
   const [activeCardId, setActiveCardId] = useState<string | null>(null);
+  const activeCardIdRef = useRef(activeCardId);
+  activeCardIdRef.current = activeCardId;
 
   useEffect(() => {
-    let scheduled = false;
+    let scheduled: number | null = null;
     const pickActive = () => {
       const readingLine = window.innerHeight * 0.42;
       let best: string | null = null;
@@ -23,17 +25,18 @@ export function useActiveCard(pageRef: RefObject<HTMLElement>, cardIds: string[]
       setActiveCardId(best);
     };
     const update = () => {
-      if (scheduled) return;
-      scheduled = true;
-      requestAnimationFrame(() => {
-        scheduled = false;
+      if (scheduled !== null) return;
+      scheduled = requestAnimationFrame(() => {
+        scheduled = null;
         pickActive();
       });
     };
     window.addEventListener("scroll", update, { passive: true });
     window.addEventListener("resize", update);
-    requestAnimationFrame(pickActive);
+    // Switching versions must preserve the user's explicit card selection.
+    if (!activeCardIdRef.current || !cardIds.includes(activeCardIdRef.current)) update();
     return () => {
+      if (scheduled !== null) cancelAnimationFrame(scheduled);
       window.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };

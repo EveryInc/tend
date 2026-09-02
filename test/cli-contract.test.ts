@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runTendCli } from "../server/cli";
@@ -7,6 +7,8 @@ import { CLI_COMMANDS, INTERNAL_CLI_COMMANDS, cliCommandName } from "../server/c
 import { MissingFlagError, formatCliError } from "../server/cli/errors";
 import { assertCliRuntimeMatchesLive } from "../server/cli/runtimeGuard";
 import { setupChroniclePrompt, setupCodexPrompt } from "../server/cli/setup";
+import { CLI_CONTRACT_VERSION } from "../server/version";
+import { AttentionStore } from "../server/store";
 
 describe("CLI contract", () => {
   test("keeps public help focused on the v0 agent surface", () => {
@@ -37,6 +39,16 @@ describe("CLI contract", () => {
     for (const command of INTERNAL_CLI_COMMANDS) {
       expect(commandNames).not.toContain(cliCommandName(command));
     }
+  });
+
+  test("exposes native readers and exact-version feedback without edition commands", () => {
+    expect(CLI_CONTRACT_VERSION).toBe("0.5");
+    expect(CLI_COMMANDS).toContain("readers:run --feed <id> --run <source-run-id> --packet-file <path> --readers-file <path> [--prompt-sha256 <hash>]");
+    expect(CLI_COMMANDS).toContain("readers:status --feed <id> --run <source-run-id>");
+    expect(CLI_COMMANDS).toContain("readers:output --feed <id> --run <source-run-id> --reader <id>");
+    expect(CLI_COMMANDS).toContain("card:react --feed <id> --card <id> --feedback-file <path>");
+    expect(CLI_COMMANDS).toContain("card:prefer --feed <id> --preference-file <path>");
+    expect(CLI_COMMANDS.some((command) => command.startsWith("edition:"))).toBe(false);
   });
 
   test("documents only implemented public commands", async () => {
@@ -115,6 +127,45 @@ describe("CLI contract", () => {
       explicitRuntime: true,
       fetchStatus: async () => ({ dataDir: "/tmp/live-runtime/data" }),
     })).resolves.toBeUndefined();
+  });
+
+  test("records file-backed source inputs and requires an explicit reader configuration before launch", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "tend-cli-readers-"));
+    const run = async (args: string[]) => {
+      const subprocess = Bun.spawn({
+        cmd: [process.execPath, "tend.ts", "cli", ...args],
+        cwd: process.cwd(),
+        env: { ...process.env, ATTENTION_HOME: home },
+        stdout: "pipe", stderr: "pipe",
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(subprocess.stdout).text(), new Response(subprocess.stderr).text(), subprocess.exited,
+      ]);
+      return { stdout, stderr, code };
+    };
+    try {
+      const snapshots = [{ transcript: "Complete synthetic source text.", synthetic: true }];
+      const files = Object.fromEntries(["snapshots", "judgments", "checkpoint"].map((key) => [key, path.join(home, `${key}.json`)]));
+      await writeFile(files.snapshots, JSON.stringify(snapshots));
+      await writeFile(files.judgments, "[]");
+      await writeFile(files.checkpoint, JSON.stringify({ synthetic: true }));
+      const recorded = await run([
+        "source:record-run", "--feed", "company-attention", "--source", "company-attention",
+        "--snapshots-file", files.snapshots, "--judgments-file", files.judgments, "--checkpoint-file", files.checkpoint,
+      ]);
+      expect(recorded.code).toBe(0);
+      const runId = JSON.parse(recorded.stdout) as string;
+      const store = new AttentionStore(path.join(home, "data"));
+      expect(await store.readRun("company-attention", runId)).toMatchObject({ snapshots: 1, judgments: [] });
+      const saved = JSON.parse(await readFile(store.feedPath("company-attention", "raw", runId, "company-attention", "snapshot-1.json"), "utf8"));
+      expect(saved).toEqual(snapshots[0]);
+      const missing = await run(["readers:run", "--feed", "company-attention", "--run", runId, "--packet-file", "unused.txt"]);
+      expect(missing.code).not.toBe(0);
+      expect(missing.stderr).toContain("Missing --readers-file");
+      expect((await store.readRun("company-attention", runId)).readers).toBeUndefined();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   test("executes the renamed local-dismiss and source-cleanup commands end to end", async () => {

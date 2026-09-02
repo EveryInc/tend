@@ -1,3 +1,5 @@
+import type { ReaderReceipt } from "./readers";
+
 export type FeedId = string;
 export type CardStatus = "to_review_new" | "to_review_updated" | "queued" | "working" | "approved_blocked" | "done";
 export type CardKind = "attention" | "feed_improvement";
@@ -31,7 +33,8 @@ export type BlockType =
   | "profile"
   | "video"
   | "chart"
-  | "receipt";
+  | "receipt"
+  | "quote";
 
 export interface SourceRecipe {
   id: string;
@@ -127,6 +130,7 @@ export interface CardBlock {
   label?: string;
   title?: string;
   text?: string;
+  attribution?: string;
   value?: string;
   items?: Array<string | { label: string; detail?: string; checked?: boolean; href?: string }>;
   before?: string;
@@ -296,6 +300,59 @@ export interface CardContextInfluence {
   sourceCount?: number;
 }
 
+/** Reading cards remain ordinary cards in the existing feed. */
+export interface CardReading {
+  runId: string;
+  readerId: string;
+  draftId: string;
+  topicKey?: string;
+  reviewEdit?: { by: string; note: string };
+  contentRevision: string;
+  writer: ReaderReceipt;
+}
+
+export type CardReadingInput = Pick<CardReading, "runId" | "readerId" | "draftId" | "topicKey" | "reviewEdit">;
+export type CardReaction = "like" | "not_for_me" | null;
+
+export interface ReadingCardSnapshot {
+  cardId: string;
+  contentRevision: string;
+  face: { title: string; body: string; sourceLabel: string; blocks: CardBlock[] };
+  reading: CardReading;
+}
+
+export interface ReadingReactionState {
+  reaction: CardReaction;
+  contentRevision: string;
+  eventId: string;
+  at: string;
+}
+
+export interface ReadingGroupMember {
+  cardId: string;
+  contentRevision: string;
+}
+
+/** A preference compares these exact versions; alternatives do not acquire a dislike. */
+export interface ReadingPreferenceInput {
+  clientEventId: string;
+  runId: string;
+  topicKey: string;
+  members: ReadingGroupMember[];
+  preferredCardId: string | null;
+  reason?: string;
+}
+
+export interface ReadingPreferenceState {
+  runId: string;
+  topicKey: string;
+  members: ReadingGroupMember[];
+  preferredCardId: string | null;
+  reason?: string;
+  eventId: string;
+  at: string;
+}
+
 export interface Card {
   id: string;
   feedId: FeedId;
@@ -307,6 +364,7 @@ export interface Card {
   sourceMailbox?: string;
   sourceRunIds?: string[];
   contextInfluence?: CardContextInfluence;
+  reading?: CardReading;
   blocks: CardBlock[];
   proposedAction?: ProposedAction;
   actions?: CardAction[];
@@ -368,6 +426,9 @@ export interface WorkItem {
   target?: VoiceTarget;
   intent?: "voice_instruction" | "sweep_rejudge" | "recollect_sources";
   feedbackId?: string;
+  // Exact face and writer for a voice instruction, including feedback after a Like archived it.
+  readingCard?: ReadingCardSnapshot;
+  learningContext?: { readingFeedbackEvents: FeedEvent[] };
   startingBatchId?: string | null;
   previousSweepState?: SweepState;
   status: WorkStatus;
@@ -458,6 +519,7 @@ export interface SourceRun {
   sourceId: string;
   snapshots: number;
   judgments: unknown[];
+  readers?: ReaderReceipt[];
   contextUse?: SourceRunContextUse;
   triggerWorkId?: string;
   completedAt?: string;
@@ -529,6 +591,8 @@ export interface FeedView {
   sweep: SweepState;
   drain: DrainState;
   readyNextPass: number;
+  readingReactions?: Record<string, ReadingReactionState>;
+  readingPreferences?: Record<string, ReadingPreferenceState>;
 }
 
 export interface WorkspaceView {

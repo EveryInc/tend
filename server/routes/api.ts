@@ -4,9 +4,29 @@ import path from "node:path";
 import { parseOptionalWorkAgent } from "../../shared/lanes";
 import type { PostActionCompletion, VoiceTarget } from "../../shared/types";
 import type { NativeApprovalSubmission } from "../../shared/nativeApproval";
-import { mindContextPublicationReceipt } from "../domain";
+import type { ReaderConfig } from "../../shared/readers";
+import { ReadingCardRequestError, mindContextPublicationReceipt } from "../domain";
 import { versionInfo } from "../version";
 import { body, mutation, mutationAccessError, type LocalRouteContext } from "./shared";
+
+async function readingMutation(c: any, context: LocalRouteContext, callback: () => Promise<unknown>) {
+  const accessError = mutationAccessError(c, context.mutationToken);
+  if (accessError) return accessError;
+  // Provider launches and ratings require a current session even from the originless CLI.
+  if (!context.mutationToken || c.req.header("x-attention-mutation-token") !== context.mutationToken) {
+    return c.json({ error: "A current local Tend session is required." }, 403);
+  }
+  try {
+    const result = await callback();
+    context.notify({ changedAt: new Date().toISOString() });
+    return c.json(result);
+  } catch (error) {
+    if (error instanceof ReadingCardRequestError) {
+      return c.json({ error: error.message, code: error.code }, error.status);
+    }
+    return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
+  }
+}
 
 export function apiRoutes(context: LocalRouteContext): Hono {
   const { artifactsDir, dataDir, domain, mobileStatus, mutationToken, notify, sqlite, store } = context;
@@ -56,6 +76,49 @@ export function apiRoutes(context: LocalRouteContext): Hono {
     }
   });
   app.get("/api/feeds/:feed/how", async (c) => c.json(await domain.inspectHowFeedWorks(c.req.param("feed"))));
+  app.get("/api/feeds/:feed/runs/:run", async (c) => {
+    c.header("cache-control", "no-store");
+    try {
+      const feedId = c.req.param("feed");
+      const runId = c.req.param("run");
+      const plainId = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,150}$/;
+      if (!plainId.test(feedId) || !plainId.test(runId)) throw new Error("Invalid source run identifier.");
+      const run = await store.readRun(feedId, runId);
+      if (run.feedId !== feedId || run.id !== runId) throw new Error("Source run identity does not match.");
+      return c.json(run);
+    } catch {
+      return c.json({ error: "Source run not found." }, 404);
+    }
+  });
+  app.post("/api/feeds/:feed/runs/:run/readers", async (c) => readingMutation(c, context, async () => {
+    if (!context.readers) throw new Error("The local reader runner is unavailable. Restart Tend with the current build.");
+    const input = await body(c);
+    if (typeof input.packet !== "string") throw new Error("A frozen text packet is required.");
+    if (!Array.isArray(input.readers) || input.readers.length === 0) throw new Error("An explicit reader configuration is required.");
+    if (input.promptSha256 !== undefined && typeof input.promptSha256 !== "string") throw new Error("promptSha256 must be a string.");
+    return context.readers.start({
+      feedId: c.req.param("feed"),
+      sourceRunId: c.req.param("run"),
+      packet: input.packet,
+      readers: input.readers as ReaderConfig[],
+      promptSha256: input.promptSha256 as string | undefined,
+    });
+  }));
+  app.get("/api/feeds/:feed/runs/:run/readers/:reader/output", async (c) => {
+    c.header("cache-control", "no-store");
+    if (!context.readers) return c.json({ error: "The local reader runner is unavailable." }, 503);
+    try {
+      return c.json(await context.readers.readOutput(c.req.param("feed"), c.req.param("run"), c.req.param("reader")));
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 404);
+    }
+  });
+  app.post("/api/feeds/:feed/cards/:card/reaction", async (c) => readingMutation(c, context, async () => {
+    return domain.recordCardReaction(c.req.param("feed"), c.req.param("card"), await body(c) as any);
+  }));
+  app.post("/api/feeds/:feed/reading-preferences", async (c) => readingMutation(c, context, async () => {
+    return domain.recordReadingPreference(c.req.param("feed"), await body(c));
+  }));
   app.get("/api/feeds/:feed/native-approvals", async (c) => {
     c.header("cache-control", "no-store");
     return c.json(await context.nativeApprovals?.list(c.req.param("feed")) ?? []);

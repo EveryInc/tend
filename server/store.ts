@@ -15,6 +15,10 @@ import type {
   MindContextBinding,
   MindContextUpdate,
   PolicyRevision,
+  ReadingCardSnapshot,
+  ReadingGroupMember,
+  ReadingPreferenceState,
+  ReadingReactionState,
   RevisionProposal,
   RoutineActionGroup,
   SourceRun,
@@ -42,7 +46,8 @@ import {
   setupCard,
   threadBinding,
 } from "./templates";
-import { isoNow, makeId, readJson, withMutationLock, writeJson, writeText } from "./util";
+import { digest, isoNow, makeId, readJson, withMutationLock, writeJson, writeText } from "./util";
+import { readingGroupKey } from "../shared/readingGroups";
 import { defaultDictationCapability } from "./monologue";
 import { FileCardRepository, type CardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
@@ -69,6 +74,31 @@ type AtomicRunner = <T>(callback: () => Promise<T>) => Promise<T>;
 
 function defaultDrainState(): DrainState {
   return { status: "idle", consecutiveFailures: 0 };
+}
+
+function canonicalReadingValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalReadingValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonicalReadingValue(item)]));
+  }
+  return value;
+}
+
+export function readingContentRevision(card: Pick<Card, "title" | "why" | "eyebrow" | "blocks" | "reading">): string {
+  const { contentRevision: _revision, ...reading } = card.reading ?? {};
+  return digest(canonicalReadingValue({
+    title: card.title, body: card.why, sourceLabel: card.eyebrow, blocks: card.blocks, reading,
+  }));
+}
+
+export function snapshotReadingCard(card: Card): ReadingCardSnapshot | undefined {
+  if (!card.reading) return undefined;
+  return structuredClone({
+    cardId: card.id,
+    contentRevision: card.reading.contentRevision,
+    face: { title: card.title, body: card.why, sourceLabel: card.eyebrow, blocks: card.blocks },
+    reading: card.reading,
+  });
 }
 
 export function workItemView(work: WorkItem): WorkItemView {
@@ -372,6 +402,48 @@ export class AttentionStore {
     runs.sort((a, b) => (a.completedAt ?? "").localeCompare(b.completedAt ?? "") || a.id.localeCompare(b.id));
     routineActions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     work.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const readingCards = new Map(cards.filter((card) => card.reading).map((card) => [card.id, card]));
+    const readingReactions: Record<string, ReadingReactionState> = {};
+    const readingPreferences: Record<string, ReadingPreferenceState> = {};
+    const reactionSequences = new Map<string, number>();
+    const preferenceSequences = new Map<string, number>();
+    if (readingCards.size) {
+      for (const event of await this.readEvents(feedId)) {
+        if (event.type === "reading.preference_recorded" && event.detail && typeof event.detail === "object") {
+          const detail = event.detail as Record<string, unknown>;
+          if (typeof detail.runId !== "string" || typeof detail.topicKey !== "string" || !detail.topicKey.trim() || !Array.isArray(detail.members) || detail.members.length < 2) continue;
+          const members = detail.members as ReadingGroupMember[];
+          if (!members.every((member) => {
+            if (!member || typeof member.cardId !== "string" || typeof member.contentRevision !== "string") return false;
+            const reading = readingCards.get(member.cardId)?.reading;
+            return Boolean(reading && reading.runId === detail.runId && reading.topicKey === detail.topicKey && reading.contentRevision === member.contentRevision);
+          })) continue;
+          if (detail.preferredCardId !== null && !members.some((member) => member.cardId === detail.preferredCardId)) continue;
+          const key = readingGroupKey(detail.runId, detail.topicKey);
+          const sequence = typeof detail.preferenceSequence === "number" && Number.isSafeInteger(detail.preferenceSequence) && detail.preferenceSequence > 0 ? detail.preferenceSequence : 0;
+          if (sequence < (preferenceSequences.get(key) ?? 0)) continue;
+          preferenceSequences.set(key, sequence);
+          readingPreferences[key] = {
+            runId: detail.runId, topicKey: detail.topicKey, members,
+            preferredCardId: detail.preferredCardId as string | null,
+            ...(typeof detail.reason === "string" ? { reason: detail.reason } : {}), eventId: event.id, at: event.at,
+          };
+          continue;
+        }
+        if (event.type !== "card.reaction_recorded" || !event.cardId || !event.detail || typeof event.detail !== "object") continue;
+        const detail = event.detail as Record<string, unknown>;
+        const card = readingCards.get(event.cardId);
+        if (!card || detail.contentRevision !== card.reading!.contentRevision) continue;
+        if (detail.reaction !== null && detail.reaction !== "like" && detail.reaction !== "not_for_me") continue;
+        const sequence = typeof detail.reactionSequence === "number" && Number.isSafeInteger(detail.reactionSequence) && detail.reactionSequence > 0 ? detail.reactionSequence : 0;
+        // Event repositories may sort equal timestamps by random IDs; causal vote order is explicit.
+        if (sequence < (reactionSequences.get(event.cardId) ?? 0)) continue;
+        reactionSequences.set(event.cardId, sequence);
+        readingReactions[event.cardId] = {
+          reaction: detail.reaction, contentRevision: card.reading!.contentRevision, eventId: event.id, at: event.at,
+        };
+      }
+    }
     return {
       config,
       thread,
@@ -384,6 +456,7 @@ export class AttentionStore {
       sweep,
       drain,
       readyNextPass: cards.filter((card) => card.status === "to_review_updated" && card.readyForPass > config.currentPass).length,
+      ...(readingCards.size ? { readingReactions, readingPreferences } : {}),
     };
   }
 
@@ -472,7 +545,25 @@ export class AttentionStore {
   }
 
   async writeCard(card: Card): Promise<void> {
-    card.updatedAt = isoNow();
+    const existing = await this.cards.has(card.feedId, card.id) ? await this.cards.get(card.feedId, card.id) : null;
+    if (existing?.reading && !card.reading) throw new Error("Reading-card provenance cannot be removed.");
+    if (card.reading) {
+      if (card.reading.contentRevision !== readingContentRevision(card)) throw new Error("Reading-card content is immutable; publish a new card for changed text.");
+      if (existing && (!existing.reading || existing.reading.contentRevision !== card.reading.contentRevision)) {
+        throw new Error("Reading-card content is immutable; publish a new card for changed text.");
+      }
+      if (card.kind !== "attention" || card.proposedAction || card.actions?.length || card.routineActionGroupId) {
+        throw new Error("Reading cards cannot carry executable actions.");
+      }
+      if (card.blocks.some((block) => block.type === "editable_text" || block.editable)) {
+        throw new Error("Reading cards cannot contain editable blocks.");
+      }
+    }
+    const now = isoNow();
+    // Reaction retry recovery relies on a later deliberate edit having a newer timestamp.
+    card.updatedAt = card.reading && existing && now <= existing.updatedAt
+      ? new Date(Date.parse(existing.updatedAt) + 1).toISOString()
+      : now;
     await this.cards.write(card);
   }
 
