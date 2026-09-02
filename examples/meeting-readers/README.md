@@ -10,6 +10,12 @@ These files contain only fictional data and placeholder model selectors. They ar
 
 See [Meeting readers](../../docs/MEETING_READERS.md) for the manual setup and host-access check. Copy the structure, not the fictional opinions, into a private working directory. Keep real packets, personal calibration, source URLs, credentials and receipts out of the repository.
 
+Start with the guide's [collection ideas and five lenses](../../docs/MEETING_READERS.md#what-to-collect-and-what-to-look-for)
+when choosing `brief.current_questions` and `brief.enabled_lenses`. Its examples are fictional;
+adapt the questions and leave personal calibration empty until the owner gives actual feedback.
+The [packet-assembler explanation](../../docs/MEETING_READERS.md#what-a-meeting-packet-assembler-would-do)
+describes a proposed convenience helper, not an additional command already available in this example.
+
 The same frozen packet goes to every configured reader. `flags[].title` and `flags[].face` are the canonical visible draft, and `flags[].id` becomes `reading.draftId`. Do not substitute `context` for the face or claim a hand-written example came from a model.
 
 When real feedback exists, populate `calibration.recent_examples` with its date, exact card ID and

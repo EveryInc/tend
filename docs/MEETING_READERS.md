@@ -62,6 +62,75 @@ never source evidence or broader permission. Start calibration empty. Add only t
 feedback on exact earlier card faces; do not borrow another user's likes or infer taste from their
 mailbox, job title or attendance.
 
+## What to collect, and what to look for
+
+Start with a small mix of complete, permitted conversations from the last few days. Choose sources
+by the owner's current questions, then read each whole conversation before selecting moments. A
+meeting does not need an "important" title to contain a good idea.
+
+| Conversations to collect | What they can reveal |
+|---|---|
+| Product or engineering reviews; architecture discussions | Open tradeoffs, surprising constraints, approaches another team could reuse |
+| Customer demos, onboarding sessions or support calls | What people actually understood, resisted, asked for or used—not just the team's pitch |
+| Cross-team planning and retrospectives | Conflicting assumptions, unclear ownership, useful disagreements, where work is getting stuck |
+| Project kickoffs and execution reviews | How a plan is becoming real decisions; compare with an authorized, dated plan when one exists |
+| Working sessions and design critiques | A concrete example, explanation or technique that makes a problem easier to think about |
+| Editorial, marketing or launch discussions | Reusable arguments, examples and recurring themes worth thinking or writing about |
+| Prototype or vendor walkthroughs | How a mechanism works, its limits and open questions; distinguish claims from demonstrated results |
+
+For a first pilot, a couple of product/engineering conversations, one audience-facing call and one
+cross-team discussion are enough to try. Collect only those the owner has authorized; these examples
+do not expand connector permissions. Keep the starter's sensitive-topic exclusions, including
+performance reviews and named-person hiring/firing decisions. A relevant strategy or message document
+is supporting context, not a substitute for the conversation.
+
+### Five lenses from the initial reading trials
+
+These are the five questions used by the tested reader prompt. Early feedback particularly favored
+useful ideas, real choices and concrete perspectives on the work. Audience reactions were a
+requested lens to keep testing. Borrow the questions, not another person's taste history. They have
+no quotas, and a new owner can enable only the ones they want in
+`brief.enabled_lenses`. The examples below are fictional illustrations, not private trial cards or
+recorded feedback.
+
+| Lens | Question to read with | A concrete thing worth surfacing |
+|---|---|---|
+| **Open choices** (`tiebreaker`) | What real choice is still unresolved, and could my judgment help? | The import team can buy a connector and ship Friday, or build one over two weeks to retain offline support. The room is split; neither option was chosen. |
+| **Plans versus stated intent** (`off_strategy`) | Did a concrete decision depart from an applicable plan? | The dated plan says to test with five customers before launch; the team agrees to launch next week without those tests. Show both statements, not a vague strategy alarm. |
+| **Ideas worth passing along** (`worth_spreading`) | What example, distinction or technique could I use or share? | A timed-out request made two appointments when the agent retried. The fix: retries reuse one request ID, and the booking service returns the original result instead of creating another booking. |
+| **What it was like in the room** (`room_texture`) | What observable exchange explains how the work or collaboration is going? | In the release retro, the frontend group was waiting for backend approval while the backend group thought frontend owned the release. Both thought the next move belonged to someone else. |
+| **A message meets its audience** (`message_tested`) | How did someone actually react to the product or promise? | The demo offers automatic rescheduling. A customer replies: "Please don't move it for me. Show me the open slot so I can choose." That reaction is the interesting part. |
+
+Use `off_strategy` only with a supplied, applicable dated reference in `references.strategy`;
+otherwise leave it off. For `message_tested`, collect the actual audience reaction, including
+confusion or resistance. An internal pitch or a presenter's claim that customers loved it is not the
+same evidence. For `room_texture`,
+show words, behavior and work context without diagnosing someone's personality or mental state.
+
+### Make the questions personal
+
+For a product/engineering feed, choose two or three current questions such as:
+
+- Where can the agent finish a useful workflow, and where does a person still need to step in?
+- Which technical choices are genuinely open, and what evidence would settle them?
+- What did a customer do or say that changes how we should build or explain the product?
+- What has one team learned that another team could reuse?
+- How does a promising technique actually work, and where did the discussion about it land?
+- What recurring question or tension could be useful to think or write about?
+
+Put the chosen questions, with dates, in `brief.current_questions`. Add the meetings or decisions the
+owner already knows to `brief.known_context`. The same lens should produce different selections as
+the owner's questions change. Useful mechanisms and recurring themes can fit `worth_spreading`;
+they do not need new mandatory card categories. A proposed cross-meeting connection needs support
+from the actual conversations, not just matching keywords.
+
+Keep the lessons from the trials: the card needs to show a specific interesting thing, not merely
+announce an important topic. Include enough who/what/context to understand it immediately. A useful
+idea can be quiet, familiar, or worth sharing without creating a task. Do not automatically exclude
+meetings the owner attended, but do not present a straight recap of what they were just told as new
+knowledge. A single liked analogy does not establish a general taste for analogies. The new owner's
+own likes and reasons—not this starter menu—should determine what persists through Compound.
+
 ## Choose readers and verify access
 
 Copy [readers.example.json](../examples/meeting-readers/readers.example.json) to a private configuration
@@ -113,6 +182,39 @@ replace them with summaries or describe them as fully read. Known attendance is 
 not automatic novelty or a blanket veto. The runner rejects packets above 2 MB; narrow the permitted
 batch or split by complete meetings instead of truncating transcripts. A split batch changes the
 scope of possible cross-meeting connections and must be recorded honestly.
+
+### What a meeting-packet assembler would do
+
+**This helper is proposed, not implemented by this PR.** A packet is simply the complete reading
+material and instructions for one run. Today the coordinating task assembles that file manually.
+The assembler would automate the preparation from Tend's existing records; the readers would still
+decide what is interesting.
+
+For example: four saved meetings, three current questions and a few earlier rated cards become one
+frozen reading file. Every configured reader gets that same file independently.
+
+The smallest useful helper would:
+
+1. Gather the selected feed's authorized, saved full transcripts, preserving source IDs, dates,
+   speaker evidence and original line locators. Deduplicate alternate captures and report missing or
+   incomplete material. It cannot reconstruct a missing transcript from a summary.
+2. Add the effective reader instructions, owner brief and enabled lenses, applicable dated
+   references, bounded recent feedback on exact card faces, and that owner's approved durable
+   lessons. Do not silently promote a pending Compound proposal into instructions.
+3. Write one packet file and a readable inventory of its sources, gaps, size and input versions.
+   Stop or explicitly split by whole meetings if it exceeds the runner's 2 MB limit. Pass the result
+   to the existing `readers:run`, which already saves the exact input and its hash on the source run
+   and sends identical input to each reader.
+
+This would remove repetitive copying and reduce accidental differences between reader inputs. A
+changed question or new feedback would enter the next assembled packet; it would not rewrite an old
+run. The first version can be a small local helper with source-format checks, not another model call
+or database.
+
+Source collection still uses the permitted connectors. The assembler would not search new accounts,
+pick only promising quotes, summarize away the rest of a meeting, infer someone's taste, or publish
+cards. Whole-source reading, selection, evidence/readability review and approved publication remain
+separate steps.
 
 ## First manual run
 
