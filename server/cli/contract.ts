@@ -24,6 +24,7 @@ export const CLI_COMMANDS = [
   "readers:run --feed <id> --run <source-run-id> --packet-file <path> --readers-file <path> [--prompt-sha256 <hash>]",
   "readers:status --feed <id> --run <source-run-id>",
   "readers:output --feed <id> --run <source-run-id> --reader <id>",
+  "readers:compare --feed <id> --comparison-file <path>",
   "card:react --feed <id> --card <id> --feedback-file <path>",
   "card:prefer --feed <id> --preference-file <path>",
   "routine:upsert --feed <id> --group <json>",

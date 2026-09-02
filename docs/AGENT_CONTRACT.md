@@ -96,6 +96,7 @@ Run `tend cli help` for the full command surface. Core feed-runner commands are:
 | Run configured readers on frozen input | `tend cli readers:run --feed <feed> --run <run> --packet-file <path> --readers-file <path>` |
 | Read reader receipts | `tend cli readers:status --feed <feed> --run <run>` |
 | Read a saved reader output | `tend cli readers:output --feed <feed> --run <run> --reader <reader>` |
+| Link explicitly matched reader retries on identical input | `tend cli readers:compare --feed <feed> --comparison-file <path>` |
 | Rate an exact reading-card version | `tend cli card:react --feed <feed> --card <card> --feedback-file <path>` |
 | Prefer a compared version | `tend cli card:prefer --feed <feed> --preference-file <path>` |
 | Dismiss card locally (Tend-only, no source cleanup) | `tend cli card:dismiss --feed <feed> --card <card>` |

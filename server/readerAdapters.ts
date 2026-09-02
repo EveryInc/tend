@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { ReaderConfig, ReaderReceipt } from "../shared/readers";
+import { readerLoginGuidance, type ReaderConfig, type ReaderFailureCode, type ReaderReceipt } from "../shared/readers";
 
 export interface ReaderResult {
   output: unknown;
@@ -16,7 +16,22 @@ export interface ReaderResult {
 export type ReaderAdapter = (config: ReaderConfig, packet: string, signal: AbortSignal) => Promise<ReaderResult>;
 
 export class ReaderExecutionError extends Error {
-  constructor(message: string, readonly rawOutput?: string) { super(message); }
+  constructor(message: string, readonly rawOutput?: string, readonly failureCode?: ReaderFailureCode) { super(message); }
+}
+
+function loginFailure(adapter: ReaderConfig["adapter"], rawOutput: string): ReaderExecutionError {
+  return new ReaderExecutionError(readerLoginGuidance(adapter).message, rawOutput, "subscription_login_required");
+}
+
+function isLoginFailure(diagnostics: string): boolean {
+  return /failed to authenticate|oauth (?:session|token) (?:has )?expired|(?:access|refresh) token (?:has |is )?expired|invalid_grant|invalid_refresh_token|refresh_token_(?:reused|expired)|not logged in|please (?:run|use) (?:\/login|claude auth login|codex login)|authentication_error/i.test(diagnostics);
+}
+
+/** Used only for a failed provider process; successful model prose is never classified as an access error. */
+export function readerProcessFailure(adapter: ReaderConfig["adapter"], response: { stdout: string; stderr: string; code: number | null }): ReaderExecutionError {
+  const raw = JSON.stringify({ stdout: response.stdout, stderr: response.stderr });
+  if (isLoginFailure(`${response.stdout}\n${response.stderr}`)) return loginFailure(adapter, raw);
+  return new ReaderExecutionError(`${adapter === "claude" ? "Claude" : "Codex"} reader exited unsuccessfully (${response.code}). No automatic retry or fallback was attempted.`, raw);
 }
 
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -131,7 +146,10 @@ function number(value: unknown): number | undefined { return typeof value === "n
 export function parseClaudeResult(stdout: string, requestedModel: string): ReaderResult {
   let response: Record<string, any>;
   try { response = JSON.parse(stdout); } catch { throw new ReaderExecutionError("Claude returned an invalid CLI receipt.", stdout); }
-  if (response.is_error !== false || typeof response.result !== "string") throw new ReaderExecutionError("Claude did not complete successfully. No alternate model or API route was attempted.", stdout);
+  if (response?.is_error === true && isLoginFailure(JSON.stringify([response.result, response.error, response.errors]))) {
+    throw loginFailure("claude", stdout);
+  }
+  if (response?.is_error !== false || typeof response.result !== "string") throw new ReaderExecutionError("Claude did not complete successfully. No alternate model or API route was attempted.", stdout);
   const usage = response.modelUsage?.[requestedModel];
   if (!usage || !(number(usage.outputTokens)! > 0)) throw new ReaderExecutionError("Claude did not attribute output to the requested model. No cards were published.", stdout);
   return {
@@ -160,7 +178,11 @@ export function parseCodexResult(stdout: string, text: string, requestedModel: s
   });
   const recentEvents = [...events].reverse();
   const completed = recentEvents.find((event) => event.type === "turn.completed");
-  if (!completed || events.some((event) => event.type === "turn.failed" || event.type === "error")) throw new ReaderExecutionError("Codex did not complete successfully.", stdout);
+  const failures = events.filter((event) => event.type === "turn.failed" || event.type === "error");
+  if (!completed || failures.length) {
+    if (isLoginFailure(JSON.stringify(failures))) throw loginFailure("codex", stdout);
+    throw new ReaderExecutionError("Codex did not complete successfully.", stdout);
+  }
   const returned = recentEvents.find((event) => typeof event.model === "string" || typeof event.model_slug === "string");
   const actualModel = returned?.model ?? returned?.model_slug;
   if (actualModel && actualModel !== requestedModel) throw new ReaderExecutionError("Codex reported a model different from the requested reader.", stdout);
@@ -181,19 +203,19 @@ export function createReaderAdapters(): Record<ReaderConfig["adapter"], ReaderAd
         const auth = await runProcess("claude", ["auth", "status", "--json"], { cwd, env, signal: AbortSignal.any([signal, AbortSignal.timeout(25_000)]) });
         let status: Record<string, unknown> = {};
         try { status = JSON.parse(auth.stdout); } catch { /* A failed preflight never proceeds to generation. */ }
-        if (auth.code !== 0 || status.loggedIn !== true || status.authMethod !== "claude.ai" || status.apiProvider !== "firstParty") {
-          throw new Error("Claude subscription login is unavailable in this Tend server environment. No API-key route was attempted.");
+        if (auth.code !== 0 || status?.loggedIn !== true || status.authMethod !== "claude.ai" || status.apiProvider !== "firstParty") {
+          throw loginFailure("claude", JSON.stringify({ stdout: auth.stdout, stderr: auth.stderr }));
         }
       } else {
         const auth = await runProcess("codex", ["login", "status"], { cwd, env, signal: AbortSignal.any([signal, AbortSignal.timeout(25_000)]) });
         if (auth.code !== 0 || !/logged in using ChatGPT/i.test(`${auth.stdout}\n${auth.stderr}`)) {
-          throw new Error("Codex ChatGPT login is unavailable in this Tend server environment. No API-key route was attempted.");
+          throw loginFailure("codex", JSON.stringify({ stdout: auth.stdout, stderr: auth.stderr }));
         }
       }
       const command = readerCommand(config, outputFile);
       const response = await runProcess(command.binary, command.args, { cwd, env, signal, input: packet,
         ...(config.adapter === "codex" ? { onLine: assertCodexReaderEvent } : {}) });
-      if (response.code !== 0) throw new ReaderExecutionError(`${config.adapter === "claude" ? "Claude" : "Codex"} reader exited unsuccessfully (${response.code}). No automatic retry or fallback was attempted.`, JSON.stringify({ stdout: response.stdout, stderr: response.stderr }));
+      if (response.code !== 0) throw readerProcessFailure(config.adapter, response);
       if (config.adapter === "claude") return parseClaudeResult(response.stdout, config.model);
       let text: string;
       try { text = await readFile(outputFile, "utf8"); } catch { throw new ReaderExecutionError("Codex completed without a final answer file.", response.stdout); }

@@ -43,6 +43,7 @@ export function ReadingPreferenceFooter({ group, card, preference, reaction, onC
     if (inFlight.current || stale || workActive) return;
     const request = requestRef.current?.preferredCardId === preferredCardId ? requestRef.current : {
       clientEventId: crypto.randomUUID(), runId: group.runId!, topicKey: group.topicKey!, members, preferredCardId,
+      ...(group.comparisonId ? { comparisonId: group.comparisonId } : {}),
     };
     requestRef.current = request;
     inFlight.current = true;

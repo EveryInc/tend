@@ -2,7 +2,7 @@ import packageJson from "../package.json";
 
 export const APP_NAME = packageJson.name;
 export const APP_VERSION = packageJson.version;
-export const CLI_CONTRACT_VERSION = "0.5";
+export const CLI_CONTRACT_VERSION = "0.6";
 
 export function versionInfo() {
   return {

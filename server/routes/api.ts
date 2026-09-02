@@ -119,6 +119,9 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   app.post("/api/feeds/:feed/reading-preferences", async (c) => readingMutation(c, context, async () => {
     return domain.recordReadingPreference(c.req.param("feed"), await body(c));
   }));
+  app.post("/api/feeds/:feed/reading-comparisons", async (c) => readingMutation(c, context, async () => {
+    return domain.linkReadingComparison(c.req.param("feed"), await body(c));
+  }));
   app.get("/api/feeds/:feed/native-approvals", async (c) => {
     c.header("cache-control", "no-store");
     return c.json(await context.nativeApprovals?.list(c.req.param("feed")) ?? []);

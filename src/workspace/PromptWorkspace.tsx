@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { groupReadingCards } from "../../shared/readingGroups";
+import { readerLoginGuidance } from "../../shared/readers";
 import { api, post } from "../app/api";
 import type { Inspector, WorkspaceTab } from "../app/types";
 import { ReaderDetails } from "../feed/ReadingIdentity";
@@ -18,9 +19,12 @@ interface GlobalWorkspaceView {
   prompts: Array<{ name: string; content: string }>;
 }
 
-export function SourceRunHistory({ runs, cards = [], reactions = {}, preferences = {} }: { runs: SourceRun[]; cards?: Card[]; reactions?: FeedView["readingReactions"]; preferences?: FeedView["readingPreferences"] }) {
+export function SourceRunHistory({ runs, cards = [], reactions = {}, preferences = {}, comparisons = [] }: {
+  runs: SourceRun[]; cards?: Card[]; reactions?: FeedView["readingReactions"];
+  preferences?: FeedView["readingPreferences"]; comparisons?: FeedView["readingComparisons"];
+}) {
   if (!runs.length) return null;
-  const groups = groupReadingCards(cards);
+  const groups = groupReadingCards(cards, comparisons);
   const reactionLabel = (card: Card) => {
     const reaction = reactions?.[card.id];
     if (!reaction || reaction.contentRevision !== card.reading?.contentRevision) return "Unrated";
@@ -33,6 +37,11 @@ export function SourceRunHistory({ runs, cards = [], reactions = {}, preferences
         <summary><b>{run.sourceId}</b><span>{run.completedAt ? new Date(run.completedAt).toLocaleString() : "Completion not recorded"}</span>{run.readers && <span>{run.readers.length} {run.readers.length === 1 ? "reader" : "readers"}</span>}</summary>
         <div className="source-run-body">
           <p>{run.snapshots} saved {run.snapshots === 1 ? "snapshot" : "snapshots"} · <code>{run.id}</code></p>
+          {comparisons.filter((comparison) => comparison.runIds.includes(run.id)).map((comparison) => <div className="source-run-card" key={comparison.id}>
+            <b>Linked comparison</b>
+            <p>{comparison.runIds.length} attempts used the same frozen packet and prompt. Their cards can be compared together; each keeps its original reader receipt.</p>
+            <small>Comparison <code>{comparison.id}</code> · Observation <code>{comparison.topicKey}</code></small>
+          </div>)}
           {Object.entries(preferences ?? {}).filter(([, preference]) => preference.runId === run.id).map(([id, preference]) => {
             const group = groups.find((item) => item.id === id);
             const current = group && currentReadingPreference(group, preferences);
@@ -52,12 +61,14 @@ export function SourceRunHistory({ runs, cards = [], reactions = {}, preferences
             const written = cards.filter((card) => card.reading?.runId === run.id && card.reading.readerId === reader.readerId);
             const liked = written.filter((card) => reactionLabel(card) === "Liked").length;
             const disliked = written.filter((card) => reactionLabel(card) === "Not for me").length;
+            const login = reader.failureCode === "subscription_login_required" ? readerLoginGuidance(reader.adapter) : undefined;
             return <section className="source-run-reader" key={reader.readerId}>
-            <header><h3>{reader.label}</h3><span>{reader.status}</span></header>
+            <header><h3>{reader.label}</h3><span>{login ? "Sign-in needed" : reader.status}</span></header>
             <ReaderDetails reader={reader} />
-            {reader.error && <p className="reading-error">{reader.error}</p>}
+            {login ? <div className="reader-login-help" role="status"><p>{login.message}</p><p>In Terminal: <code>{login.command}</code></p><p>This is an access problem, not a reader-quality rating.</p></div>
+              : reader.error && <p className="reading-error">{reader.error}</p>}
             {reader.outputSnapshotId && <a href={`/api/feeds/${encodeURIComponent(run.feedId)}/runs/${encodeURIComponent(run.id)}/readers/${encodeURIComponent(reader.readerId)}/output`} target="_blank" rel="noopener noreferrer">Open saved reader output</a>}
-            <p>{written.length} {written.length === 1 ? "card" : "cards"} in Tend · {liked} liked · {disliked} not for me</p>
+            {!login && <p>{written.length} {written.length === 1 ? "card" : "cards"} in Tend · {liked} liked · {disliked} not for me</p>}
             {written.map((card) => <details className="source-run-card" key={card.id}>
               <summary><b>{card.title}</b><span>{reactionLabel(card)}{card.status === "done" ? " · Done" : ""}</span></summary>
               <p className="reading-face">{card.why}</p>
@@ -232,7 +243,7 @@ export function PromptWorkspace({ state, refreshVersion, tab, onTab, onBack, onI
             <div className="workspace-section-head"><h2>Prompt layers</h2><span>{feedWorkspace.prompts.length}</span></div>
             {feedWorkspace.prompts.map((prompt: any) => <WorkspaceEditor key={prompt.name} label={prompt.name} content={prompt.content} onFocus={() => onTargetFocus({ kind: "prompt_layer", feedId, promptId: prompt.name })} onSave={(content) => save(() => post(`/api/feeds/${feedId}/prompts/${encodeURIComponent(prompt.name)}`, { content }), "Feed prompt saved", reloadFeed)} onUndo={(revisionId) => save(() => post(`/api/revisions/${revisionId}/revert`), "Feed prompt restored", reloadFeed)} />)}
           </section>
-          <SourceRunHistory runs={state.active.runs} cards={state.active.cards} reactions={state.active.readingReactions} preferences={state.active.readingPreferences} />
+          <SourceRunHistory runs={state.active.runs} cards={state.active.cards} reactions={state.active.readingReactions} preferences={state.active.readingPreferences} comparisons={state.active.readingComparisons} />
           <section className="workspace-section">
             <h2>Home thread</h2>
             <ThreadSetupGuide feedId={feedId} feedName={state.active.config.name} thread={feedWorkspace.thread} onCopied={onSaved} />

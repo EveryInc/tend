@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
-import type { ReaderConfig, ReaderReceipt } from "../shared/readers";
+import { readerLoginGuidance, type ReaderConfig, type ReaderReceipt } from "../shared/readers";
 import type { SourceRun } from "../shared/types";
 import { createReaderAdapters, parseReaderContent, ReaderExecutionError, type ReaderAdapter, type ReaderResult } from "./readerAdapters";
 import type { AttentionStore } from "./store";
@@ -72,6 +72,24 @@ function configFromReceipt(receipt: ReaderReceipt): ReaderConfig {
 function sameConfigs(receipts: ReaderReceipt[], configs: ReaderConfig[]): boolean {
   const sorted = (items: ReaderConfig[]) => items.sort((a, b) => a.id.localeCompare(b.id));
   return JSON.stringify(sorted(receipts.map(configFromReceipt))) === JSON.stringify(sorted([...configs]));
+}
+
+/** Compare the actual frozen input, not just hash claims in a card or request. */
+export async function readReaderInputFingerprint(store: AttentionStore, feedId: string, sourceRunId: string, readerId: string): Promise<{ inputSha256: string; promptSha256: string }> {
+  safeId(feedId, "Feed ID");
+  safeId(sourceRunId, "Source run ID");
+  safeId(readerId, "Reader ID");
+  const run = await store.readRun(feedId, sourceRunId);
+  if (run.feedId !== feedId || run.id !== sourceRunId) throw new Error("Reader input does not belong to this feed.");
+  safeId(run.sourceId, "Source ID");
+  const receipt = run.readers?.find((reader) => reader.readerId === readerId);
+  if (!receipt || receipt.inputSnapshotId !== INPUT_SNAPSHOT_ID) throw new Error("Reader input reference is missing or invalid.");
+  const input = JSON.parse(await readFile(store.feedPath(feedId, "raw", sourceRunId, run.sourceId, `${INPUT_SNAPSHOT_ID}.json`), "utf8"));
+  if (input?.type !== "reader-input" || typeof input.packet !== "string" || readerHash(input.packet) !== receipt.inputSha256
+    || input.inputSha256 !== receipt.inputSha256) throw new Error("Reader input does not match its frozen packet.");
+  if (typeof input.promptSha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.promptSha256)
+    || input.promptSha256 !== receipt.promptSha256) throw new Error("A matching recorded prompt hash is required to link reader attempts.");
+  return { inputSha256: receipt.inputSha256, promptSha256: input.promptSha256 };
 }
 
 /** Read only the hash-bound output; never trust a separately editable parsed mirror. */
@@ -323,7 +341,9 @@ export class ReaderRunner {
         await this.store.appendEvent({ feedId: run.feedId, type: "reader.completed", detail: { runId: run.id, readerId: config.id, outputSha256 } });
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Reader failed.";
+      const failureCode = error instanceof ReaderExecutionError ? error.failureCode : undefined;
+      const message = failureCode === "subscription_login_required" ? readerLoginGuidance(config.adapter).message
+        : error instanceof Error ? error.message : "Reader failed.";
       await this.store.serialize(async () => {
         const current = await this.store.readRun(run.feedId, run.id);
         const receipt = this.receipt(current, config.id);
@@ -339,8 +359,9 @@ export class ReaderRunner {
         receipt.status = parentSignal.aborted ? "interrupted" : "failed";
         receipt.finishedAt = isoNow();
         receipt.error = message.slice(0, 1200);
+        if (failureCode) receipt.failureCode = failureCode;
         await this.store.writeRun(current);
-        await this.store.appendEvent({ feedId: run.feedId, type: `reader.${receipt.status}`, detail: { runId: run.id, readerId: config.id, error: receipt.error } });
+        await this.store.appendEvent({ feedId: run.feedId, type: `reader.${receipt.status}`, detail: { runId: run.id, readerId: config.id, error: receipt.error, ...(failureCode ? { failureCode } : {}) } });
       });
     } finally {
       clearTimeout(timer);

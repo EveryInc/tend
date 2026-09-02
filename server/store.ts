@@ -16,6 +16,7 @@ import type {
   MindContextUpdate,
   PolicyRevision,
   ReadingCardSnapshot,
+  ReadingComparison,
   ReadingGroupMember,
   ReadingPreferenceState,
   ReadingReactionState,
@@ -405,26 +406,41 @@ export class AttentionStore {
     const readingCards = new Map(cards.filter((card) => card.reading).map((card) => [card.id, card]));
     const readingReactions: Record<string, ReadingReactionState> = {};
     const readingPreferences: Record<string, ReadingPreferenceState> = {};
+    const readingComparisons = new Map<string, ReadingComparison>();
     const reactionSequences = new Map<string, number>();
     const preferenceSequences = new Map<string, number>();
     if (readingCards.size) {
-      for (const event of await this.readEvents(feedId)) {
+      const events = await this.readEvents(feedId);
+      for (const event of events) {
+        if (event.type !== "reading.comparison_linked" || !event.detail || typeof event.detail !== "object") continue;
+        const comparison = event.detail as ReadingComparison;
+        if (comparison.feedId !== feedId || typeof comparison.id !== "string" || typeof comparison.topicKey !== "string"
+          || !Array.isArray(comparison.runIds) || comparison.runIds.length < 2 || !comparison.runIds.every((id) => typeof id === "string")
+          || comparison.anchorRunId !== comparison.runIds[0] || !Array.isArray(comparison.members)
+          || !Number.isSafeInteger(comparison.sequence) || comparison.sequence < 1) continue;
+        if (comparison.sequence > (readingComparisons.get(comparison.id)?.sequence ?? 0)) readingComparisons.set(comparison.id, comparison);
+      }
+      for (const event of events) {
         if (event.type === "reading.preference_recorded" && event.detail && typeof event.detail === "object") {
           const detail = event.detail as Record<string, unknown>;
           if (typeof detail.runId !== "string" || typeof detail.topicKey !== "string" || !detail.topicKey.trim() || !Array.isArray(detail.members) || detail.members.length < 2) continue;
+          const comparison = typeof detail.comparisonId === "string" ? readingComparisons.get(detail.comparisonId) : undefined;
+          if (detail.comparisonId !== undefined && (!comparison || comparison.anchorRunId !== detail.runId || comparison.topicKey !== detail.topicKey)) continue;
           const members = detail.members as ReadingGroupMember[];
           if (!members.every((member) => {
             if (!member || typeof member.cardId !== "string" || typeof member.contentRevision !== "string") return false;
             const reading = readingCards.get(member.cardId)?.reading;
-            return Boolean(reading && reading.runId === detail.runId && reading.topicKey === detail.topicKey && reading.contentRevision === member.contentRevision);
+            return Boolean(reading && (comparison ? comparison.runIds.includes(reading.runId) : reading.runId === detail.runId)
+              && reading.topicKey === detail.topicKey && reading.contentRevision === member.contentRevision);
           })) continue;
           if (detail.preferredCardId !== null && !members.some((member) => member.cardId === detail.preferredCardId)) continue;
-          const key = readingGroupKey(detail.runId, detail.topicKey);
+          const key = readingGroupKey(detail.runId, detail.topicKey, comparison?.id);
           const sequence = typeof detail.preferenceSequence === "number" && Number.isSafeInteger(detail.preferenceSequence) && detail.preferenceSequence > 0 ? detail.preferenceSequence : 0;
           if (sequence < (preferenceSequences.get(key) ?? 0)) continue;
           preferenceSequences.set(key, sequence);
           readingPreferences[key] = {
             runId: detail.runId, topicKey: detail.topicKey, members,
+            ...(comparison ? { comparisonId: comparison.id } : {}),
             preferredCardId: detail.preferredCardId as string | null,
             ...(typeof detail.reason === "string" ? { reason: detail.reason } : {}), eventId: event.id, at: event.at,
           };
@@ -456,7 +472,7 @@ export class AttentionStore {
       sweep,
       drain,
       readyNextPass: cards.filter((card) => card.status === "to_review_updated" && card.readyForPass > config.currentPass).length,
-      ...(readingCards.size ? { readingReactions, readingPreferences } : {}),
+      ...(readingCards.size ? { readingReactions, readingPreferences, readingComparisons: [...readingComparisons.values()] } : {}),
     };
   }
 

@@ -333,10 +333,28 @@ export interface ReadingGroupMember {
   contentRevision: string;
 }
 
+/** Explicitly matched moments across attempts; the cards keep their original run and writer. */
+export interface ReadingComparisonInput {
+  id: string;
+  topicKey: string;
+  runIds: string[];
+  members: ReadingGroupMember[];
+}
+
+export interface ReadingComparison extends ReadingComparisonInput {
+  feedId: string;
+  anchorRunId: string;
+  inputSha256: string;
+  promptSha256: string;
+  sequence: number;
+}
+
 /** A preference compares these exact versions; alternatives do not acquire a dislike. */
 export interface ReadingPreferenceInput {
   clientEventId: string;
+  // The actual run for an ordinary group, or the anchor run of an explicit retry comparison.
   runId: string;
+  comparisonId?: string;
   topicKey: string;
   members: ReadingGroupMember[];
   preferredCardId: string | null;
@@ -345,6 +363,7 @@ export interface ReadingPreferenceInput {
 
 export interface ReadingPreferenceState {
   runId: string;
+  comparisonId?: string;
   topicKey: string;
   members: ReadingGroupMember[];
   preferredCardId: string | null;
@@ -593,6 +612,7 @@ export interface FeedView {
   readyNextPass: number;
   readingReactions?: Record<string, ReadingReactionState>;
   readingPreferences?: Record<string, ReadingPreferenceState>;
+  readingComparisons?: ReadingComparison[];
 }
 
 export interface WorkspaceView {

@@ -42,10 +42,11 @@ describe("CLI contract", () => {
   });
 
   test("exposes native readers and exact-version feedback without edition commands", () => {
-    expect(CLI_CONTRACT_VERSION).toBe("0.5");
+    expect(CLI_CONTRACT_VERSION).toBe("0.6");
     expect(CLI_COMMANDS).toContain("readers:run --feed <id> --run <source-run-id> --packet-file <path> --readers-file <path> [--prompt-sha256 <hash>]");
     expect(CLI_COMMANDS).toContain("readers:status --feed <id> --run <source-run-id>");
     expect(CLI_COMMANDS).toContain("readers:output --feed <id> --run <source-run-id> --reader <id>");
+    expect(CLI_COMMANDS).toContain("readers:compare --feed <id> --comparison-file <path>");
     expect(CLI_COMMANDS).toContain("card:react --feed <id> --card <id> --feedback-file <path>");
     expect(CLI_COMMANDS).toContain("card:prefer --feed <id> --preference-file <path>");
     expect(CLI_COMMANDS.some((command) => command.startsWith("edition:"))).toBe(false);

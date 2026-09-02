@@ -10,6 +10,9 @@ import type {
   CardReadingInput,
   CardReaction,
   ReadingCardSnapshot,
+  ReadingComparison,
+  ReadingComparisonInput,
+  ReadingGroupMember,
   ReadingPreferenceInput,
   FeedConfig,
   FeedEvent,
@@ -44,11 +47,12 @@ import type {
   WorkspaceRevision,
 } from "../shared/types";
 import type { MobileActionProjection, MobileCommand, MobileCommandResult, MobileCommandReceipt } from "../shared/mobile";
+import { isDeepStrictEqual } from "node:util";
 import { isReservedCardActionId, safeConfiguredCardActions } from "../shared/cardActions";
 import { containsFullEmail } from "../shared/emailThread";
 import type { ReaderDraft } from "../shared/readers";
-import { readingGroupKey, sameReadingMembers } from "../shared/readingGroups";
-import { readReaderOutput } from "./readers";
+import { groupReadingCards, readingGroupKey, sameReadingMembers } from "../shared/readingGroups";
+import { readReaderInputFingerprint, readReaderOutput } from "./readers";
 import { agentLabel, effectiveWorkLane } from "../shared/lanes";
 import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, readingContentRevision, snapshotReadingCard, workItemView } from "./store";
 import { demoCards, feedConfig } from "./templates";
@@ -139,6 +143,11 @@ export interface ReadingPreferenceReceipt {
   cards: Card[];
 }
 
+export interface ReadingComparisonReceipt {
+  duplicate: boolean;
+  comparison: ReadingComparison;
+}
+
 interface ReadingPreferenceEventDetail extends ReadingPreferenceInput {
   groupKey: string;
   preferenceSequence: number;
@@ -147,16 +156,10 @@ interface ReadingPreferenceEventDetail extends ReadingPreferenceInput {
   archiveRequested: boolean;
 }
 
-function validateReadingPreference(body: unknown): ReadingPreferenceInput {
-  const invalid = (message: string): never => { throw new ReadingCardRequestError(message, 400, "invalid_preference"); };
-  if (!body || typeof body !== "object" || Array.isArray(body)) invalid("A reading preference object is required.");
-  const input = body as Record<string, unknown>;
-  for (const [key, limit] of [["clientEventId", 200], ["runId", 200], ["topicKey", 300]] as const) {
-    if (typeof input[key] !== "string" || !input[key].trim() || input[key].length > limit) invalid(`${key} must be a non-empty string of at most ${limit} characters.`);
-  }
-  if (!Array.isArray(input.members) || input.members.length < 2 || input.members.length > 64) invalid("A preference must compare between two and 64 exact card versions.");
+function validateReadingMembers(value: unknown, invalid: (message: string) => never): ReadingGroupMember[] {
+  if (!Array.isArray(value) || value.length < 2 || value.length > 64) invalid("A comparison needs between two and 64 exact card versions.");
   const ids = new Set<string>();
-  const members = (input.members as unknown[]).map((value) => {
+  return (value as unknown[]).map((value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) invalid("Each compared member needs a cardId and contentRevision.");
     const member = value as Record<string, unknown>;
     if (typeof member.cardId !== "string" || !member.cardId.trim() || member.cardId.length > 200) invalid("Each compared cardId must be a non-empty string of at most 200 characters.");
@@ -166,13 +169,38 @@ function validateReadingPreference(body: unknown): ReadingPreferenceInput {
     ids.add(cardId);
     return { cardId, contentRevision: member.contentRevision as string };
   }).sort((left, right) => left.cardId.localeCompare(right.cardId));
+}
+
+function validateReadingPreference(body: unknown): ReadingPreferenceInput {
+  const invalid = (message: string): never => { throw new ReadingCardRequestError(message, 400, "invalid_preference"); };
+  if (!body || typeof body !== "object" || Array.isArray(body)) invalid("A reading preference object is required.");
+  const input = body as Record<string, unknown>;
+  for (const [key, limit] of [["clientEventId", 200], ["runId", 200], ["topicKey", 300]] as const) {
+    if (typeof input[key] !== "string" || !input[key].trim() || input[key].length > limit) invalid(`${key} must be a non-empty string of at most ${limit} characters.`);
+  }
+  if (input.comparisonId !== undefined && (typeof input.comparisonId !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,150}$/.test(input.comparisonId))) invalid("comparisonId must be a plain identifier.");
+  const members = validateReadingMembers(input.members, invalid);
+  const ids = new Set(members.map((member) => member.cardId));
   if (input.preferredCardId !== null && (typeof input.preferredCardId !== "string" || !ids.has(input.preferredCardId))) invalid("The preferred card must be one of the compared versions, or null to clear.");
   if (input.reason !== undefined && (typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 4000)) invalid("An optional reason must be a non-empty string of at most 4000 characters.");
   return {
     clientEventId: input.clientEventId as string, runId: input.runId as string, topicKey: input.topicKey as string,
     members, preferredCardId: input.preferredCardId as string | null,
+    ...(typeof input.comparisonId === "string" ? { comparisonId: input.comparisonId } : {}),
     ...(typeof input.reason === "string" ? { reason: input.reason.trim() } : {}),
   };
+}
+
+function validateReadingComparison(body: unknown): ReadingComparisonInput {
+  const invalid = (message: string): never => { throw new ReadingCardRequestError(message, 400, "invalid_comparison"); };
+  if (!body || typeof body !== "object" || Array.isArray(body)) invalid("A reading comparison object is required.");
+  const input = body as Record<string, unknown>;
+  if (typeof input.id !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,150}$/.test(input.id)) invalid("Comparison id must be a plain identifier.");
+  if (typeof input.topicKey !== "string" || !input.topicKey.trim() || input.topicKey.length > 300) invalid("topicKey must name one explicitly matched observation (at most 300 characters).");
+  if (!Array.isArray(input.runIds) || input.runIds.length < 2 || input.runIds.length > 64
+    || !input.runIds.every((id) => typeof id === "string" && /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,150}$/.test(id))
+    || new Set(input.runIds).size !== input.runIds.length) invalid("runIds must contain two to 64 unique attempt identifiers, with the original attempt first.");
+  return { id: input.id as string, topicKey: input.topicKey as string, runIds: input.runIds as string[], members: validateReadingMembers(input.members, invalid) };
 }
 
 function readingFeedbackEvents(events: FeedEvent[]): FeedEvent[] {
@@ -2798,16 +2826,79 @@ export class AttentionDomain {
     });
   }
 
+  async linkReadingComparison(feedId: string, body: unknown): Promise<ReadingComparisonReceipt> {
+    const input = validateReadingComparison(body);
+    return this.store.serializeAtomic(async () => {
+      const feed = await this.store.readFeed(feedId);
+      const comparisons = feed.readingComparisons ?? [];
+      const existing = comparisons.find((comparison) => comparison.id === input.id);
+      if (existing && (existing.topicKey !== input.topicKey || existing.anchorRunId !== input.runIds[0]
+        || existing.runIds.some((id) => !input.runIds.includes(id)))) {
+        throw new ReadingCardRequestError("An existing comparison cannot change its observation, original attempt, or remove linked attempts.", 409, "comparison_conflict");
+      }
+      if (comparisons.some((comparison) => comparison.id !== input.id && comparison.topicKey === input.topicKey
+        && comparison.runIds.some((id) => input.runIds.includes(id)))) {
+        throw new ReadingCardRequestError("This observation is already linked to another comparison.", 409, "comparison_conflict");
+      }
+      const cards = feed.cards.filter((card) => card.reading && input.runIds.includes(card.reading.runId) && card.reading.topicKey === input.topicKey);
+      const expectedIds = new Set(input.members.map((member) => member.cardId));
+      if (cards.length !== input.members.length || cards.some((card) => !expectedIds.has(card.id))
+        || input.runIds.some((id) => !cards.some((card) => card.reading!.runId === id))) {
+        throw new ReadingCardRequestError("Include every current version of this observation from each linked attempt, and no other observations.", 409, "stale_members");
+      }
+      if (!sameReadingMembers(cards.map((card) => ({ cardId: card.id, contentRevision: card.reading!.contentRevision })), input.members)
+        || cards.some((card) => card.reading!.contentRevision !== readingContentRevision(card))) {
+        throw new ReadingCardRequestError("A compared card changed. Reload the exact versions before linking attempts.", 409, "stale_content");
+      }
+      let fingerprint: { inputSha256: string; promptSha256: string } | undefined;
+      const checkedReaders = new Set<string>();
+      for (const card of cards) {
+        const reading = card.reading!;
+        const key = JSON.stringify([reading.runId, reading.readerId]);
+        const receipt = feed.runs.find((run) => run.id === reading.runId)?.readers?.find((reader) => reader.readerId === reading.readerId);
+        if (receipt?.status !== "complete" || !isDeepStrictEqual(receipt, reading.writer)) {
+          throw new ReadingCardRequestError("Each version must retain its completed native reader receipt.", 409, "invalid_provenance");
+        }
+        if (checkedReaders.has(key)) continue;
+        let next: { inputSha256: string; promptSha256: string };
+        try {
+          next = await readReaderInputFingerprint(this.store, feedId, reading.runId, reading.readerId);
+        } catch {
+          throw new ReadingCardRequestError("Reader input could not be verified against its frozen packet and recorded prompt hash. Attempts were not linked.", 409, "input_mismatch");
+        }
+        if (fingerprint && (fingerprint.inputSha256 !== next.inputSha256 || fingerprint.promptSha256 !== next.promptSha256)) {
+          throw new ReadingCardRequestError("Linked attempts must use the identical frozen packet and prompt hashes. Changed inputs need a separate comparison.", 409, "input_mismatch");
+        }
+        fingerprint = next;
+        checkedReaders.add(key);
+      }
+      if (existing && (existing.inputSha256 !== fingerprint!.inputSha256 || existing.promptSha256 !== fingerprint!.promptSha256)) {
+        throw new ReadingCardRequestError("The frozen packet or prompt no longer matches this comparison.", 409, "input_mismatch");
+      }
+      if (existing && existing.runIds.length === input.runIds.length && sameReadingMembers(existing.members, input.members)) {
+        return { duplicate: true, comparison: existing };
+      }
+      const comparison: ReadingComparison = {
+        ...input, feedId, anchorRunId: input.runIds[0], ...fingerprint!, sequence: (existing?.sequence ?? 0) + 1,
+      };
+      await this.store.appendEvent({ feedId, type: "reading.comparison_linked", detail: comparison });
+      return { duplicate: false, comparison };
+    });
+  }
+
   async recordReadingPreference(feedId: string, body: unknown): Promise<ReadingPreferenceReceipt> {
     const input = validateReadingPreference(body);
     return this.store.serializeAtomic(async () => {
       const feed = await this.store.readFeed(feedId);
-      const cards = feed.cards.filter((card) => card.reading?.runId === input.runId && card.reading.topicKey === input.topicKey);
+      const group = groupReadingCards(feed.cards, feed.readingComparisons).find((group) => group.runId === input.runId
+        && group.topicKey === input.topicKey && group.comparisonId === input.comparisonId);
+      const cards = group?.cards ?? [];
       const members = cards.map((card) => ({ cardId: card.id, contentRevision: card.reading!.contentRevision }));
       const events = await this.store.readEvents(feedId);
       const preferences = events.filter((event) => {
         const detail = event.detail as Partial<ReadingPreferenceEventDetail> | undefined;
-        return event.type === "reading.preference_recorded" && detail?.runId === input.runId && detail.topicKey === input.topicKey;
+        return event.type === "reading.preference_recorded" && detail?.runId === input.runId && detail.topicKey === input.topicKey
+          && detail.comparisonId === input.comparisonId;
       });
       const existing = events.find((event) => event.type === "reading.preference_recorded"
         && (event.detail as Partial<ReadingPreferenceEventDetail> | undefined)?.clientEventId === input.clientEventId);
@@ -2815,7 +2906,7 @@ export class AttentionDomain {
         || feed.work.some((work) => cards.some((card) => card.id === work.cardId) && ["queued", "working", "approved_blocked"].includes(work.status));
       if (existing) {
         const detail = existing.detail as ReadingPreferenceEventDetail;
-        if (detail.runId !== input.runId || detail.topicKey !== input.topicKey || detail.preferredCardId !== input.preferredCardId
+        if (detail.runId !== input.runId || detail.topicKey !== input.topicKey || detail.comparisonId !== input.comparisonId || detail.preferredCardId !== input.preferredCardId
           || detail.reason !== input.reason || !sameReadingMembers(detail.members, input.members)) {
           throw new ReadingCardRequestError("This clientEventId was already used for a different preference.", 409, "client_event_conflict");
         }
@@ -2849,7 +2940,7 @@ export class AttentionDomain {
         return typeof sequence === "number" && Number.isSafeInteger(sequence) ? Math.max(highest, sequence) : highest;
       }, preferences.length) + 1;
       const detail: ReadingPreferenceEventDetail = {
-        ...input, groupKey: readingGroupKey(input.runId, input.topicKey), preferenceSequence,
+        ...input, groupKey: readingGroupKey(input.runId, input.topicKey, input.comparisonId), preferenceSequence,
         readingCards: cards.map((card) => snapshotReadingCard(card)!),
         beforeCardUpdatedAt: Object.fromEntries(cards.map((card) => [card.id, card.updatedAt])),
         archiveRequested: input.preferredCardId !== null,

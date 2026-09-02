@@ -11,7 +11,7 @@ import { countFor, currentReadingPreference, readingMembers, selectedGroupCard, 
 import { groupReadingCards } from "../shared/readingGroups";
 import { Dock } from "../src/shell/Dock";
 import { SourceRunHistory } from "../src/workspace/PromptWorkspace";
-import type { Card, FeedView, ReadingPreferenceInput, ReadingPreferenceState, SourceRun, WorkspaceView } from "../shared/types";
+import type { Card, FeedView, ReadingComparison, ReadingPreferenceInput, ReadingPreferenceState, SourceRun, WorkspaceView } from "../shared/types";
 
 const ownsDom = typeof document === "undefined";
 if (ownsDom) GlobalRegistrator.register();
@@ -368,6 +368,58 @@ test("preferring a version posts the complete revision-bound set and never rewri
   resolveResponse!(Response.json({ duplicate: false, cards: versions.map((version) => ({ ...version, status: "done" })) }));
   await waitFor(() => expect(changed).toBe(2));
   expect(ui.getByRole("button", { name: "Prefer this version" }).getAttribute("aria-pressed")).toBe("false");
+});
+
+test("a linked retry stays in one carousel and posts its comparison identity with exact members", async () => {
+  const versions = readingVersions(2);
+  versions[0].status = "done";
+  versions[1].reading!.runId = "retry-attempt";
+  const comparison: ReadingComparison = { id: "linked-retry", feedId: versions[0].feedId, topicKey: versions[0].reading!.topicKey!,
+    runIds: versions.map((card) => card.reading!.runId), anchorRunId: versions[0].reading!.runId,
+    inputSha256: "a".repeat(64), promptSha256: "b".repeat(64), sequence: 1,
+    members: versions.map((card) => ({ cardId: card.id, contentRevision: card.reading!.contentRevision })) };
+  const feed = { ...readingWorkspace(versions).active, readingComparisons: [comparison] };
+  const groups = visibleCardGroups(feed, "review");
+  expect(groups).toHaveLength(1);
+  expect(groups[0].cards).toHaveLength(2);
+  expect(countFor(feed, "review")).toBe(1);
+  const requests: ReadingPreferenceInput[] = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input) === "/api/session") return Response.json({ mutationToken: "fixture-token" });
+    requests.push(JSON.parse(String(init?.body)));
+    return Response.json({ duplicate: false });
+  }) as typeof fetch;
+  const ui = render(readingView(versions[1], { readingGroup: groups[0] }));
+  expect(ui.getByRole("group", { name: "Compare versions" })).toBeTruthy();
+  fireEvent.click(ui.getByRole("button", { name: "Prefer this version" }));
+  await waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0]).toMatchObject({ comparisonId: comparison.id, runId: comparison.anchorRunId,
+    topicKey: comparison.topicKey, members: readingMembers(groups[0]), preferredCardId: versions[1].id });
+  const preference: ReadingPreferenceState = { ...requests[0], eventId: "fixture-linked-choice", at: versions[0].createdAt };
+  const runs = versions.map((card): SourceRun => ({ id: card.reading!.runId, feedId: card.feedId,
+    sourceId: "Fixture source", snapshots: 1, judgments: [], readers: [card.reading!.writer] }));
+  const history = renderToStaticMarkup(<SourceRunHistory runs={runs} cards={versions} comparisons={[comparison]} preferences={{ [groups[0].id]: preference }} />);
+  expect(history).toContain("Linked comparison");
+  expect(history).toContain("Current comparison");
+  expect(history).toContain("retry-attempt");
+  expect(history).toContain(comparison.anchorRunId);
+});
+
+test("login guidance is actionable without exposing raw diagnostics or implying a bad reading", () => {
+  const writer = readingCard().reading!.writer;
+  for (const adapter of ["claude", "codex"] as const) {
+    const run: SourceRun = { id: "login-attempt", feedId: "fixture-company", sourceId: "Fixture source", snapshots: 1, judgments: [], readers: [
+      { ...writer, adapter, status: "failed", failureCode: "subscription_login_required", error: "private@example.test fixture-private-token" },
+    ] };
+    const html = renderToStaticMarkup(<SourceRunHistory runs={[run]} />);
+    expect(html).toContain("Sign-in needed");
+    expect(html).toContain(adapter === "claude" ? "claude auth login" : "codex login");
+    expect(html).toContain("explicitly retry only this reader");
+    expect(html).toContain("not a reader-quality rating");
+    expect(html).not.toContain("private@example.test");
+    expect(html).not.toContain("fixture-private-token");
+    expect(html).not.toContain("0 liked");
+  }
 });
 
 test("an uncertain preference retries the same event while changed membership requires a refresh", async () => {

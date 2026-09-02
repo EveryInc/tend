@@ -26,8 +26,8 @@ every permitted meeting or that an interpretation is correct.
 
 ## Set up another person's feed
 
-Use a Tend build that includes the `readers:*` commands (`tend version` reports CLI contract `0.5`
-for this change). Copying the prompt into an older install does not install the runner or comparison UI.
+Use a Tend build that includes the `readers:*` commands (`tend version` reports CLI contract `0.6`
+with retry comparisons). Copying the prompt into an older install does not install the runner or comparison UI.
 
 Use their own local Tend runtime and their own Codex/Claude accounts. The installed app defaults to
 `~/.attention`; set `ATTENTION_HOME` explicitly for an isolated test. Do not restore another person's
@@ -234,7 +234,7 @@ use a separate test feed/runtime, not a real company's current sweep.
 
 ```bash
 tend cli source:record-run --feed <feed-id> --source <source-id> --snapshots-file <snapshots.json> --judgments-file <judgments.json> --checkpoint-file <checkpoint.json>
-tend cli readers:run --feed <feed-id> --run <returned-run-id> --packet-file <packet.txt> --readers-file <readers.json>
+tend cli readers:run --feed <feed-id> --run <returned-run-id> --packet-file <packet.txt> --readers-file <readers.json> --prompt-sha256 <frozen-prompt-sha256>
 tend cli readers:status --feed <feed-id> --run <returned-run-id>
 tend cli readers:output --feed <feed-id> --run <returned-run-id> --reader <reader-id>
 ```
@@ -243,6 +243,9 @@ The run call returns promptly; poll for each reader's `complete`, `failed`, or `
 Retrieve completed outputs independently. `readers:output` returns a snapshot wrapper: drafts are
 under `output.flags`, while `rawOutput` preserves the original response. Inputs and raw outputs remain
 on the existing source run.
+
+Record the SHA-256 of the exact frozen prompt when starting readers. Retry comparisons require it
+on both attempts, in addition to the packet hash. Never invent a missing historical prompt hash.
 
 Only one local reader worker may own a runtime, even if another server selects a different port.
 A second live owner is refused before recovery can alter its receipts. Use the owning Tend service;
@@ -284,7 +287,7 @@ newer sweep to replay an old reader result.
 | `flags[].face` | `why`, exact unless a review edit is disclosed |
 | `flags[].context`, `moment`, source metadata | Supporting blocks with source links/locators |
 | Native source-run and configured reader ID | `sourceRunIds`, `reading.runId`, `reading.readerId` |
-| Coordinator-confirmed equivalent observation | Optional `reading.topicKey`, shared only within that run |
+| Coordinator-confirmed equivalent observation | Optional `reading.topicKey`; cross-run matching also requires `readers:compare` |
 
 Keep reading cards free of executable actions. Tend derives writer identity from the completed
 receipt. When a necessary review edit changes title or face, attach
@@ -302,12 +305,57 @@ taste-ranking system that discards a model's worthwhile selection merely for bei
 
 ## Review, learn, then schedule
 
-Versions share a card only when the coordinator gives them the same explicit run/topic key. Do not
-group different observations merely because they came from one meeting. The UI retains each exact
+Versions share a card only with the same explicit run/topic key or a validated retry comparison.
+Do not group different observations merely because they came from one meeting. The UI retains each exact
 version and its author; hover/focus/click the info control to reveal it. Use the arrows or Left/Right
 outside editable controls to compare. Like/Not for me archive a single card locally. Prefer this
 version archives the comparison without treating other versions as disliked. Give the reason through
 the existing voice dock, targeted to the selected version—even after archival.
+
+### A reader needs to sign in again
+
+An expired subscription session shows **Sign-in needed**, not a content-quality failure. Sign in
+locally with `claude auth login` or `codex login`, as indicated. Private CLI diagnostics remain in the
+saved output; they are not copied into the public status or guidance. Tend never automatically
+retries, switches models, or falls back to API billing. After explicit approval to retry, create a
+new source run for only the failed reader, with the exact original packet and prompt hash. Leave
+the successful reader and its receipts untouched.
+
+### Keep an intentional retry in the comparison
+
+Publish the retry's reviewed cards with their real `reading.runId`, `readerId`, and `draftId`.
+For each genuinely equivalent observation, prepare a comparison file using the current card
+revisions from `tend cli state --feed <feed-id>`:
+
+```json
+{
+  "id": "planning-budget-observation",
+  "topicKey": "planning-budget",
+  "runIds": ["original-attempt", "retry-attempt"],
+  "members": [
+    { "cardId": "original-card", "contentRevision": "<exact-current-sha256>" },
+    { "cardId": "retry-card", "contentRevision": "<exact-current-sha256>" }
+  ]
+}
+```
+
+```bash
+tend cli readers:compare --feed <feed-id> --comparison-file <comparison.json>
+```
+
+The first run is the original attempt. Tend verifies the saved input bytes, identical packet and
+prompt hashes, completed native receipts, and the full current membership of that explicit topic.
+It rejects missing prompt hashes, changed inputs, other observations, stale revisions, cross-feed
+cards, and overlapping comparison IDs. Linking never runs a provider or rewrites a card/receipt.
+Unmatched observations remain independent cards.
+
+To include another deliberate retry, extend the same comparison ID with its run and all current
+members. Existing runs cannot be removed or reassigned. A new card in a linked run/topic joins
+automatically, but a new run requires an explicit link. Any added version invalidates the previous
+current preference; exact old votes and individual reactions remain in history. A stale retry of
+an old preference cannot archive a newly arrived version. `card:prefer` requests for linked groups
+include `comparisonId` and use the comparison's `anchorRunId` as `runId`; member snapshots still
+retain each card's actual attempt. The UI supplies these fields automatically.
 
 Use the existing Compound flow after meaningful feedback and the user's agreement. It receives exact
 faces, writers, reactions, preferences and voice comments, including archived cards. Separate source

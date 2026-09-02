@@ -28,7 +28,7 @@ export interface VisibleCardGroup extends ReadingCardGroup {
 // previous Like does not remove a version from a later comparison.
 export function visibleCardGroups(feed: FeedView, tab: Tab): VisibleCardGroup[] {
   const byCard = new Map<string, ReadingCardGroup>();
-  for (const group of groupReadingCards(feed.cards)) {
+  for (const group of groupReadingCards(feed.cards, feed.readingComparisons)) {
     for (const card of group.cards) byCard.set(card.id, group);
   }
   const visible = new Map<string, VisibleCardGroup>();
@@ -48,6 +48,7 @@ export function readingMembers(group: ReadingCardGroup): ReadingGroupMember[] {
 export function currentReadingPreference(group: ReadingCardGroup, preferences?: FeedView["readingPreferences"]): ReadingPreferenceState | undefined {
   const preference = preferences?.[group.id];
   return preference && group.cards.length > 1 && preference.runId === group.runId
+    && preference.comparisonId === group.comparisonId
     && preference.topicKey === group.topicKey && sameReadingMembers(preference.members, readingMembers(group))
     ? preference : undefined;
 }

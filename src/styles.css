@@ -454,6 +454,9 @@ pre { overflow: auto; padding: 12px; background: #f4f2eb; color: var(--ink-2); w
 .source-run-reader { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
 .source-run-reader header { display: flex; justify-content: space-between; gap: 12px; }
 .source-run-reader h3 { margin: 0; color: var(--ink-2); font-size: 15px; }
+.reader-login-help { margin: 14px 0; padding: 12px 14px; border-left: 3px solid var(--line); background: var(--paper); color: var(--ink-2); font-size: 13px; line-height: 1.5; }
+.reader-login-help p { margin: 0 0 8px; }
+.reader-login-help p:last-child { margin-bottom: 0; color: var(--ink-3); }
 .reader-artifacts dd { font-family: var(--mono); font-size: 11px; }
 @media (max-width: 680px) {
   .reading-meta-controls { gap: 5px; }

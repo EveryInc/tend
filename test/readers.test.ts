@@ -107,6 +107,32 @@ describe("native source-run readers", () => {
     expect(failedCalls).toBe(1);
   });
 
+  test("login failures persist safe receipt guidance and private raw diagnostics without feedback or replay", async () => {
+    let calls = 0;
+    const raw = "private@example.test fixture-private-token";
+    const { store, runner, run, input } = await setup({ claude: async () => {
+      calls += 1;
+      throw new ReaderExecutionError(raw, raw, "subscription_login_required");
+    } });
+    const before = await store.readFeed(run.feedId);
+    await runner.start({ ...input, readers: [configs[1]] });
+    await runner.waitForRun(run.feedId, run.id);
+    const saved = await store.readRun(run.feedId, run.id);
+    expect(saved.readers![0]).toMatchObject({ status: "failed", failureCode: "subscription_login_required" });
+    expect(saved.readers![0].error).toContain("Sign in");
+    expect(JSON.stringify(saved)).not.toContain(raw);
+    expect((await runner.readOutput(run.feedId, run.id, configs[1].id)).rawOutput).toBe(raw);
+    const events = await store.readEvents(run.feedId);
+    expect(JSON.stringify(events)).not.toContain(raw);
+    expect(events.some((event) => event.type === "card.reaction_recorded" || event.type === "reading.preference_recorded")).toBe(false);
+    const after = await store.readFeed(run.feedId);
+    expect(after.cards).toEqual(before.cards);
+    expect(after.work).toEqual(before.work);
+    expect(after.policy).toEqual(before.policy);
+    await runner.start({ ...input, readers: [configs[1]] });
+    expect(calls).toBe(1);
+  });
+
   test("a queued-event write failure leaves terminal pre-launch receipts, not a stranded queued retry", async () => {
     let calls = 0;
     const adapter: ReaderAdapter = async () => { calls += 1; return { rawOutput: "{}", output: {} }; };

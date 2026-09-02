@@ -1,14 +1,16 @@
-import type { Card, ReadingGroupMember } from "./types";
+import type { Card, ReadingComparison, ReadingGroupMember } from "./types";
 
 export interface ReadingCardGroup {
   id: string;
   runId?: string;
+  comparisonId?: string;
   topicKey?: string;
   cards: Card[];
 }
 
-/** Opaque key within one feed. Exact run/topic matches only; never infer from a meeting. */
-export function readingGroupKey(runId: string, topicKey: string): string {
+/** Opaque key within one feed. Cross-run grouping requires an explicitly validated comparison. */
+export function readingGroupKey(runId: string, topicKey: string, comparisonId?: string): string {
+  if (comparisonId) return `reading-comparison:${JSON.stringify([comparisonId, topicKey])}`;
   return `reading:${JSON.stringify([runId, topicKey])}`;
 }
 
@@ -26,16 +28,20 @@ function orderHash(value: string): number {
 }
 
 /** Pass all cards in a feed so archived variants remain part of the comparison. */
-export function groupReadingCards(cards: Card[]): ReadingCardGroup[] {
+export function groupReadingCards(cards: Card[], comparisons: ReadingComparison[] = []): ReadingCardGroup[] {
   const groups = new Map<string, ReadingCardGroup>();
   for (const card of cards) {
     const reading = card.reading;
     const topicKey = reading?.topicKey;
     const matched = Boolean(reading && typeof topicKey === "string" && topicKey.trim());
-    const id = matched ? readingGroupKey(reading!.runId, topicKey!) : `card:${card.id}`;
+    const comparison = matched ? comparisons.find((item) => item.feedId === card.feedId
+      && item.topicKey === topicKey && item.runIds.includes(reading!.runId)) : undefined;
+    const runId = comparison?.anchorRunId ?? reading?.runId;
+    const id = matched ? readingGroupKey(runId!, topicKey!, comparison?.id) : `card:${card.id}`;
     const group = groups.get(id);
     if (group) group.cards.push(card);
-    else groups.set(id, { id, ...(matched ? { runId: reading!.runId, topicKey } : {}), cards: [card] });
+    else groups.set(id, { id, ...(matched ? { runId, topicKey } : {}),
+      ...(comparison ? { comparisonId: comparison.id } : {}), cards: [card] });
   }
   for (const group of groups.values()) {
     // Stable across reloads, but neither author nor input-array position determines version 1.

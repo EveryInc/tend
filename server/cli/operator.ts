@@ -209,6 +209,9 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
       case "readers:output":
         output = await readersApi(dataDir, `/api/feeds/${encodeURIComponent(required("feed"))}/runs/${encodeURIComponent(required("run"))}/readers/${encodeURIComponent(required("reader"))}/output`);
         break;
+      case "readers:compare":
+        output = await domain.linkReadingComparison(required("feed"), await structured("comparison"));
+        break;
       case "card:react":
         output = await domain.recordCardReaction(required("feed"), required("card"), await structured("feedback"));
         break;
