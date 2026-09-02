@@ -1,0 +1,138 @@
+{
+  "packet_version": 1,
+  "synthetic": true,
+  "description": "Fictional integration example. No people, meetings, company facts, preferences, or URLs describe a real user. Do not use this as someone's taste history.",
+  "run_context": {
+    "as_of": "2026-01-07T17:00:00Z",
+    "timezone": "UTC",
+    "source_window": {
+      "from": "2026-01-06T00:00:00Z",
+      "to": "2026-01-07T16:45:00Z"
+    }
+  },
+  "owner": {
+    "name": "Morgan",
+    "role": "Product lead",
+    "organization": "ExampleCo, a fictional scheduling-software company"
+  },
+  "brief": {
+    "purpose": "Show concrete customer reactions, useful product ideas, and unresolved choices worth thinking about.",
+    "current_questions": [
+      {
+        "id": "automation-boundary",
+        "text": "Which calendar changes do customers want automated, and which do they want to approve?",
+        "updated_at": "2026-01-07T09:00:00Z"
+      },
+      {
+        "id": "testing-before-building",
+        "text": "What can we learn with a prototype before committing to a product change?",
+        "updated_at": "2026-01-07T09:00:00Z"
+      }
+    ],
+    "known_context": [
+      {
+        "text": "Morgan participated in the synthetic customer demo. A card must not describe it as a missed meeting or imply a newly fetched transcript is new knowledge.",
+        "basis": "Labeled turns in the supplied m01 transcript.",
+        "recorded_at": "2026-01-07T17:00:00Z"
+      }
+    ],
+    "enabled_lenses": [
+      "tiebreaker",
+      "off_strategy",
+      "worth_spreading",
+      "room_texture",
+      "message_tested"
+    ],
+    "sensitivity_exclusions": [
+      "Compensation",
+      "Health",
+      "Performance evaluations",
+      "Named-person hiring or firing decisions",
+      "Personal matters"
+    ]
+  },
+  "calibration": {
+    "recent_examples": [],
+    "durable_lessons": []
+  },
+  "references": {
+    "strategy": [],
+    "message": [
+      {
+        "id": "synthetic-message-01",
+        "title": "Calendar automation promise",
+        "dated_at": "2026-01-07T09:00:00Z",
+        "authority": "Fictional owner-approved product question for this example, not evidence of a customer reaction.",
+        "text": "The calendar assistant moves a booking when a better slot appears."
+      }
+    ]
+  },
+  "source_manifest": [
+    {
+      "id": "m01",
+      "title": "Synthetic calendar-assistant demo",
+      "meeting_at": "2026-01-07T15:00:00Z",
+      "fetched_at": "2026-01-07T16:30:00Z",
+      "url": "https://example.org/synthetic-meetings/m01",
+      "complete_accessible_transcript": true,
+      "generated_summaries_included": false,
+      "first_original_line": 100,
+      "last_original_line": 108,
+      "speaker_labels": "present",
+      "participants": [
+        {
+          "name": "Avery",
+          "role": "Product designer"
+        },
+        {
+          "name": "Noor",
+          "role": "Prospective customer"
+        },
+        {
+          "name": "Morgan",
+          "role": "Product lead and feed owner"
+        }
+      ],
+      "owner_participation": {
+        "status": "speaker_present",
+        "source_lines": [
+          103,
+          106
+        ],
+        "detail": "Two labeled turns are evidence of familiarity. This does not establish what the owner remembers now."
+      },
+      "transcript": "L0100 Avery: We are testing what happens when a better appointment time opens up.\nL0101 Avery: The calendar assistant moves a booking when a better slot appears.\nL0102 Noor: Please don't move it for me. Show me the open slot so I can choose.\nL0103 Morgan: Does one approval for the whole day solve that?\nL0104 Noor: No. My client picked that time for a reason. I want to approve each move.\nL0105 Avery: We can prototype suggested moves without changing the calendar.\nL0106 Morgan: Let's test that. We haven't decided to remove automatic moves.\nL0107 Noor: A suggestion is useful. A changed appointment is a different promise.\nL0108 Avery: End of demo. We'll send you a clickable prototype, not enable calendar writes.\n",
+      "transcript_sha256": "c24d1728be6552d4e2f0c17f7be4c8ca7686c72a982ce14ed1d9982b6c9ab713"
+    },
+    {
+      "id": "m02",
+      "title": "Synthetic documentation check-in",
+      "meeting_at": "2026-01-07T16:00:00Z",
+      "fetched_at": "2026-01-07T16:40:00Z",
+      "url": "https://example.org/synthetic-meetings/m02",
+      "complete_accessible_transcript": true,
+      "generated_summaries_included": false,
+      "first_original_line": 20,
+      "last_original_line": 24,
+      "speaker_labels": "present",
+      "participants": [
+        {
+          "name": "Ellis",
+          "role": "Engineer"
+        },
+        {
+          "name": "Avery",
+          "role": "Product designer"
+        }
+      ],
+      "owner_participation": {
+        "status": "unknown",
+        "source_lines": [],
+        "detail": "No independently verified attendance information. Do not label this a missed meeting."
+      },
+      "transcript": "L0020 Ellis: The setup screenshots now show the current menu names.\nL0021 Avery: I checked them against the test account this morning.\nL0022 Ellis: Any unresolved changes before we publish the documentation?\nL0023 Avery: No. The typo fixes are already merged.\nL0024 Ellis: Then we'll keep the usual documentation release time. That's all for today.\n",
+      "transcript_sha256": "12c3e981a4f62927d7ed80fc82aa45f661c55749ba7d63b96d36863284421493"
+    }
+  ],
+  "source_gaps": []
+}

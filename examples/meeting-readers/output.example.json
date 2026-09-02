@@ -1,0 +1,52 @@
+{
+  "flags": [
+    {
+      "id": "approval-per-move",
+      "meeting_id": "m01",
+      "kind": "message_tested",
+      "title": "Noor wants a better time suggested, not booked",
+      "face": "In the scheduling demo, Noor wanted the assistant to show a better slot without moving her client's appointment: “My client picked that time for a reason.” A daily blanket approval did not solve her concern; she wanted to approve each move. The team agreed to prototype suggestions, but did not decide to remove automatic moves.",
+      "context": "The team demonstrated an assistant that moves appointments when a better time appears. Noor was explaining the boundary between a helpful suggestion and changing a client's booking.",
+      "moment": [
+        {
+          "line": 101,
+          "speaker": "Avery",
+          "quote": "The calendar assistant moves a booking when a better slot appears."
+        },
+        {
+          "line": 102,
+          "speaker": "Noor",
+          "quote": "Please don't move it for me. Show me the open slot so I can choose."
+        },
+        {
+          "line": 104,
+          "speaker": "Noor",
+          "quote": "No. My client picked that time for a reason. I want to approve each move."
+        }
+      ],
+      "why": "For your automation question, the useful distinction is approval of each consequential change rather than a general willingness to use an assistant.",
+      "people": [
+        "Avery",
+        "Noor",
+        "Morgan"
+      ],
+      "options": [],
+      "strategy_quote": null,
+      "reaction_inferred": false,
+      "confidence": 0.8
+    }
+  ],
+  "reading_notes": [
+    {
+      "meeting_id": "m01",
+      "substance": "A prospective customer rejected automatic rescheduling and a daily blanket approval; the team agreed to test a suggestion-only prototype without deciding to remove automation.",
+      "selection_reason": "The customer's concrete approval boundary fits the owner's question and is useful even though the owner participated; it is not framed as new information or market-wide validation."
+    },
+    {
+      "meeting_id": "m02",
+      "substance": "Two colleagues checked documentation screenshots and confirmed that typo fixes were merged before the usual release.",
+      "selection_reason": "Routine completed maintenance with no unresolved choice, unusual reaction or distinctive idea; no card selected."
+    }
+  ],
+  "notes": "Hand-written synthetic contract example, not generated model output or feedback. Both fictional transcripts are complete and speaker-labeled. No strategy reference was supplied."
+}

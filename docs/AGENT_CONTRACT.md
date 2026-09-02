@@ -89,10 +89,15 @@ Run `tend cli help` for the full command surface. Core feed-runner commands are:
 | Record heartbeat install | `tend cli feed:heartbeat:installed --feed <feed> --automation <id>` |
 | Add source | `tend cli source:add --feed <feed> --brief <brief>` |
 | Remove source | `tend cli source:remove --feed <feed> --source <source>` |
-| Record source run | `tend cli source:record-run --feed <feed> --source <source> --snapshots <json> --judgments <json> --checkpoint <json> [--context-use-file <path>]` |
+| Record source run (also accepts inline JSON) | `tend cli source:record-run --feed <feed> --source <source> --snapshots-file <path> --judgments-file <path> --checkpoint-file <path> [--context-use-file <path>]` |
 | Record sweep batch | `tend cli sweep:record-batch --feed <feed> --runs <json-array> [--context <mind-update-id>]` |
 | Record sweep rejudgment | `tend cli sweep:rejudge --feed <feed> --feedback <id> --ordered-cards <json-array> --removed-cards <json-array>` |
 | Upsert card | `tend cli card:upsert --feed <feed> --card <json>` |
+| Run configured readers on frozen input | `tend cli readers:run --feed <feed> --run <run> --packet-file <path> --readers-file <path>` |
+| Read reader receipts | `tend cli readers:status --feed <feed> --run <run>` |
+| Read a saved reader output | `tend cli readers:output --feed <feed> --run <run> --reader <reader>` |
+| Rate an exact reading-card version | `tend cli card:react --feed <feed> --card <card> --feedback-file <path>` |
+| Prefer a compared version | `tend cli card:prefer --feed <feed> --preference-file <path>` |
 | Dismiss card locally (Tend-only, no source cleanup) | `tend cli card:dismiss --feed <feed> --card <card>` |
 | Clean up the card's source | `tend cli card:cleanup-source --feed <feed> --card <card>` |
 | Undo queued source cleanup | `tend cli card:undo-cleanup-source --feed <feed> --card <card>` |
@@ -110,6 +115,11 @@ Run `tend cli help` for the full command surface. Core feed-runner commands are:
 | Reconcile succeeded blocked approval | `tend cli work:reconcile-approved --feed <feed> --work <work> --token <token> --result <json>` |
 | Retry work | `tend cli work:retry --feed <feed> --work <work>` |
 | Request learning | `tend cli learning:request --feed <feed>` |
+
+Meeting readers use ordinary source runs and cards, not a separate edition system. Configuration is
+explicit; the runner does not fetch sources, publish cards, or change policy. Follow
+[Meeting readers](MEETING_READERS.md) for packet preparation, evidence review, exact-output
+provenance, and private per-user calibration.
 
 ## Safety
 
