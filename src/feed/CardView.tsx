@@ -398,7 +398,7 @@ function ReadingCardView({ card, active, reaction, group, preference, onVersion,
         <a className="reading-run-link" href={`/feed/${encodeURIComponent(card.feedId)}/prompts#source-run-${encodeURIComponent(reading.runId)}`}>View this source run</a>
         <CardHistory card={card} />
       </details>
-      {comparison ? <ReadingPreferenceFooter group={comparison} card={card} preference={preference} reaction={reaction} onChanged={onChanged} onFeedback={onFeedback} onRecorded={onReactionRecorded} onBusy={setPreferenceBusy} /> : <footer className="card-action reading-footer" aria-busy={busy}>
+      <footer className="card-action reading-footer" aria-busy={busy}>
         <div className="reading-reaction-row">
           <div className="reading-reaction-state" role="status" aria-live="polite">
             {busy ? "Saving…" : selected === "like" ? `Liked · ${disposition}` : selected === "not_for_me" ? `Not for me · ${disposition}` : card.status === "done" ? "Archived in Tend" : card.status === "queued" ? "Feedback queued" : card.status === "working" ? "Feedback being reviewed" : "What did you think?"}
@@ -409,15 +409,16 @@ function ReadingCardView({ card, active, reaction, group, preference, onVersion,
               key={value}
               className={`button ghost reading-reaction ${selected === value ? "selected" : ""}`}
               aria-pressed={selected === value}
-              disabled={busy || stale || workActive}
+              disabled={busy || preferenceBusy || stale || workActive}
               onClick={(event) => { event.stopPropagation(); void send(selected === value ? null : value); }}
             >{value === "like" ? "Like" : "Not for me"}</button>)}
-            {onFeedback && <button type="button" className="button text" onClick={(event) => { event.stopPropagation(); onFeedback(); }}>Feedback</button>}
+            {onFeedback && !comparison && <button type="button" className="button text" onClick={(event) => { event.stopPropagation(); onFeedback(); }}>Feedback</button>}
           </div>
         </div>
-        {!selected && card.status !== "done" && <small className="reading-local-note">Reactions move this card to Done in Tend. The source is unchanged.</small>}
+        {!selected && card.status !== "done" && <small className="reading-local-note">{comparison ? "Rates only this version. Other versions keep their own ratings." : "Reactions move this card to Done in Tend. The source is unchanged."}</small>}
         {error && <div className="reading-error" role="alert"><span>{error}</span>{!stale && requestRef.current && <button type="button" className="button text" disabled={busy} onClick={(event) => { event.stopPropagation(); if (requestRef.current) void send(requestRef.current.reaction); }}>Retry</button>}{stale && <button type="button" className="button text" onClick={(event) => { event.stopPropagation(); onChanged(); }}>Refresh card</button>}</div>}
-      </footer>}
+      </footer>
+      {comparison && <ReadingPreferenceFooter group={comparison} card={card} preference={preference} reaction={reaction} onChanged={onChanged} onFeedback={onFeedback} onRecorded={onReactionRecorded} onBusy={setPreferenceBusy} disabled={busy} />}
     </article>
   );
 }

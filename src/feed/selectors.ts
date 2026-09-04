@@ -1,11 +1,19 @@
 import type { Tab } from "../app/types";
 import { groupReadingCards, sameReadingMembers, type ReadingCardGroup } from "../../shared/readingGroups";
-import type { ReadingGroupMember, ReadingPreferenceState } from "../../shared/types";
+import type { ReadingGroupMember, ReadingPreferenceState, ReadingProgressState } from "../../shared/types";
 import type { Card, CardAction, FeedView, RoutineActionGroup, WorkItemView } from "../types";
 import { safeConfiguredCardActions } from "../../shared/cardActions";
 
 export function visibleCards(feed: FeedView, tab: Tab): Card[] {
   const pass = feed.config.currentPass;
+  if (tab === "read") {
+    const readIds = new Set(groupReadingCards(feed.cards, feed.readingComparisons)
+      .filter((group) => currentReadingProgress(group, feed.readingProgress)?.read)
+      .flatMap((group) => group.cards.map((card) => card.id)));
+    return feed.cards.filter((card) => card.reading && !card.routineActionGroupId
+      && (card.status === "done" || readIds.has(card.id))
+      && !["queued", "working", "approved_blocked"].includes(card.status));
+  }
   if (tab === "review") {
     return feed.cards
       .filter((card) => (card.status === "to_review_new" || card.status === "to_review_updated") && card.readyForPass <= pass && !card.sweep?.hidden && !card.routineActionGroupId)
@@ -34,11 +42,23 @@ export function visibleCardGroups(feed: FeedView, tab: Tab): VisibleCardGroup[] 
   const visible = new Map<string, VisibleCardGroup>();
   for (const card of visibleCards(feed, tab)) {
     const group = byCard.get(card.id)!;
+    if (tab === "review" && currentReadingProgress(group, feed.readingProgress)?.read
+      && !group.cards.some((member) => feed.work.some((work) => work.cardId === member.id && ["queued", "working", "approved_blocked"].includes(work.status)))) continue;
     const existing = visible.get(group.id);
     if (existing) existing.visibleCards.push(card);
     else visible.set(group.id, { ...group, visibleCards: [card] });
   }
-  return [...visible.values()];
+  const groups = [...visible.values()];
+  return tab === "read" ? groups.sort((left, right) => {
+    const at = (group: VisibleCardGroup) => currentReadingProgress(group, feed.readingProgress)?.at
+      ?? group.visibleCards.reduce((latest, card) => (card.completedAt ?? card.updatedAt) > latest ? card.completedAt ?? card.updatedAt : latest, "");
+    return at(right).localeCompare(at(left));
+  }) : groups;
+}
+
+export function currentReadingProgress(group: ReadingCardGroup, progress?: FeedView["readingProgress"]): ReadingProgressState | undefined {
+  const state = progress?.[group.id];
+  return state && sameReadingMembers(state.members, readingMembers(group)) ? state : undefined;
 }
 
 export function readingMembers(group: ReadingCardGroup): ReadingGroupMember[] {
@@ -62,12 +82,13 @@ export function selectedGroupCard(group: VisibleCardGroup, selectedId?: string, 
 }
 
 export function visibleRoutineActions(feed: FeedView, tab: Tab): RoutineActionGroup[] {
+  if (tab === "read") return [];
   const status = tab === "review" ? "proposed" : tab === "done" ? "completed" : tab;
   return feed.routineActions.filter((group) => group.status === status);
 }
 
 export function visibleFeedWork(feed: FeedView, tab: Tab): WorkItemView[] {
-  if (tab === "review") return [];
+  if (tab === "review" || tab === "read") return [];
   const status = tab === "done" ? "completed" : tab;
   return feed.work.filter((work) => work.cardId === "__feed__" && work.status === status);
 }

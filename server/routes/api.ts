@@ -12,7 +12,7 @@ import { body, mutation, mutationAccessError, type LocalRouteContext } from "./s
 async function readingMutation(c: any, context: LocalRouteContext, callback: () => Promise<unknown>) {
   const accessError = mutationAccessError(c, context.mutationToken);
   if (accessError) return accessError;
-  // Provider launches and ratings require a current session even from the originless CLI.
+  // Provider launches, ratings, and reading state require a current session even without Origin.
   if (!context.mutationToken || c.req.header("x-attention-mutation-token") !== context.mutationToken) {
     return c.json({ error: "A current local Tend session is required." }, 403);
   }
@@ -121,6 +121,12 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   }));
   app.post("/api/feeds/:feed/reading-comparisons", async (c) => readingMutation(c, context, async () => {
     return domain.linkReadingComparison(c.req.param("feed"), await body(c));
+  }));
+  app.post("/api/feeds/:feed/reading-mode", async (c) => readingMutation(c, context, async () => {
+    return domain.setReadingMode(c.req.param("feed"), await body(c));
+  }));
+  app.post("/api/feeds/:feed/reading-progress", async (c) => readingMutation(c, context, async () => {
+    return domain.recordReadingProgress(c.req.param("feed"), await body(c));
   }));
   app.get("/api/feeds/:feed/native-approvals", async (c) => {
     c.header("cache-control", "no-store");

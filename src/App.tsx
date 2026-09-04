@@ -7,7 +7,9 @@ import type { AttentionScreen, Inspector, Tab, WorkspaceTab } from "./app/types"
 import { CardView } from "./feed/CardView";
 import { RoutineActionGroupView } from "./feed/RoutineActionGroupView";
 import { NativeApprovals } from "./feed/NativeApprovals";
-import { countFor, currentReadingPreference, selectedGroupCard, visibleCardActions, visibleCardGroups, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
+import { countFor, currentReadingPreference, currentReadingProgress, selectedGroupCard, visibleCardActions, visibleCardGroups, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
+import { ReadingStreamCard, ReadingStreamControls, ReadingStreamViewport, type ReadingUndo } from "./feed/ReadingStream";
+import { isPassiveReadingCard } from "../shared/readingGroups";
 import { Dock } from "./shell/Dock";
 import { InspectorPanel } from "./shell/InspectorPanel";
 import { TopBar } from "./shell/TopBar";
@@ -73,6 +75,10 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const [undoCardDisposition, setUndoCardDisposition] = useState<CardDispositionUndo | null>(null);
   const [undoQueuedWork, setUndoQueuedWork] = useState<{ feedId: string; workId: string } | null>(null);
   const [undoRevision, setUndoRevision] = useState<string | null>(null);
+  const [readingUndo, setReadingUndo] = useState<ReadingUndo | null>(null);
+  const [readingUndoBusy, setReadingUndoBusy] = useState(false);
+  const readingUndoInFlight = useRef(false);
+  const [readingModeBusy, setReadingModeBusy] = useState(false);
   const [workspaceFocus, setWorkspaceFocus] = useState<VoiceTarget | null>(null);
   const [readingFeedbackTarget, setReadingFeedbackTarget] = useState<ReadingFeedbackTarget | null>(() => {
     const saved = readSession<ReadingFeedbackTarget | null>("attention.readingFeedbackTarget", null);
@@ -114,6 +120,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     if (previousFeedRef.current !== feedId) {
       rememberReadingFeedback(null);
       readingDraftStartedRef.current = false;
+      setReadingUndo(null);
     }
     previousFeedRef.current = feedId;
   }, [feedId, rememberReadingFeedback]);
@@ -223,6 +230,33 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
       setToast("");
       toastTimerRef.current = null;
     }, duration);
+  };
+
+  const changeReadingMode = async (mode: "review" | "stream") => {
+    if (readingModeBusy) return;
+    setReadingModeBusy(true);
+    try {
+      await post(`/api/feeds/${encodeURIComponent(feedId)}/reading-mode`, { mode });
+      await refresh();
+    } catch (error) { showToast(error instanceof Error ? error.message : String(error)); }
+    finally { setReadingModeBusy(false); }
+  };
+  const undoReading = async () => {
+    const undo = readingUndo;
+    if (!undo || readingUndoInFlight.current) return;
+    readingUndoInFlight.current = true;
+    setReadingUndoBusy(true);
+    try {
+      await post(`/api/feeds/${encodeURIComponent(undo.feedId)}/reading-progress`, {
+        clientEventId: crypto.randomUUID(), groupId: undo.progress.groupId,
+        members: undo.progress.members, viewedMembers: undo.progress.viewedMembers,
+        read: false, expectedEventId: undo.progress.eventId,
+      });
+      setReadingUndo((current) => current?.progress.eventId === undo.progress.eventId ? null : current);
+      await refresh(undo.feedId);
+      showToast("Marked unread. Your ratings are unchanged.");
+    } catch (error) { showToast(error instanceof Error ? error.message : String(error)); }
+    finally { readingUndoInFlight.current = false; setReadingUndoBusy(false); }
   };
 
   const changeDockTarget = useCallback((next: VoiceTarget) => {
@@ -498,27 +532,52 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const fresh = cardGroups.filter((group) => !group.visibleCards.some((card) => card.status === "to_review_updated") && group.visibleCards.some((card) => card.status === "to_review_new"));
   const feedWork = visibleFeedWork(feed, tab);
   const parkedClaudeWork = tab === "queued" ? parkedClaudeWorkItems(feed, claudeLiveness) : [];
+  const readingMode = feed.config.readingMode ?? "review";
+  const hasReading = feed.cards.some((card) => card.reading);
+  const hasReadHistory = hasReading && (readingMode === "stream" || Object.keys(feed.readingProgress ?? {}).length > 0);
   return withRealtime(
     <>
       <TopBar state={state} onMind={openMind} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
       <nav className="tabs">
-        {(["review", "queued", "working", "done"] as Tab[]).map((item) => (
+        {(["review", ...(hasReadHistory ? ["read"] : []), "queued", "working", "done"] as Tab[]).map((item) => (
           <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>
-            {item === "review" ? "To review" : item === "queued" ? queuedTabLabel : item === "working" ? "Working" : "Done"}
+            {item === "review" ? readingMode === "stream" ? "Unread" : "To review" : item === "read" ? "Read history" : item === "queued" ? queuedTabLabel : item === "working" ? "Working" : "Done"}
             <span>{countFor(feed, item)}</span>
           </button>
         ))}
         <button className="tab-quiet" onClick={() => openWorkspace("feed")}>Prompts & sources</button>
       </nav>
       <main className="page" ref={pageRef}>
+        {hasReading && <ReadingStreamControls mode={readingMode} busy={readingModeBusy} onChange={(mode) => void changeReadingMode(mode)} />}
+        {readingUndo?.feedId === feedId && <div className="reading-undo" role="status">
+          <span>Marked read · no rating recorded</span>
+          <button type="button" className="button text" disabled={readingUndoBusy} onClick={() => void undoReading()} title={readingUndo.title}>{readingUndoBusy ? "Restoring…" : "Undo"}</button>
+          <button type="button" className="button text" onClick={() => setTab("read")}>Read history</button>
+          <button type="button" className="reading-undo-close" aria-label="Dismiss read notification" onClick={() => setReadingUndo(null)}>×</button>
+        </div>}
         <NativeApprovals feedId={feedId} />
         <RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} />
         {routineActions.map((group) => <RoutineActionGroupView key={group.id} group={group} onApprove={() => approveRoutineAction(group)} />)}
         <ParkedClaudeWorkNotice items={parkedClaudeWork} onReassign={reassignQueuedWork} />
         {tab === "review" && updated.length > 0 && <div className="section-label">Back for review <span>{updated.length}</span></div>}
+        <ReadingStreamViewport enabled={readingMode === "stream" && tab === "review"} sessionKey={`${feedId}:${tab}`} ids={cardGroups.map((group) => group.id)}>
         {cards.map((card, index) => (
           <Fragment key={cardGroups[index].id}>
             {tab === "review" && index === updated.length && fresh.length > 0 && <div className="section-label" key={`${card.id}-label`}>New <span>{fresh.length}</span></div>}
+            <ReadingStreamCard group={cardGroups[index]} card={card}
+              enabled={readingMode === "stream" && tab === "review" && cardGroups[index].cards.every(isPassiveReadingCard)}
+              history={tab === "read"} progress={currentReadingProgress(cardGroups[index], feed.readingProgress)}
+              busy={cardGroups[index].cards.some((member) => feed.work.some((work) => work.cardId === member.id && ["queued", "working", "approved_blocked"].includes(work.status)))}
+              onChanged={() => void refresh()} onUnread={(previous) => setReadingUndo((current) =>
+                current?.feedId === feedId && current.progress.groupId === previous.groupId && current.progress.eventId === previous.eventId ? null : current
+              )} onRead={(undo) => {
+                setReadingUndo(undo);
+                if (!readingDraftStartedRef.current && readingFeedbackTarget?.feedId === undo.feedId
+                  && undo.progress.members.some((member) => member.cardId === readingFeedbackTarget.cardId)) {
+                  rememberReadingFeedback(null);
+                  dockScopeExplicitlyChangedRef.current = false;
+                }
+              }}>
             <CardView
               card={card} queuedFor={cardQueuedFor(card.id)} queuedNote={editableQueuedNote(card)}
               active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()}
@@ -528,8 +587,14 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
               readingGroup={cardGroups[index]} readingPreference={currentReadingPreference(cardGroups[index], feed.readingPreferences)}
               onReadingVersion={(cardId) => selectReadingVersion(cardGroups[index].id, cardId)}
             />
+            </ReadingStreamCard>
           </Fragment>
         ))}
+        </ReadingStreamViewport>
+        {readingMode === "stream" && tab === "review" && cards.some((card) => card.reading) && <section className="reading-stream-end" aria-label="End of reading feed">
+          <h2>That’s everything for now.</h2>
+          <p>Read cards move to Read history. Cards you skipped stay unread.</p>
+        </section>}
         {feedWork.map((work) => (
           <article className="attention-card feed-work-card" key={work.id}>
             <div className="card-rule" />
@@ -582,7 +647,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
             )}
           </article>
         ))}
-        {!cards.length && !routineActions.length && !feedWork.length && <div className="empty"><h2>Nothing here right now.</h2><p>{tab === "review" ? "A quiet feed is allowed. Wake the feed thread when you want Codex to collect or drain pending work." : "Move back to To review when you are ready for the next pass."}</p></div>}
+        {!cards.length && !routineActions.length && !feedWork.length && <div className="empty"><h2>{tab === "review" && readingMode === "stream" ? "You’re caught up." : "Nothing here right now."}</h2><p>{tab === "read" ? "Cards you read or rate stay here. Reading never counts as a rating." : tab === "review" && readingMode === "stream" ? "Your read cards and ratings are still in Read history. There’s no need to rate everything." : tab === "review" ? "A quiet feed is allowed. Wake the feed thread when you want Codex to collect or drain pending work." : "Move back to To review when you are ready for the next pass."}</p></div>}
         {(feed.readyNextPass > 0 || compoundProposals.length > 0) && <section className={`end-cap ${feed.readyNextPass ? "" : "actions-only"}`}>
           {feed.readyNextPass > 0 && <div>
             <span>End of this pass</span>

@@ -119,6 +119,8 @@ export interface FeedConfig {
   name: string;
   purpose: string;
   defaultCleanup: string;
+  /** Review is the default; stream keeps neutral reading progress separately from taste. */
+  readingMode?: "review" | "stream";
   currentPass: number;
   createdAt: string;
   updatedAt: string;
@@ -331,6 +333,27 @@ export interface ReadingReactionState {
 export interface ReadingGroupMember {
   cardId: string;
   contentRevision: string;
+}
+
+/** Passing a reading group is not an explicit reaction, preference, or completed action. */
+export interface ReadingProgressInput {
+  clientEventId: string;
+  groupId: string;
+  members: ReadingGroupMember[];
+  viewedMembers: ReadingGroupMember[];
+  read: boolean;
+  expectedEventId?: string;
+  /** Required when marking read: timestamps of every version in the displayed group. */
+  expectedCardUpdatedAt?: Record<string, string>;
+}
+
+export interface ReadingProgressState {
+  groupId: string;
+  members: ReadingGroupMember[];
+  viewedMembers: ReadingGroupMember[];
+  read: boolean;
+  eventId: string;
+  at: string;
 }
 
 /** Explicitly matched moments across attempts; the cards keep their original run and writer. */
@@ -613,6 +636,7 @@ export interface FeedView {
   readingReactions?: Record<string, ReadingReactionState>;
   readingPreferences?: Record<string, ReadingPreferenceState>;
   readingComparisons?: ReadingComparison[];
+  readingProgress?: Record<string, ReadingProgressState>;
 }
 
 export interface WorkspaceView {

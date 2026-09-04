@@ -192,6 +192,37 @@ describe("native reader HTTP routes", () => {
     expect(await store.readWorkItems(run.feedId)).toHaveLength(0);
   });
 
+  test("guards stream settings and neutral progress with the local session", async () => {
+    const { app, store, run, readingCard } = await setup();
+    const card = await readingCard();
+    const base = `/api/feeds/${run.feedId}`;
+    const post = (route: string, value: unknown, headers = browserHeaders) => app.request(`${base}/${route}`, { method: "POST", headers, body: JSON.stringify(value) });
+    const members = [{ cardId: card.id, contentRevision: card.reading!.contentRevision }];
+    const progress = { clientEventId: "api-pass", groupId: readingGroupKey(run.id, "fixture-topic"), members, viewedMembers: members, read: true, expectedCardUpdatedAt: { [card.id]: card.updatedAt } };
+    for (const [route, input] of [["reading-mode", { mode: "stream" }], ["reading-progress", progress]] as const) {
+      expect((await post(route, input, { ...browserHeaders, "x-attention-mutation-token": "wrong-token" })).status).toBe(403);
+      expect((await post(route, input, { ...browserHeaders, origin: "https://untrusted.example" })).status).toBe(403);
+      expect((await post(route, input, { ...browserHeaders, "content-type": "text/plain" })).status).toBe(415);
+    }
+    expect((await post("reading-progress", progress)).status).toBe(409);
+    expect((await post("reading-mode", { mode: "automatic" })).status).toBe(400);
+    const mode = await post("reading-mode", { mode: "stream" });
+    expect(mode.status).toBe(200);
+    expect((await mode.json()).readingMode).toBe("stream");
+    const first = await post("reading-progress", progress);
+    expect(first.status).toBe(200);
+    const receipt = await first.json();
+    expect(receipt.progress).toMatchObject({ read: true, viewedMembers: members });
+    expect((await (await post("reading-progress", progress)).json()).duplicate).toBe(true);
+    const unread = await post("reading-progress", { ...progress, clientEventId: "api-unread", read: false, expectedEventId: receipt.event.id });
+    expect(unread.status).toBe(200);
+    expect((await unread.json()).progress.read).toBe(false);
+    const feed = await store.readFeed(run.feedId);
+    expect(feed.readingReactions).toEqual({});
+    expect(feed.cards.find((item) => item.id === card.id)).toEqual(card);
+    expect(feed.work).toEqual([]);
+  });
+
   test("records native group preferences through the guarded API without adding individual ratings", async () => {
     const { app, domain, store, run, readingCard } = await setup();
     const first = await readingCard();

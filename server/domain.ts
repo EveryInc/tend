@@ -14,6 +14,8 @@ import type {
   ReadingComparisonInput,
   ReadingGroupMember,
   ReadingPreferenceInput,
+  ReadingProgressInput,
+  ReadingProgressState,
   FeedConfig,
   FeedEvent,
   FeedMindContext,
@@ -51,10 +53,10 @@ import { isDeepStrictEqual } from "node:util";
 import { isReservedCardActionId, safeConfiguredCardActions } from "../shared/cardActions";
 import { containsFullEmail } from "../shared/emailThread";
 import type { ReaderDraft } from "../shared/readers";
-import { groupReadingCards, readingGroupKey, sameReadingMembers } from "../shared/readingGroups";
+import { groupReadingCards, isPassiveReadingCard, readingGroupKey, sameReadingMembers } from "../shared/readingGroups";
 import { readReaderInputFingerprint, readReaderOutput } from "./readers";
 import { agentLabel, effectiveWorkLane } from "../shared/lanes";
-import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, readingContentRevision, snapshotReadingCard, workItemView } from "./store";
+import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, readingAttentionRevision, readingContentRevision, snapshotReadingCard, workItemView } from "./store";
 import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
 import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./util";
@@ -148,6 +150,17 @@ export interface ReadingComparisonReceipt {
   comparison: ReadingComparison;
 }
 
+export interface ReadingProgressReceipt {
+  duplicate: boolean;
+  event: FeedEvent;
+  progress: ReadingProgressState;
+}
+
+interface ReadingProgressEventDetail extends ReadingProgressInput {
+  progressSequence: number;
+  attentionRevisions: Record<string, string>;
+}
+
 interface ReadingPreferenceEventDetail extends ReadingPreferenceInput {
   groupKey: string;
   preferenceSequence: number;
@@ -156,8 +169,8 @@ interface ReadingPreferenceEventDetail extends ReadingPreferenceInput {
   archiveRequested: boolean;
 }
 
-function validateReadingMembers(value: unknown, invalid: (message: string) => never): ReadingGroupMember[] {
-  if (!Array.isArray(value) || value.length < 2 || value.length > 64) invalid("A comparison needs between two and 64 exact card versions.");
+function validateReadingMembers(value: unknown, invalid: (message: string) => never, minimum = 2): ReadingGroupMember[] {
+  if (!Array.isArray(value) || value.length < minimum || value.length > 64) invalid(`Include between ${minimum} and 64 exact card versions.`);
   const ids = new Set<string>();
   return (value as unknown[]).map((value) => {
     if (!value || typeof value !== "object" || Array.isArray(value)) invalid("Each compared member needs a cardId and contentRevision.");
@@ -169,6 +182,44 @@ function validateReadingMembers(value: unknown, invalid: (message: string) => ne
     ids.add(cardId);
     return { cardId, contentRevision: member.contentRevision as string };
   }).sort((left, right) => left.cardId.localeCompare(right.cardId));
+}
+
+function validateReadingProgress(body: unknown): ReadingProgressInput {
+  const invalid = (message: string): never => { throw new ReadingCardRequestError(message, 400, "invalid_progress"); };
+  if (!body || typeof body !== "object" || Array.isArray(body)) invalid("A reading progress object is required.");
+  const input = body as Record<string, unknown>;
+  for (const [key, limit] of [["clientEventId", 200], ["groupId", 1000]] as const) {
+    if (typeof input[key] !== "string" || !input[key].trim() || input[key].length > limit) invalid(`${key} must be a non-empty string of at most ${limit} characters.`);
+  }
+  if (typeof input.read !== "boolean") invalid("read must be true or false.");
+  if (input.expectedEventId !== undefined && (typeof input.expectedEventId !== "string" || !input.expectedEventId.trim() || input.expectedEventId.length > 200)) invalid("expectedEventId must name the progress event being replaced.");
+  if (input.read === false && !input.expectedEventId) invalid("Marking unread requires the current expectedEventId.");
+  const members = validateReadingMembers(input.members, invalid, 1);
+  const viewedMembers = validateReadingMembers(input.viewedMembers, invalid, input.read ? 1 : 0);
+  if (viewedMembers.some((viewed) => !members.some((member) => member.cardId === viewed.cardId && member.contentRevision === viewed.contentRevision))) invalid("viewedMembers must be exact versions from this reading group.");
+  let expectedCardUpdatedAt: Record<string, string> | undefined;
+  if (input.read === true || input.expectedCardUpdatedAt !== undefined) {
+    const expected = input.expectedCardUpdatedAt;
+    if (!expected || typeof expected !== "object" || Array.isArray(expected)
+      || Object.keys(expected).length !== members.length
+      || members.some((member) => !Object.hasOwn(expected, member.cardId)
+        || typeof (expected as Record<string, unknown>)[member.cardId] !== "string"
+        || !(expected as Record<string, string>)[member.cardId].trim()
+        || (expected as Record<string, string>)[member.cardId].length > 100)) {
+      invalid("expectedCardUpdatedAt must contain the displayed timestamp for every exact group member.");
+    }
+    expectedCardUpdatedAt = Object.fromEntries(members.map((member) => [member.cardId, (expected as Record<string, string>)[member.cardId]]));
+  }
+  return {
+    clientEventId: input.clientEventId as string, groupId: input.groupId as string, members, viewedMembers, read: input.read as boolean,
+    ...(typeof input.expectedEventId === "string" ? { expectedEventId: input.expectedEventId } : {}),
+    ...(expectedCardUpdatedAt ? { expectedCardUpdatedAt } : {}),
+  };
+}
+
+function readingProgressState(event: FeedEvent): ReadingProgressState {
+  const detail = event.detail as ReadingProgressEventDetail;
+  return { groupId: detail.groupId, members: detail.members, viewedMembers: detail.viewedMembers, read: detail.read, eventId: event.id, at: event.at };
 }
 
 function validateReadingPreference(body: unknown): ReadingPreferenceInput {
@@ -2124,7 +2175,7 @@ export class AttentionDomain {
       const existing = (await this.store.readWorkItems(feedId)).find((work) => work.kind === "compound_learnings" && (work.status === "queued" || work.status === "working"));
       if (existing) return existing;
       const feedbackEvents = readingFeedbackEvents(await this.store.readEvents(feedId));
-      const instruction = "The user approved a learning pass. Review raw snapshots, runs, events, outcomes, and policy history. Distill a compact feed-policy improvement, then create an editable revision proposal with revision:propose --source compound. Do not apply it. The browser will bring the proposal back to the user for review."
+      const instruction = "The user approved a learning pass. Review raw snapshots, runs, events, outcomes, and policy history. Distill a compact feed-policy improvement, then create an editable revision proposal with revision:propose --source compound. Do not apply it. The browser will bring the proposal back to the user for review. Reading progress and scrolling are neutral consumption state, never a Like, dislike, preference, or evidence of taste."
         + (feedbackEvents.length ? " The attached learningContext.readingFeedbackEvents contains the exact card faces and writers for explicit Likes, Not for me, cleared reactions, version preferences, and subsequent voice feedback, including archived cards. Treat these as feedback evidence, not action permission. Use the latest explicit reaction per card and preference per exact compared group; no reaction is not a dislike. A preferred version does not make its alternatives disliked. Join voice feedback by cardId and contentRevision. Do not infer a reason for a Like or preference, or rewrite source facts from feedback." : "");
       const work = queuedWork(feedId, "__feed__", instruction, { kind: "compound_learnings" });
       if (feedbackEvents.length) work.learningContext = { readingFeedbackEvents: feedbackEvents };
@@ -2765,6 +2816,68 @@ export class AttentionDomain {
       await this.store.writeCard(card);
       await this.store.appendEvent({ feedId, cardId: card.id, type: existing ? "card.updated" : "card.created" });
       return card;
+    });
+  }
+
+  async setReadingMode(feedId: string, body: unknown): Promise<FeedConfig> {
+    const mode = body && typeof body === "object" && !Array.isArray(body) ? (body as Record<string, unknown>).mode : undefined;
+    if (mode !== "review" && mode !== "stream") throw new ReadingCardRequestError("Reading mode must be review or stream.", 400, "invalid_reading_mode");
+    return this.store.serializeAtomic(async () => {
+      const config = await this.store.readConfig(feedId);
+      if ((config.readingMode ?? "review") === mode) return config;
+      config.readingMode = mode;
+      await this.store.writeConfig(config);
+      await this.store.appendEvent({ feedId, type: "reading.mode_changed", detail: { mode } });
+      return config;
+    });
+  }
+
+  async recordReadingProgress(feedId: string, body: unknown): Promise<ReadingProgressReceipt> {
+    const input = validateReadingProgress(body);
+    return this.store.serializeAtomic(async () => {
+      const feed = await this.store.readFeed(feedId);
+      const events = (await this.store.readEvents(feedId)).filter((event) => event.type === "reading.progress_recorded");
+      const groupEvents = events.filter((event) => (event.detail as ReadingProgressEventDetail).groupId === input.groupId);
+      const latest = groupEvents.reduce<FeedEvent | undefined>((latest, event) => {
+        return !latest || (event.detail as ReadingProgressEventDetail).progressSequence > (latest.detail as ReadingProgressEventDetail).progressSequence ? event : latest;
+      }, undefined);
+      const existing = events.find((event) => (event.detail as ReadingProgressEventDetail).clientEventId === input.clientEventId);
+      if (existing) {
+        const detail = existing.detail as ReadingProgressEventDetail;
+        if (detail.groupId !== input.groupId || detail.read !== input.read || detail.expectedEventId !== input.expectedEventId
+          || !sameReadingMembers(detail.members, input.members) || !sameReadingMembers(detail.viewedMembers, input.viewedMembers)
+          || !isDeepStrictEqual(detail.expectedCardUpdatedAt, input.expectedCardUpdatedAt)) {
+          throw new ReadingCardRequestError("This clientEventId was already used for different reading progress.", 409, "client_event_conflict");
+        }
+        // A retry cannot restore a read after newer undo, work, or a return-to-review.
+        // Keep the original receipt, but return the effective current state to the client.
+        const progress = feed.readingProgress?.[input.groupId] ?? { ...readingProgressState(latest ?? existing), read: false };
+        return { duplicate: true, event: existing, progress };
+      }
+      if (input.read && feed.config.readingMode !== "stream") throw new ReadingCardRequestError("Enable reading stream before marking cards read.", 409, "reading_mode_disabled");
+      const group = groupReadingCards(feed.cards, feed.readingComparisons).find((group) => group.id === input.groupId);
+      if (!group || group.cards.some((card) => !card.reading)) throw new ReadingCardRequestError("Reading group not found.", 404, "not_found");
+      const members = group.cards.map((card) => ({ cardId: card.id, contentRevision: card.reading!.contentRevision }));
+      if (!sameReadingMembers(members, input.members)) throw new ReadingCardRequestError("The reading group changed. Reload its exact current versions.", 409, "stale_members");
+      if (group.cards.some((card) => card.reading!.contentRevision !== readingContentRevision(card))) throw new ReadingCardRequestError("A reading card changed. Reload before marking it read.", 409, "stale_content");
+      if (input.expectedEventId !== undefined && latest?.id !== input.expectedEventId) throw new ReadingCardRequestError("Reading progress changed. Reload before undoing or replacing it.", 409, "stale_progress");
+      if (input.read && !input.expectedEventId && feed.readingProgress?.[group.id]?.read === false) {
+        throw new ReadingCardRequestError("This group was marked unread. Reload its current progress before marking it read again.", 409, "stale_progress");
+      }
+      if (input.read && (group.cards.some((card) => !isPassiveReadingCard(card))
+        || feed.work.some((work) => group.cards.some((card) => card.id === work.cardId) && ["queued", "working", "approved_blocked"].includes(work.status)))) {
+        throw new ReadingCardRequestError("This group has an action or active work. Keep it in explicit review.", 409, "card_busy");
+      }
+      if (input.read && group.cards.some((card) => input.expectedCardUpdatedAt![card.id] !== card.updatedAt)) {
+        throw new ReadingCardRequestError("This card has new work or returned to review. Reload before marking its current attention state read.", 409, "stale_attention");
+      }
+      const progressSequence = groupEvents.reduce((highest, event) => {
+        const sequence = (event.detail as ReadingProgressEventDetail).progressSequence;
+        return Number.isSafeInteger(sequence) ? Math.max(highest, sequence) : highest;
+      }, 0) + 1;
+      const attentionRevisions = Object.fromEntries(group.cards.map((card) => [card.id, readingAttentionRevision(card)]));
+      const event = await this.store.appendEvent({ feedId, type: "reading.progress_recorded", detail: { ...input, progressSequence, attentionRevisions } satisfies ReadingProgressEventDetail });
+      return { duplicate: false, event, progress: readingProgressState(event) };
     });
   }
 

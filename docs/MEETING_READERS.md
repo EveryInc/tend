@@ -312,6 +312,44 @@ outside editable controls to compare. Like/Not for me archive a single card loca
 version archives the comparison without treating other versions as disliked. Give the reason through
 the existing voice dock, targeted to the selected version—even after archival.
 
+### Let reading cards clear as you scroll
+
+In the feed, set **Reading cards → Clear as I read**. This is opt-in per feed; ordinary
+action cards still require a deliberate disposition. Like and Not for me remain optional,
+including on each carousel version. Prefer this version is a separate comparison choice.
+
+Tend waits for roughly two seconds of meaningful foreground visibility, including the beginning
+and end of the card face, then a deliberate forward scroll past the card. Loading the page,
+switching tabs, selecting text, jumping with code, or quickly flicking past does not count.
+Tall cards can be read in parts. **Mark read** is also available without scrolling. Automatic
+clearing waits until the card is offscreen, and removing a passed card preserves the next card's
+position. The end of the feed leaves room to scroll past the final card.
+
+**Read history** retains the cards, sources, ratings and comparisons. **Undo** or **Mark unread**
+restores a neutrally read topic; it never clears a Like or Not for me. A group pass records its exact
+members and only the versions actually viewed, not a pretend read on every alternative. A newly
+arriving version makes the topic eligible again. A return for review or later feedback work also
+invalidates old read progress. Reading is not a positive or negative training signal; compounding
+still uses explicit feedback only.
+
+This uses existing feed configuration and the event ledger, not a new service or database.
+It does not alter card content/status, approve work, or change a source. API and CLI operations:
+
+```sh
+tend cli feed:reading-mode --feed <feed-id> --mode stream
+tend cli reading:progress --feed <feed-id> --progress-file <progress.json>
+```
+
+`progress.json` supplies `clientEventId`, `groupId`, exact `members`, the subset `viewedMembers`,
+and `read`. Marking read also requires `expectedCardUpdatedAt`, a map from each member ID to its
+displayed `updatedAt`, so an old browser tab cannot clear a later feedback response.
+Unread requires `expectedEventId` from the current receipt so a stale undo cannot
+erase newer progress. `POST /api/feeds/:feed/reading-mode` and
+`POST /api/feeds/:feed/reading-progress` provide the same guarded operations. Feed state exposes
+`readingProgress`; the event ledger retains history. Use `--mode review` to stop automatic
+clearing without discarding history. Older builds safely ignore these additive fields/events,
+but will show neutrally read cards again; they do not support this mode.
+
 ### A reader needs to sign in again
 
 An expired subscription session shows **Sign-in needed**, not a content-quality failure. Sign in

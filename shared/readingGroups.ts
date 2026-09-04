@@ -21,6 +21,13 @@ export function sameReadingMembers(left: ReadingGroupMember[], right: ReadingGro
     && right.every((member) => versions.get(member.cardId) === member.contentRevision);
 }
 
+/** Only passive reading cards may disappear on scroll; actions keep explicit review. */
+export function isPassiveReadingCard(card: Card): boolean {
+  return Boolean(card.reading) && card.kind === "attention" && !card.proposedAction
+    && !(card.actions?.length) && !card.routineActionGroupId
+    && ["to_review_new", "to_review_updated", "done"].includes(card.status);
+}
+
 function orderHash(value: string): number {
   let hash = 2166136261;
   for (let index = 0; index < value.length; index += 1) hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);

@@ -5,7 +5,7 @@ import { ApiError, post } from "../app/api";
 import type { Card, FeedView } from "../types";
 import { readingMembers } from "./selectors";
 
-export function ReadingPreferenceFooter({ group, card, preference, reaction, onChanged, onFeedback, onRecorded, onBusy }: {
+export function ReadingPreferenceFooter({ group, card, preference, reaction, onChanged, onFeedback, onRecorded, onBusy, disabled = false }: {
   group: ReadingCardGroup;
   card: Card;
   preference?: ReadingPreferenceState;
@@ -14,6 +14,7 @@ export function ReadingPreferenceFooter({ group, card, preference, reaction, onC
   onFeedback?: () => void;
   onRecorded?: () => void;
   onBusy: (busy: boolean) => void;
+  disabled?: boolean;
 }) {
   const members = readingMembers(group);
   const key = JSON.stringify([group.id, members, card.id]);
@@ -40,7 +41,7 @@ export function ReadingPreferenceFooter({ group, card, preference, reaction, onC
   useEffect(() => setPosted(null), [preference?.eventId]);
 
   const send = async (preferredCardId: string | null) => {
-    if (inFlight.current || stale || workActive) return;
+    if (inFlight.current || disabled || stale || workActive) return;
     const request = requestRef.current?.preferredCardId === preferredCardId ? requestRef.current : {
       clientEventId: crypto.randomUUID(), runId: group.runId!, topicKey: group.topicKey!, members, preferredCardId,
       ...(group.comparisonId ? { comparisonId: group.comparisonId } : {}),
@@ -80,7 +81,7 @@ export function ReadingPreferenceFooter({ group, card, preference, reaction, onC
         {previousReaction && <small className="reading-prior-reaction">This version: {previousReaction === "like" ? "Liked" : "Not for me"}</small>}
       </div>
       <div className="action-buttons">
-        <button type="button" className={`button ghost reading-reaction ${preferred ? "selected" : ""}`} aria-pressed={preferred} disabled={busy || stale || workActive} onClick={(event) => { event.stopPropagation(); void send(preferred ? null : card.id); }}>Prefer this version</button>
+        <button type="button" className={`button ghost reading-reaction ${preferred ? "selected" : ""}`} aria-pressed={preferred} disabled={disabled || busy || stale || workActive} onClick={(event) => { event.stopPropagation(); void send(preferred ? null : card.id); }}>Prefer this version</button>
         {onFeedback && <button type="button" className="button text" onClick={(event) => { event.stopPropagation(); onFeedback(); }}>Feedback</button>}
       </div>
     </div>

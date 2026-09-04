@@ -27,6 +27,8 @@ export const CLI_COMMANDS = [
   "readers:compare --feed <id> --comparison-file <path>",
   "card:react --feed <id> --card <id> --feedback-file <path>",
   "card:prefer --feed <id> --preference-file <path>",
+  "feed:reading-mode --feed <id> --mode <review|stream>",
+  "reading:progress --feed <id> --progress-file <path>",
   "routine:upsert --feed <id> --group <json>",
   "routine:approve --feed <id> --group <id>",
   "card:dismiss --feed <id> --card <id>",

@@ -218,6 +218,12 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
       case "card:prefer":
         output = await domain.recordReadingPreference(required("feed"), await structured("preference"));
         break;
+      case "feed:reading-mode":
+        output = await domain.setReadingMode(required("feed"), { mode: required("mode") });
+        break;
+      case "reading:progress":
+        output = await domain.recordReadingProgress(required("feed"), await structured("progress"));
+        break;
       case "routine:upsert":
         output = await domain.upsertRoutineActionGroup(
           required("feed"),

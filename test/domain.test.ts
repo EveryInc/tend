@@ -22,6 +22,7 @@ import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
 import type { Card, CardReading, ReadingPreferenceInput, WorkClaimedByReport, WorkItem } from "../shared/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
+import { visibleCardGroups } from "../src/feed/selectors";
 import { readClaudeWakeLines } from "./support/agents";
 
 const roots: string[] = [];
@@ -446,6 +447,232 @@ describe("native reading cards", () => {
   });
 });
 
+describe("neutral reading stream progress", () => {
+  test("is opt-in, idempotent, and preserves cards, work, sources, and explicit taste", async () => {
+    const { store, domain } = await setup();
+    const { card, alternative, request } = await readingGroupFixture(store, domain);
+    const groupId = readingGroupKey(request.runId, request.topicKey);
+    const input = { clientEventId: "passed-group", groupId, members: request.members, viewedMembers: [request.members[0]], read: true, expectedCardUpdatedAt: { [card.id]: card.updatedAt, [alternative.id]: alternative.updatedAt } };
+    expect((await store.readConfig("company-attention")).readingMode).toBeUndefined();
+    await expect(domain.recordReadingProgress("company-attention", input)).rejects.toMatchObject({ code: "reading_mode_disabled" });
+    await domain.setReadingMode("company-attention", { mode: "stream" });
+    const before = await store.readFeed("company-attention");
+    const results = await Promise.all([domain.recordReadingProgress("company-attention", input), domain.recordReadingProgress("company-attention", input)]);
+    expect(results.map((result) => result.duplicate).sort()).toEqual([false, true]);
+    const after = await store.readFeed("company-attention");
+    expect(after.readingProgress?.[groupId]).toEqual(results[0].progress);
+    expect(after.readingProgress?.[groupId]?.viewedMembers).toEqual([request.members[0]]);
+    expect(after.readingProgress?.[groupId]?.members).toHaveLength(2);
+    expect({ ...after, readingProgress: undefined }).toEqual({ ...before, readingProgress: undefined });
+    const events = await store.readEvents("company-attention");
+    expect(events.filter((event) => event.type === "reading.progress_recorded")).toHaveLength(1);
+    expect(events.some((event) => event.type === "card.reaction_recorded" || event.type === "reading.preference_recorded")).toBe(false);
+    const compound = await domain.queueCompound("company-attention");
+    expect(compound.learningContext).toBeUndefined();
+    expect(compound.instruction).toContain("neutral consumption state");
+    expect((await store.readCard("company-attention", card.id)).status).toBe("to_review_new");
+    expect((await store.readCard("company-attention", alternative.id)).status).toBe("to_review_new");
+  });
+
+  test.each(["like", "prefer"] as const)("rating a read comparison with %s does not reopen its alternatives", async (rating) => {
+    const { store, domain } = await setup();
+    const { card, alternative, request } = await readingGroupFixture(store, domain);
+    const groupId = readingGroupKey(request.runId, request.topicKey);
+    await domain.setReadingMode("company-attention", { mode: "stream" });
+    const progress = await domain.recordReadingProgress("company-attention", {
+      clientEventId: "read-before-rating", groupId, members: request.members, viewedMembers: [request.members[0]], read: true,
+      expectedCardUpdatedAt: { [card.id]: card.updatedAt, [alternative.id]: alternative.updatedAt },
+    });
+    if (rating === "like") await domain.recordCardReaction("company-attention", card.id, { clientEventId: "like-in-read", contentRevision: card.reading!.contentRevision, reaction: "like" });
+    else await domain.recordReadingPreference("company-attention", request);
+    const feed = await store.readFeed("company-attention");
+    expect(feed.readingProgress?.[groupId]).toEqual(progress.progress);
+    expect(visibleCardGroups(feed, "review").some((group) => group.id === groupId)).toBe(false);
+    expect(visibleCardGroups(feed, "read").some((group) => group.id === groupId)).toBe(true);
+    expect(feed.cards.find((item) => item.id === card.id)?.status).toBe("done");
+    if (rating === "like") {
+      expect(feed.cards.find((item) => item.id === alternative.id)?.status).toBe("to_review_new");
+      expect(feed.readingReactions?.[alternative.id]).toBeUndefined();
+    }
+    // A genuine return to attention still invalidates the same receipt after the rating.
+    await domain.returnCardToReview("company-attention", card.id);
+    const returned = await store.readFeed("company-attention");
+    expect(returned.readingProgress?.[groupId]).toBeUndefined();
+    expect(visibleCardGroups(returned, "review").some((group) => group.id === groupId)).toBe(true);
+  });
+
+  test("uses conditional undo and never lets an old retry reverse a newer unread", async () => {
+    const { store, domain } = await setup();
+    const { card } = await readingFixture(store, domain);
+    await domain.setReadingMode("company-attention", { mode: "stream" });
+    const members = [{ cardId: card.id, contentRevision: card.reading!.contentRevision }];
+    const groupId = readingGroupKey(card.reading!.runId, card.reading!.topicKey!);
+    const input = { clientEventId: "pass-once", groupId, members, viewedMembers: members, read: true, expectedCardUpdatedAt: { [card.id]: card.updatedAt } };
+    const first = await domain.recordReadingProgress("company-attention", input);
+    await domain.setReadingMode("company-attention", { mode: "review" });
+    const undo = { ...input, clientEventId: "undo-once", read: false, expectedEventId: first.event.id };
+    const unread = await domain.recordReadingProgress("company-attention", undo);
+    expect(unread.progress.read).toBe(false);
+    expect((await domain.recordReadingProgress("company-attention", input)).progress).toEqual(unread.progress);
+    await expect(domain.recordReadingProgress("company-attention", { ...undo, clientEventId: "stale-undo" })).rejects.toMatchObject({ code: "stale_progress" });
+    await domain.setReadingMode("company-attention", { mode: "stream" });
+    await expect(domain.recordReadingProgress("company-attention", { ...input, clientEventId: "old-client-pass" })).rejects.toMatchObject({ code: "stale_progress" });
+    const reread = await domain.recordReadingProgress("company-attention", { ...input, clientEventId: "reread", expectedEventId: unread.event.id });
+    expect(reread.progress.read).toBe(true);
+    expect((await domain.recordReadingProgress("company-attention", undo)).progress).toEqual(reread.progress);
+    expect((await store.readFeed("company-attention")).readingProgress?.[groupId]?.eventId).toBe(reread.event.id);
+  });
+
+  test("validates exact members, exposure, and idempotency identities", async () => {
+    const { store, domain } = await setup();
+    const { card } = await readingFixture(store, domain);
+    await domain.setReadingMode("company-attention", { mode: "stream" });
+    const members = [{ cardId: card.id, contentRevision: card.reading!.contentRevision }];
+    const input = { clientEventId: "valid-progress", groupId: readingGroupKey(card.reading!.runId, card.reading!.topicKey!), members, viewedMembers: members, read: true, expectedCardUpdatedAt: { [card.id]: card.updatedAt } };
+    for (const invalid of [null, [], {}, { ...input, read: "yes" }, { ...input, members: [] }, { ...input, viewedMembers: [] }, { ...input, viewedMembers: [...members, ...members] },
+      { ...input, read: false }, { ...input, expectedEventId: " " }, { ...input, viewedMembers: [{ cardId: "unseen", contentRevision: members[0].contentRevision }] },
+      { ...input, expectedCardUpdatedAt: undefined }, { ...input, expectedCardUpdatedAt: {} }, { ...input, expectedCardUpdatedAt: null },
+      { ...input, expectedCardUpdatedAt: { [card.id]: 123 } }, { ...input, expectedCardUpdatedAt: { [card.id]: card.updatedAt, extra: card.updatedAt } }]) {
+      await expect(domain.recordReadingProgress("company-attention", invalid)).rejects.toMatchObject({ code: "invalid_progress", status: 400 });
+    }
+    await expect(domain.recordReadingProgress("company-attention", { ...input, groupId: "card:company-source-confirmation" })).rejects.toMatchObject({ code: "not_found" });
+    const stale = [{ ...members[0], contentRevision: "a".repeat(64) }];
+    await expect(domain.recordReadingProgress("company-attention", { ...input, members: stale, viewedMembers: stale })).rejects.toMatchObject({ code: "stale_members" });
+    await domain.recordReadingProgress("company-attention", input);
+    await expect(domain.recordReadingProgress("company-attention", { ...input, read: false, expectedEventId: "anything" })).rejects.toMatchObject({ code: "client_event_conflict" });
+    await expect(domain.recordReadingProgress("company-attention", { ...input, expectedCardUpdatedAt: { [card.id]: "different" } })).rejects.toMatchObject({ code: "client_event_conflict" });
+    for (const value of [null, [], {}, { mode: "auto" }, { mode: true }]) {
+      await expect(domain.setReadingMode("company-attention", value)).rejects.toMatchObject({ code: "invalid_reading_mode" });
+    }
+  });
+
+  test("new variants resurface, including when an old read request is replayed", async () => {
+    const { store, domain } = await setup();
+    const { card, input: cardInput } = await readingFixture(store, domain);
+    await domain.setReadingMode("company-attention", { mode: "stream" });
+    const members = [{ cardId: card.id, contentRevision: card.reading!.contentRevision }];
+    const groupId = readingGroupKey(card.reading!.runId, card.reading!.topicKey!);
+    const input = { clientEventId: "before-variant", groupId, members, viewedMembers: members, read: true, expectedCardUpdatedAt: { [card.id]: card.updatedAt } };
+    await domain.recordReadingProgress("company-attention", input);
+    expect((await store.readFeed("company-attention")).readingProgress?.[groupId]?.read).toBe(true);
+    await domain.upsertCard("company-attention", { ...cardInput, id: "new-alternative", reading: { ...cardInput.reading, draftId: "f2" } });
+    expect((await store.readFeed("company-attention")).readingProgress?.[groupId]).toBeUndefined();
+    await domain.recordReadingProgress("company-attention", input);
+    expect((await store.readFeed("company-attention")).readingProgress?.[groupId]).toBeUndefined();
+    await expect(domain.recordReadingProgress("company-attention", { ...input, clientEventId: "stale-members" })).rejects.toMatchObject({ code: "stale_members" });
+  });
+
+  test("rejects actions and active work and removes an old read projection when work arrives", async () => {
+    const { root, store, domain } = await setup();
+    const { card } = await readingFixture(store, domain);
+    await domain.setReadingMode("company-attention", { mode: "stream" });
+    const members = [{ cardId: card.id, contentRevision: card.reading!.contentRevision }];
+    const groupId = readingGroupKey(card.reading!.runId, card.reading!.topicKey!);
+    const input = { clientEventId: "read-passive", groupId, members, viewedMembers: members, read: true, expectedCardUpdatedAt: { [card.id]: card.updatedAt } };
+    await domain.recordReadingProgress("company-attention", input);
+    for (const change of [{ status: "queued" }, { kind: "feed_improvement" }, { actions: [{ id: "clean", label: "Archive source", behavior: "default_cleanup" }] },
+      { proposedAction: { label: "Send" } }, { routineActionGroupId: "pending-routine" }]) {
+      // Simulate unsafe pre-existing storage; normal card writes already reject executable reading cards.
+      await new FileCardRepository(root).write({ ...card, ...change } as Card);
+      await expect(domain.recordReadingProgress("company-attention", { ...input, clientEventId: `blocked-${JSON.stringify(change)}` })).rejects.toMatchObject({ code: "card_busy" });
+      expect((await store.readFeed("company-attention")).readingProgress?.[groupId]).toBeUndefined();
+    }
+    await store.writeCard(card);
+    const voice = await domain.submitVoiceInstruction("company-attention", { kind: "card", feedId: "company-attention", cardId: card.id }, "Share this later, after approval.");
+    await store.writeCard(card);
+    expect((await store.readFeed("company-attention")).readingProgress?.[groupId]).toBeUndefined();
+    await expect(domain.recordReadingProgress("company-attention", { ...input, clientEventId: "busy-work" })).rejects.toMatchObject({ code: "card_busy" });
+    expect((await store.readWorkItems("company-attention")).find((work) => work.id === voice.work.id)?.status).toBe("queued");
+  });
+
+  test.each(["returned", "completed", "failed"] as const)("old progress stays invalid after voice work is %s", async (outcome) => {
+    const { root, store, domain } = await setup();
+    const { card } = await readingFixture(store, domain);
+    await domain.bindFeed("company-attention", "reading-stream-thread");
+    await domain.setReadingMode("company-attention", { mode: "stream" });
+    const members = [{ cardId: card.id, contentRevision: card.reading!.contentRevision }];
+    const groupId = readingGroupKey(card.reading!.runId, card.reading!.topicKey!);
+    const input = { clientEventId: "read-before-work", groupId, members, viewedMembers: members, read: true, expectedCardUpdatedAt: { [card.id]: card.updatedAt } };
+    const original = await domain.recordReadingProgress("company-attention", input);
+    const voice = await domain.submitVoiceInstruction("company-attention", { kind: "card", feedId: "company-attention", cardId: card.id }, "Explain this observation without changing its source text.");
+    if (outcome === "returned") {
+      await domain.returnCardToReview("company-attention", card.id);
+    } else {
+      const work = await claimReadingWork(domain, "company-attention", "reading-stream-thread");
+      expect(work.id).toBe(voice.work.id);
+      if (outcome === "completed") await domain.completeWork("company-attention", work.id, work.capabilityToken!, { response: "An explanation is ready for review.", done: false });
+      else await domain.failWork("company-attention", work.id, work.capabilityToken!, "Could not prepare an explanation.");
+      await domain.beginNextPass("company-attention");
+    }
+    const current = await store.readCard("company-attention", card.id);
+    expect(current.status).toBe("to_review_updated");
+    expect(current.reading!.contentRevision).toBe(card.reading!.contentRevision);
+    expect((await store.readFeed("company-attention")).readingProgress?.[groupId]).toBeUndefined();
+    const retried = await domain.recordReadingProgress("company-attention", input);
+    expect(retried).toMatchObject({ duplicate: true, event: { id: original.event.id }, progress: { read: false } });
+    const reopened = new AttentionStore(root);
+    await reopened.init();
+    expect((await reopened.readFeed("company-attention")).readingProgress?.[groupId]).toBeUndefined();
+    await expect(domain.recordReadingProgress("company-attention", { ...input, clientEventId: "stale-tab-new-pass" })).rejects.toMatchObject({ code: "stale_attention" });
+    const reread = await domain.recordReadingProgress("company-attention", { ...input, clientEventId: "read-new-attention-cycle", expectedCardUpdatedAt: { [current.id]: current.updatedAt } });
+    expect((await store.readFeed("company-attention")).readingProgress?.[groupId]?.eventId).toBe(reread.event.id);
+    expect((await store.readCard("company-attention", card.id))).toEqual(current);
+  });
+
+  test("a superseded unread receipt does not block a fresh pass after returning work", async () => {
+    const { store, domain } = await setup();
+    const { card } = await readingFixture(store, domain);
+    await domain.setReadingMode("company-attention", { mode: "stream" });
+    const members = [{ cardId: card.id, contentRevision: card.reading!.contentRevision }];
+    const groupId = readingGroupKey(card.reading!.runId, card.reading!.topicKey!);
+    const input = { clientEventId: "read-before-undo", groupId, members, viewedMembers: members, read: true, expectedCardUpdatedAt: { [card.id]: card.updatedAt } };
+    const first = await domain.recordReadingProgress("company-attention", input);
+    await domain.recordReadingProgress("company-attention", { ...input, clientEventId: "undo-before-work", read: false, expectedEventId: first.event.id });
+    await domain.submitVoiceInstruction("company-attention", { kind: "card", feedId: "company-attention", cardId: card.id }, "Explain this observation.");
+    await domain.returnCardToReview("company-attention", card.id);
+    expect((await store.readFeed("company-attention")).readingProgress?.[groupId]).toBeUndefined();
+    const current = await store.readCard("company-attention", card.id);
+    expect((await domain.recordReadingProgress("company-attention", { ...input, clientEventId: "read-after-return", expectedCardUpdatedAt: { [current.id]: current.updatedAt } })).progress.read).toBe(true);
+  });
+
+  test("the file-safe CLI changes stream mode and records progress in an isolated runtime", async () => {
+    const { root } = await setup();
+    const store = new AttentionStore(path.join(root, "data"));
+    await store.init();
+    const domain = new AttentionDomain(store);
+    const { card } = await readingFixture(store, domain);
+    const members = [{ cardId: card.id, contentRevision: card.reading!.contentRevision }];
+    const input = { clientEventId: "cli-pass", groupId: readingGroupKey(card.reading!.runId, card.reading!.topicKey!), members, viewedMembers: members, read: true, expectedCardUpdatedAt: { [card.id]: card.updatedAt } };
+    const filename = path.join(root, "reading-progress.json");
+    await writeFile(filename, JSON.stringify(input));
+    const run = async (args: string[]) => {
+      const child = Bun.spawn([process.execPath, "tend.ts", "cli", ...args], { cwd: process.cwd(), env: { ...process.env, ATTENTION_HOME: root }, stdout: "pipe", stderr: "pipe" });
+      const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+      expect({ stderr, code }).toEqual({ stderr: "", code: 0 });
+      return JSON.parse(stdout);
+    };
+    expect(await run(["feed:reading-mode", "--feed", "company-attention", "--mode", "stream"])).toMatchObject({ readingMode: "stream" });
+    expect(await run(["reading:progress", "--feed", "company-attention", "--progress-file", filename])).toMatchObject({ duplicate: false, progress: { read: true } });
+    expect((await store.readFeed("company-attention")).readingProgress?.[input.groupId]?.read).toBe(true);
+  }, 20_000);
+
+  test("projects durable progress by causal sequence, not timestamp or random event ID", async () => {
+    const { root, store, domain } = await setup();
+    const { card } = await readingFixture(store, domain);
+    await domain.setReadingMode("company-attention", { mode: "stream" });
+    const members = [{ cardId: card.id, contentRevision: card.reading!.contentRevision }];
+    const groupId = readingGroupKey(card.reading!.runId, card.reading!.topicKey!);
+    const result = await domain.recordReadingProgress("company-attention", { clientEventId: "initial", groupId, members, viewedMembers: members, read: true, expectedCardUpdatedAt: { [card.id]: card.updatedAt } });
+    const events = new FileFeedEventRepository(root);
+    for (const [id, progressSequence, read] of [["progress-z-first", 2, true], ["progress-a-last", 3, false]] as const) {
+      await events.append({ ...result.event, id, at: "2026-09-04T00:00:00.000Z", detail: { ...result.event.detail as object, clientEventId: id, progressSequence, read } });
+    }
+    const reopened = new AttentionStore(root);
+    await reopened.init();
+    expect((await reopened.readFeed("company-attention")).readingProgress?.[groupId]).toMatchObject({ read: false, eventId: "progress-a-last" });
+  });
+});
+
 describe("native reading version preferences", () => {
   test("groups only explicit same-run topics, leaves singletons alone, and orders versions stably without author positions", async () => {
     const { store, domain } = await setup();
@@ -558,7 +785,8 @@ describe("native reading version preferences", () => {
     await store.init();
     const domain = new AttentionDomain(store);
     const { request } = await readingGroupFixture(store, domain);
-    const group = (await store.readFeed("company-attention")).cards.filter((card) => request.members.some((member) => member.cardId === card.id));
+    const feed = await store.readFeed("company-attention");
+    const group = groupReadingCards(feed.cards, feed.readingComparisons).find((group) => group.id === readingGroupKey(request.runId, request.topicKey))!.cards;
     cards.failCardId = group.at(-1)!.id;
     await expect(domain.recordReadingPreference("company-attention", request)).rejects.toThrow("simulated migrated card upsert failure");
     const partial = await store.readFeed("company-attention");

@@ -403,6 +403,31 @@ pre { overflow: auto; padding: 12px; background: #f4f2eb; color: var(--ink-2); w
 }
 
 .reading-card { overflow: visible; }
+.reading-stream-controls { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 2px 2px 20px; }
+.reading-stream-controls label { font-size: 12px; font-weight: 700; color: var(--ink-2); }
+.reading-stream-controls p { margin: 4px 0 0; max-width: 490px; font-size: 12px; color: var(--ink-3); }
+.reading-stream-controls select { max-width: 190px; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--paper); color: var(--ink-2); font: inherit; font-size: 12px; }
+.reading-stream-list { overflow-anchor: none; }
+.reading-stream-end { min-height: calc(100svh - 180px); padding: 46px 24px 24px; text-align: center; color: var(--ink-3); }
+.reading-stream-end h2 { color: var(--ink-2); font-size: 24px; }
+.reading-stream-end p { font-size: 13px; }
+.reading-stream-slot { outline: none; }
+.reading-stream-slot:focus-visible { outline: 2px solid var(--blue); outline-offset: 5px; border-radius: 10px; }
+.reading-progress-control { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -12px 4px 24px; color: var(--ink-3); font-size: 11px; }
+.reading-progress-control .button { padding: 4px 7px; font-size: 12px; }
+.reading-progress-error { margin: 0 4px 20px; color: #a14238; font-size: 12px; }
+.reading-undo { position: fixed; z-index: 19; bottom: 145px; left: 50%; transform: translateX(-50%); width: min(860px, calc(100vw - 32px)); display: flex; align-items: center; gap: 8px; padding: 9px 12px; background: var(--sage-soft); border: 1px solid var(--line-2); border-radius: 7px; box-shadow: var(--shadow); font-size: 12px; color: var(--ink-2); }
+.reading-undo span { flex: 1; }
+.reading-undo .button { padding: 3px 5px; font-size: 12px; }
+.reading-undo-close { border: 0; background: none; color: var(--ink-3); font-size: 20px; padding: 0 2px; }
+.reading-progress-control button:focus-visible, .reading-undo button:focus-visible, .reading-stream-controls select:focus-visible { outline: 2px solid var(--blue); outline-offset: 3px; }
+@media (max-width: 620px) {
+  .reading-stream-controls { align-items: flex-start; gap: 12px; }
+  .reading-stream-controls p { max-width: 240px; }
+  .reading-stream-controls select { max-width: 155px; }
+  .reading-undo { flex-wrap: wrap; }
+  .reading-undo span { flex-basis: 100%; }
+}
 .reading-card:has(.reading-identity-popover) { z-index: 25; }
 .reading-card .card-rule { border-radius: 10px 0 0 10px; }
 .reading-card .card-head > div { flex: 1; min-width: 0; }

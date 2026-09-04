@@ -6,12 +6,13 @@ import { RouterProvider, createMemoryHistory, createRootRoute, createRoute, crea
 import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { CardView } from "../src/feed/CardView";
+import { ReadingStreamCard, ReadingStreamControls } from "../src/feed/ReadingStream";
 import App from "../src/App";
 import { countFor, currentReadingPreference, readingMembers, selectedGroupCard, visibleCardActions, visibleCardGroups } from "../src/feed/selectors";
 import { groupReadingCards } from "../shared/readingGroups";
 import { Dock } from "../src/shell/Dock";
 import { SourceRunHistory } from "../src/workspace/PromptWorkspace";
-import type { Card, FeedView, ReadingComparison, ReadingPreferenceInput, ReadingPreferenceState, SourceRun, WorkspaceView } from "../shared/types";
+import type { Card, FeedView, ReadingComparison, ReadingPreferenceInput, ReadingPreferenceState, ReadingProgressState, SourceRun, WorkspaceView } from "../shared/types";
 
 const ownsDom = typeof document === "undefined";
 if (ownsDom) GlobalRegistrator.register();
@@ -246,6 +247,77 @@ function readingVersions(count = 3): Card[] {
   }));
 }
 
+test("neutral reading progress hides the exact topic, preserves ratings and resurfaces new versions", () => {
+  const versions = readingVersions(2);
+  const group = groupReadingCards(versions)[0];
+  const feed = readingWorkspace(versions).active;
+  const progress: ReadingProgressState = {
+    groupId: group.id, members: readingMembers(group), viewedMembers: [readingMembers(group)[0]],
+    read: true, eventId: "read-1", at: "2026-09-04T12:00:00Z",
+  };
+  feed.readingProgress = { [group.id]: progress };
+  expect(visibleCardGroups(feed, "review")).toHaveLength(0);
+  expect(visibleCardGroups(feed, "read")).toHaveLength(1);
+  expect(countFor(feed, "done")).toBe(0);
+  expect(feed.cards.every((card) => card.status === "to_review_new")).toBe(true);
+  expect(feed.readingReactions).toBeUndefined();
+  expect(visibleCardGroups({ ...feed, cards: readingVersions(3) }, "review")).toHaveLength(1);
+  expect(visibleCardGroups({ ...feed, readingProgress: { [group.id]: { ...progress, read: false } } }, "review")).toHaveLength(1);
+  expect(visibleCardGroups({ ...feed, cards: [{ ...versions[0], status: "done" }, versions[1]], readingProgress: {} }, "read")).toHaveLength(1);
+});
+
+test("reading mode is an explicit choice and manual read records only the selected carousel version", async () => {
+  const modes: string[] = [];
+  const controls = render(<ReadingStreamControls mode="review" busy={false} onChange={(mode) => modes.push(mode)} />);
+  expect(modes).toHaveLength(0);
+  fireEvent.change(controls.getByLabelText("Reading cards"), { target: { value: "stream" } });
+  expect(modes).toEqual(["stream"]);
+  controls.unmount();
+  const group = groupReadingCards(readingVersions(2))[0];
+  const selected = group.cards[1];
+  const requests: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input) === "/api/session") return Response.json({ mutationToken: "fixture-token" });
+    expect(String(input)).toBe(`/api/feeds/${selected.feedId}/reading-progress`);
+    const body = JSON.parse(String(init?.body));
+    requests.push(body);
+    return Response.json({ progress: { ...body, eventId: "read-1", at: "2026-09-04T12:00:00Z" } });
+  }) as typeof fetch;
+  const ui = render(<ReadingStreamCard group={group} card={selected} enabled history={false} busy={false} onRead={() => {}} onChanged={() => {}}>{readingView(selected, { readingGroup: group })}</ReadingStreamCard>);
+  expect(requests).toHaveLength(0);
+  fireEvent.click(ui.getByRole("button", { name: "Mark read" }));
+  await waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0]).toEqual({ clientEventId: expect.any(String), groupId: group.id, members: readingMembers(group), viewedMembers: [{ cardId: selected.id, contentRevision: selected.reading!.contentRevision }], read: true, expectedCardUpdatedAt: Object.fromEntries(group.cards.map((member) => [member.id, member.updatedAt])) });
+  expect(requests[0]).not.toHaveProperty("reaction");
+});
+
+test("manual read retries the same receipt and history undo is conditional on the exact read event", async () => {
+  const group = groupReadingCards(readingVersions(2))[0];
+  const card = group.cards[0];
+  const requests: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input) === "/api/session") return Response.json({ mutationToken: "fixture-token" });
+    const body = JSON.parse(String(init?.body));
+    requests.push(body);
+    if (requests.length === 1) throw new Error("Offline fixture");
+    return Response.json({ progress: { ...body, eventId: "read-1", at: "2026-09-04T12:00:00Z" } });
+  }) as typeof fetch;
+  const wrapper = (history: boolean, progress?: ReadingProgressState) => <ReadingStreamCard group={group} card={card} enabled={!history} history={history} progress={progress} busy={false} onRead={() => {}} onChanged={() => {}}>{readingView(card)}</ReadingStreamCard>;
+  const ui = render(wrapper(false));
+  fireEvent.click(ui.getByRole("button", { name: "Mark read" }));
+  await waitFor(() => expect(ui.getByRole("alert").textContent).toContain("Offline fixture"));
+  fireEvent.click(ui.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(requests).toHaveLength(2));
+  expect(requests[1]).toEqual(requests[0]);
+  await waitFor(() => expect(ui.queryByRole("button", { name: "Saving…" }) === null).toBe(true));
+  const progress = { ...requests[0], eventId: "read-1", at: "2026-09-04T12:00:00Z" } as unknown as ReadingProgressState;
+  ui.rerender(wrapper(true, progress));
+  expect(ui.getByText("1 of 2 versions viewed · no rating implied")).toBeTruthy();
+  fireEvent.click(ui.getByRole("button", { name: "Mark unread" }));
+  await waitFor(() => expect(requests).toHaveLength(3));
+  expect(requests[2]).toMatchObject({ read: false, expectedEventId: "read-1", members: progress.members, viewedMembers: progress.viewedMembers });
+});
+
 async function mountReadingApp(feedId: string) {
   const root = createRootRoute({ component: () => <App feedId={feedId} screen="feed" workspaceTab="feed" /> });
   const index = createRoute({ getParentRoute: () => root, path: "/" });
@@ -255,6 +327,52 @@ async function mountReadingApp(feedId: string) {
   const ui = render(<QueryClientProvider client={client}><RouterProvider router={router} /></QueryClientProvider>);
   return { ui, client, close: () => { ui.unmount(); client.clear(); } };
 }
+
+test("a neutrally read card leaves the feed and voice target follows the next visible card; Undo restores it", async () => {
+  sessionStorage.clear();
+  globalThis.EventSource = class { addEventListener() {} close() {} } as unknown as typeof EventSource;
+  const first = readingCard();
+  const second = readingCard({ id: "next-reading", title: "The next concrete idea" });
+  const state = readingWorkspace([first, second]);
+  state.active.config.readingMode = "stream";
+  const requests: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/session") return Response.json({ mutationToken: "fixture-token" });
+    if (url.startsWith("/api/state?")) return Response.json(state);
+    if (url.endsWith("/native-approvals")) return Response.json([]);
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (url === "/api/voice/target-change") return Response.json(body.target);
+    if (url.endsWith("/reading-progress")) {
+      requests.push(body);
+      const progress = { ...body, eventId: `progress-${requests.length}`, at: "2026-09-04T12:00:00Z" };
+      state.active.readingProgress = { [body.groupId]: progress };
+      return Response.json({ progress });
+    }
+    throw new Error(`Unexpected fixture request: ${url}`);
+  }) as typeof fetch;
+  const mounted = await mountReadingApp(first.feedId);
+  const { ui } = mounted;
+  try {
+    await waitFor(() => expect(ui.queryByRole("heading", { name: first.title }) !== null).toBe(true));
+    await waitFor(() => expect(ui.container.querySelector(".dock-target")?.textContent).toBe(first.title));
+    fireEvent.click(ui.getAllByRole("button", { name: "Mark read" })[0]);
+    await waitFor(() => expect(ui.queryByRole("heading", { name: first.title }) === null).toBe(true));
+    await waitFor(() => expect(ui.container.querySelector(".dock-target")?.textContent).toBe(second.title));
+    expect(state.active.cards[0].status).toBe("to_review_new");
+    expect(state.active.readingReactions).toBeUndefined();
+    fireEvent.click(ui.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(ui.queryByRole("heading", { name: first.title }) !== null).toBe(true));
+    expect(requests[1]).toMatchObject({ read: false, expectedEventId: "progress-1" });
+    fireEvent.click(ui.getAllByRole("button", { name: "Mark read" })[0]);
+    await waitFor(() => expect(ui.container.querySelector(".reading-undo") !== null).toBe(true));
+    fireEvent.click(ui.container.querySelectorAll(".tabs button")[1]);
+    await waitFor(() => expect(ui.queryByRole("button", { name: "Mark unread" }) !== null).toBe(true));
+    fireEvent.click(ui.getByRole("button", { name: "Mark unread" }));
+    await waitFor(() => expect(ui.container.querySelector(".reading-undo") === null).toBe(true));
+    expect(requests[3]).toMatchObject({ read: false, expectedEventId: "progress-3" });
+  } finally { mounted.close(); sessionStorage.clear(); }
+});
 
 test("reading author details support hover, keyboard focus, Escape and touch-style clicks", () => {
   const ui = render(readingView());
@@ -307,7 +425,8 @@ test("a three-version carousel preserves exact faces and sources, wraps, and ign
   const show = () => readingView(selected, { active: true, readingGroup: group, onReadingVersion: (id) => { selected = group.cards.find((card) => card.id === id)!; ui.rerender(show()); } });
   const ui = render(show());
   expect(ui.container.querySelector(".reading-face")?.textContent).toBe(selected.why);
-  expect(ui.queryByRole("button", { name: "Like" }) === null).toBe(true);
+  expect(ui.getByRole("button", { name: "Like" })).toBeTruthy();
+  expect(ui.getByRole("button", { name: "Not for me" })).toBeTruthy();
   expect(ui.getByText("Version 1 of 3")).toBeTruthy();
   fireEvent.click(ui.getByRole("button", { name: "Author information" }));
   expect(ui.getByText(selected.reading!.writer.actualModel!)).toBeTruthy();
