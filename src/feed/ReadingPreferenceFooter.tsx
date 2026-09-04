@@ -5,7 +5,7 @@ import { ApiError, post } from "../app/api";
 import type { Card, FeedView } from "../types";
 import { readingMembers } from "./selectors";
 
-export function ReadingPreferenceFooter({ group, card, preference, reaction, onChanged, onFeedback, onRecorded, onBusy, disabled = false }: {
+export function ReadingPreferenceFooter({ group, card, preference, reaction, onChanged, onFeedback, onRecorded, onBusy, disabled = false, readingSession = false }: {
   group: ReadingCardGroup;
   card: Card;
   preference?: ReadingPreferenceState;
@@ -15,6 +15,7 @@ export function ReadingPreferenceFooter({ group, card, preference, reaction, onC
   onRecorded?: () => void;
   onBusy: (busy: boolean) => void;
   disabled?: boolean;
+  readingSession?: boolean;
 }) {
   const members = readingMembers(group);
   const key = JSON.stringify([group.id, members, card.id]);
@@ -81,11 +82,13 @@ export function ReadingPreferenceFooter({ group, card, preference, reaction, onC
         {previousReaction && <small className="reading-prior-reaction">This version: {previousReaction === "like" ? "Liked" : "Not for me"}</small>}
       </div>
       <div className="action-buttons">
-        <button type="button" className={`button ghost reading-reaction ${preferred ? "selected" : ""}`} aria-pressed={preferred} disabled={disabled || busy || stale || workActive} onClick={(event) => { event.stopPropagation(); void send(preferred ? null : card.id); }}>Prefer this version</button>
-        {onFeedback && <button type="button" className="button text" onClick={(event) => { event.stopPropagation(); onFeedback(); }}>Feedback</button>}
+        <button type="button" data-reading-interaction="prefer_version" className={`button ghost reading-reaction ${preferred ? "selected" : ""}`} aria-pressed={preferred} disabled={disabled || busy || stale || workActive} onClick={(event) => { event.stopPropagation(); void send(preferred ? null : card.id); }}>Prefer this version</button>
+        {onFeedback && <button type="button" data-reading-interaction="feedback" className="button text" onClick={(event) => { event.stopPropagation(); onFeedback(); }}>Feedback</button>}
       </div>
     </div>
-    <small className="reading-local-note">{preferred ? "Click again to clear the preference. Archived versions stay in Done." : `Moves all ${group.cards.length} versions to Done without changing their ratings.`}</small>
+    <small className="reading-local-note">{readingSession
+      ? preferred ? "Click again to clear the preference. You can still compare and add feedback." : `Marks this comparison reviewed without changing version ratings. It stays here for feedback.`
+      : preferred ? "Click again to clear the preference. Archived versions stay in Done." : `Moves all ${group.cards.length} versions to Done without changing their ratings.`}</small>
     {error && <div className="reading-error" role="alert"><span>{error}</span>
       {!stale && requestRef.current && <button type="button" className="button text" disabled={busy} onClick={(event) => { event.stopPropagation(); if (requestRef.current) void send(requestRef.current.preferredCardId); }}>Retry</button>}
       {stale && <button type="button" className="button text" onClick={(event) => { event.stopPropagation(); onChanged(); }}>Refresh versions</button>}

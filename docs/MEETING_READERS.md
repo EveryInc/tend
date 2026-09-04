@@ -312,9 +312,9 @@ outside editable controls to compare. Like/Not for me archive a single card loca
 version archives the comparison without treating other versions as disliked. Give the reason through
 the existing voice dock, targeted to the selected version—even after archival.
 
-### Let reading cards clear as you scroll
+### Read without dismissing each card
 
-In the feed, set **Reading cards → Clear as I read**. This is opt-in per feed; ordinary
+In the feed, set **Reading cards → Mark read as I scroll**. This is opt-in per feed; ordinary
 action cards still require a deliberate disposition. Like and Not for me remain optional,
 including on each carousel version. Prefer this version is a separate comparison choice.
 
@@ -322,10 +322,14 @@ Tend waits for roughly two seconds of meaningful foreground visibility, includin
 and end of the card face, then a deliberate forward scroll past the card. Loading the page,
 switching tabs, selecting text, jumping with code, or quickly flicking past does not count.
 Tall cards can be read in parts. **Mark read** is also available without scrolling. Automatic
-clearing waits until the card is offscreen, and removing a passed card preserves the next card's
-position. The end of the feed leaves room to scroll past the final card.
+marking waits until the card is offscreen. During this visit, reading cards keep their place:
+read cards are subtly shaded, and rating or preferring a version does not remove the card before
+you can add feedback. You can scroll back, switch versions, change a rating, or use voice feedback.
+A Like on one version does not mark its unrated alternatives reviewed. The Feed tab counts unread
+topics, even while read and reviewed cards remain visible. The end leaves room to pass the final card.
 
-**Read history** retains the cards, sources, ratings and comparisons. **Undo** or **Mark unread**
+**Read history** retains the cards, sources, ratings and comparisons. Switching tabs preserves your
+current feed session; a reload or a new feed visit starts with unread topics. **Undo** or **Mark unread**
 restores a neutrally read topic; it never clears a Like or Not for me. A group pass records its exact
 members and only the versions actually viewed, not a pretend read on every alternative. A newly
 arriving version makes the topic eligible again. A return for review or later feedback work also
@@ -342,13 +346,42 @@ tend cli reading:progress --feed <feed-id> --progress-file <progress.json>
 
 `progress.json` supplies `clientEventId`, `groupId`, exact `members`, the subset `viewedMembers`,
 and `read`. Marking read also requires `expectedCardUpdatedAt`, a map from each member ID to its
-displayed `updatedAt`, so an old browser tab cannot clear a later feedback response.
+displayed `updatedAt`, so an old browser tab cannot mark a later feedback response read.
 Unread requires `expectedEventId` from the current receipt so a stale undo cannot
 erase newer progress. `POST /api/feeds/:feed/reading-mode` and
 `POST /api/feeds/:feed/reading-progress` provide the same guarded operations. Feed state exposes
-`readingProgress`; the event ledger retains history. Use `--mode review` to stop automatic
-clearing without discarding history. Older builds safely ignore these additive fields/events,
+`readingProgress`; the event ledger retains history. Session order is client-only group IDs;
+card bodies and feedback always come from current feed state. Use `--mode review` to stop automatic
+marking without discarding history. Older builds safely ignore these additive fields/events,
 but will show neutrally read cards again; they do not support this mode.
+
+### Local engagement, separate from ratings
+
+Reading cards also record local engagement in either reading mode, tied to the exact card revision
+and a random feed-visit ID. This includes time meaningfully visible in the foreground, named control
+activations (including Sources and carousel keys), and completed text-highlighting gestures.
+Highlight records contain only a character count: no selected text, voice input, URLs, or pointer
+coordinates. Cross-card selections and text editors are excluded. No third-party analytics service
+receives this data.
+
+Visible time is sampled in short intervals, flushed about every 15 seconds and when leaving a version,
+and pauses in background tabs, unfocused windows, or after 60 seconds without user activity.
+Expanded Sources count as part of the visible card. Page-close delivery and touch selection detection
+are best effort. This is an exposure estimate, not eye tracking or proof that someone read a card;
+opening Sources may mean interest, confusion, or skepticism. An activation is not proof that a rating
+or action succeeded. **Only explicit ratings and feedback express taste.** These raw engagement events
+are not automatically compounded into likes, dislikes, model quality scores, or feed policy.
+
+Inspect local aggregates, optionally for one card:
+
+```sh
+tend cli reading:engagement --feed company-attention
+tend cli reading:engagement --feed company-attention --card <card-id>
+```
+
+`GET /api/feeds/:feed/reading-engagement` (optional `?card=<card-id>`) returns exact-revision totals:
+`dwellMs`, click counts by named target, selection counts, and `lastEngagedAt`. Character counts
+remain in the individual selection events.
 
 ### A reader needs to sign in again
 

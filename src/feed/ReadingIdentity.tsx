@@ -39,7 +39,7 @@ export function ReadingIdentity({ reader, reviewEdit }: {
         event.stopPropagation(); setPinned(false); setDismissed(true);
       }}
     >
-      <button type="button" className="reading-info-button" aria-label="Author information" aria-expanded={open} aria-controls={id}
+      <button type="button" data-reading-interaction="author_info" className="reading-info-button" aria-label="Author information" aria-expanded={open} aria-controls={id}
         onClick={(event) => { event.stopPropagation(); setPinned(!pinned); setDismissed(pinned); }}
       >
         <svg aria-hidden="true" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.4" /><path d="M10 8.8v5M10 5.8v.3" /></svg>

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { emptyReadingExposure, sampleReadingExposure, type ReadingExposureSample } from "../src/state/readingExposure";
+import { engagementDwellDelta } from "../src/state/readingEngagement";
 
 const visible = { foreground: true, meaningful: true, sawStart: true, sawEnd: true, passed: false, forwardScroll: false };
 function dwell(overrides: Partial<ReadingExposureSample> = {}) {
@@ -40,4 +41,15 @@ describe("conservative reading exposure", () => {
     expect(dwell({ sawStart: false }).qualified).toBe(false);
     expect(dwell({ meaningful: false }).qualified).toBe(false);
   });
+});
+
+test("engagement dwell counts foreground exposure but not first samples, hidden, idle or stalled intervals", () => {
+  const visible = { at: 1_000, visible: true, lastActivity: 1_000 };
+  expect(engagementDwellDelta(undefined, visible)).toBe(0);
+  expect(engagementDwellDelta(visible, { ...visible, at: 1_250 })).toBe(250);
+  expect(engagementDwellDelta({ ...visible, visible: false }, { ...visible, at: 1_250 })).toBe(0);
+  expect(engagementDwellDelta(visible, { ...visible, at: 1_250, visible: false })).toBe(0);
+  expect(engagementDwellDelta(visible, { ...visible, at: 2_001 })).toBe(0);
+  expect(engagementDwellDelta({ ...visible, at: 61_000 }, { ...visible, at: 61_250 })).toBe(0);
+  expect(engagementDwellDelta({ ...visible, at: 61_000 }, { ...visible, at: 61_250, lastActivity: 61_100 })).toBe(250);
 });

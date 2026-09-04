@@ -7,7 +7,7 @@ import type { AttentionScreen, Inspector, Tab, WorkspaceTab } from "./app/types"
 import { CardView } from "./feed/CardView";
 import { RoutineActionGroupView } from "./feed/RoutineActionGroupView";
 import { NativeApprovals } from "./feed/NativeApprovals";
-import { countFor, currentReadingPreference, currentReadingProgress, selectedGroupCard, visibleCardActions, visibleCardGroups, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
+import { countFor, currentReadingPreference, currentReadingProgress, retainReadingSessionGroups, selectedGroupCard, visibleCardActions, visibleCardGroups, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
 import { ReadingStreamCard, ReadingStreamControls, ReadingStreamViewport, type ReadingUndo } from "./feed/ReadingStream";
 import { isPassiveReadingCard } from "../shared/readingGroups";
 import { Dock } from "./shell/Dock";
@@ -79,6 +79,8 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const [readingUndoBusy, setReadingUndoBusy] = useState(false);
   const readingUndoInFlight = useRef(false);
   const [readingModeBusy, setReadingModeBusy] = useState(false);
+  const engagementSessionId = useMemo(() => crypto.randomUUID(), [feedId]);
+  const [readingSession, setReadingSession] = useState<{ feedId: string; ids: string[] }>({ feedId, ids: [] });
   const [workspaceFocus, setWorkspaceFocus] = useState<VoiceTarget | null>(null);
   const [readingFeedbackTarget, setReadingFeedbackTarget] = useState<ReadingFeedbackTarget | null>(() => {
     const saved = readSession<ReadingFeedbackTarget | null>("attention.readingFeedbackTarget", null);
@@ -145,8 +147,34 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   useEffect(() => {
     if (!canRouteDockToClaude) setRouteDockToClaude(false);
   }, [canRouteDockToClaude]);
-  const cardGroups = useMemo(() => feed ? visibleCardGroups(feed, tab) : [], [feed, tab]);
+  const streamMode = feed?.config.readingMode === "stream";
+  const streamGroups = useMemo(() => feed && streamMode
+    ? retainReadingSessionGroups(feed, readingSession.feedId === feedId ? readingSession.ids : [])
+    : [], [feed, feedId, readingSession, streamMode]);
+  // Keep identities only, and only for groups actually shown. Tab roundtrips retain the visit;
+  // a reload or feed switch starts with the latest unread selection.
+  useEffect(() => {
+    if (!feed) return;
+    if ((!streamMode && readingSession.ids.length > 0) || readingSession.feedId !== feedId) {
+      setReadingSession({ feedId, ids: streamMode && screen === "feed" && tab === "review" ? streamGroups.map((group) => group.id) : [] });
+    } else if (streamMode && screen === "feed" && tab === "review") {
+      const ids = streamGroups.map((group) => group.id);
+      if (ids.join("\0") !== readingSession.ids.join("\0")) setReadingSession({ feedId, ids });
+    }
+  }, [feed, feedId, readingSession, screen, streamGroups, streamMode, tab]);
+  const cardGroups = useMemo(() => feed ? streamMode && tab === "review" ? streamGroups : visibleCardGroups(feed, tab) : [], [feed, streamGroups, streamMode, tab]);
   const cards = useMemo(() => cardGroups.map((group) => selectedGroupCard(group, readingSelections[feedId]?.[group.id], feed?.readingPreferences)), [cardGroups, feed?.readingPreferences, feedId, readingSelections]);
+  useEffect(() => {
+    if (!streamMode || screen !== "feed" || tab !== "review") return;
+    const missing = cardGroups.flatMap((group, index) => group.cards.some((card) => card.id === readingSelections[feedId]?.[group.id])
+      ? [] : [[group.id, cards[index].id]]);
+    if (!missing.length) return;
+    setReadingSelections((current) => {
+      const next = { ...current, [feedId]: { ...current[feedId], ...Object.fromEntries(missing) } };
+      writeSession("attention.readingSelections", next);
+      return next;
+    });
+  }, [cardGroups, cards, feedId, readingSelections, screen, streamMode, tab]);
   const routineActions = useMemo(() => feed ? visibleRoutineActions(feed, tab) : [], [feed, tab]);
   const cardIds = useMemo(() => cards.map((card) => card.id), [cards]);
   const { activeCardId, setActiveCardId, navTo } = useActiveCard(pageRef, cardIds);
@@ -541,8 +569,8 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
       <nav className="tabs">
         {(["review", ...(hasReadHistory ? ["read"] : []), "queued", "working", "done"] as Tab[]).map((item) => (
           <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>
-            {item === "review" ? readingMode === "stream" ? "Unread" : "To review" : item === "read" ? "Read history" : item === "queued" ? queuedTabLabel : item === "working" ? "Working" : "Done"}
-            <span>{countFor(feed, item)}</span>
+            {item === "review" ? readingMode === "stream" ? "Feed" : "To review" : item === "read" ? "Read history" : item === "queued" ? queuedTabLabel : item === "working" ? "Working" : "Done"}
+            <span>{countFor(feed, item)}{item === "review" && readingMode === "stream" ? " unread" : ""}</span>
           </button>
         ))}
         <button className="tab-quiet" onClick={() => openWorkspace("feed")}>Prompts & sources</button>
@@ -559,25 +587,19 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
         <RevisionProposals proposals={state.proposals} onApply={applyProposal} onReject={rejectProposal} onReviewLearning={openLearningReview} />
         {routineActions.map((group) => <RoutineActionGroupView key={group.id} group={group} onApprove={() => approveRoutineAction(group)} />)}
         <ParkedClaudeWorkNotice items={parkedClaudeWork} onReassign={reassignQueuedWork} />
-        {tab === "review" && updated.length > 0 && <div className="section-label">Back for review <span>{updated.length}</span></div>}
+        {tab === "review" && !streamMode && updated.length > 0 && <div className="section-label">Back for review <span>{updated.length}</span></div>}
         <ReadingStreamViewport enabled={readingMode === "stream" && tab === "review"} sessionKey={`${feedId}:${tab}`} ids={cardGroups.map((group) => group.id)}>
         {cards.map((card, index) => (
           <Fragment key={cardGroups[index].id}>
-            {tab === "review" && index === updated.length && fresh.length > 0 && <div className="section-label" key={`${card.id}-label`}>New <span>{fresh.length}</span></div>}
+            {tab === "review" && !streamMode && index === updated.length && fresh.length > 0 && <div className="section-label" key={`${card.id}-label`}>New <span>{fresh.length}</span></div>}
             <ReadingStreamCard group={cardGroups[index]} card={card}
+              engagementSessionId={engagementSessionId}
               enabled={readingMode === "stream" && tab === "review" && cardGroups[index].cards.every(isPassiveReadingCard)}
               history={tab === "read"} progress={currentReadingProgress(cardGroups[index], feed.readingProgress)}
               busy={cardGroups[index].cards.some((member) => feed.work.some((work) => work.cardId === member.id && ["queued", "working", "approved_blocked"].includes(work.status)))}
               onChanged={() => void refresh()} onUnread={(previous) => setReadingUndo((current) =>
                 current?.feedId === feedId && current.progress.groupId === previous.groupId && current.progress.eventId === previous.eventId ? null : current
-              )} onRead={(undo) => {
-                setReadingUndo(undo);
-                if (!readingDraftStartedRef.current && readingFeedbackTarget?.feedId === undo.feedId
-                  && undo.progress.members.some((member) => member.cardId === readingFeedbackTarget.cardId)) {
-                  rememberReadingFeedback(null);
-                  dockScopeExplicitlyChangedRef.current = false;
-                }
-              }}>
+              )} onRead={setReadingUndo}>
             <CardView
               card={card} queuedFor={cardQueuedFor(card.id)} queuedNote={editableQueuedNote(card)}
               active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()}
@@ -585,6 +607,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
               readingReaction={feed.readingReactions?.[card.id]} onReadingFeedback={() => targetReadingFeedback(card, true)}
               onReadingReaction={() => { if (!readingDraftStartedRef.current) targetReadingFeedback(card, false); }}
               readingGroup={cardGroups[index]} readingPreference={currentReadingPreference(cardGroups[index], feed.readingPreferences)}
+              readingSession={streamMode && tab === "review"}
               onReadingVersion={(cardId) => selectReadingVersion(cardGroups[index].id, cardId)}
             />
             </ReadingStreamCard>
@@ -593,7 +616,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
         </ReadingStreamViewport>
         {readingMode === "stream" && tab === "review" && cards.some((card) => card.reading) && <section className="reading-stream-end" aria-label="End of reading feed">
           <h2>That’s everything for now.</h2>
-          <p>Read cards move to Read history. Cards you skipped stay unread.</p>
+          <p>You can scroll back to read cards and add feedback. Next visit starts with unread cards; everything stays in Read history.</p>
         </section>}
         {feedWork.map((work) => (
           <article className="attention-card feed-work-card" key={work.id}>

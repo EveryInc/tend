@@ -335,6 +335,35 @@ export interface ReadingGroupMember {
   contentRevision: string;
 }
 
+export const READING_ENGAGEMENT_CLICK_TARGETS = [
+  "card", "sources_open", "sources_close", "source_link", "author_info",
+  "previous_version", "next_version", "like", "not_for_me", "prefer_version",
+  "feedback", "mark_read", "mark_unread",
+] as const;
+export type ReadingEngagementClickTarget = typeof READING_ENGAGEMENT_CLICK_TARGETS[number];
+
+/** Descriptive local interaction data, never an implicit rating or action permission. */
+export type ReadingEngagementInput = {
+  clientEventId: string;
+  sessionId: string;
+  contentRevision: string;
+} & (
+  | { type: "dwell"; dwellMs: number }
+  | { type: "click"; target: ReadingEngagementClickTarget }
+  | { type: "selection"; selectionChars: number }
+);
+
+export interface ReadingEngagementSummary {
+  cardId: string;
+  contentRevision: string;
+  runId: string;
+  readerId: string;
+  dwellMs: number;
+  clicks: Partial<Record<ReadingEngagementClickTarget, number>>;
+  selections: number;
+  lastEngagedAt: string;
+}
+
 /** Passing a reading group is not an explicit reaction, preference, or completed action. */
 export interface ReadingProgressInput {
   clientEventId: string;

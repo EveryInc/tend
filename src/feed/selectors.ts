@@ -1,5 +1,5 @@
 import type { Tab } from "../app/types";
-import { groupReadingCards, sameReadingMembers, type ReadingCardGroup } from "../../shared/readingGroups";
+import { groupReadingCards, isPassiveReadingCard, sameReadingMembers, type ReadingCardGroup } from "../../shared/readingGroups";
 import type { ReadingGroupMember, ReadingPreferenceState, ReadingProgressState } from "../../shared/types";
 import type { Card, CardAction, FeedView, RoutineActionGroup, WorkItemView } from "../types";
 import { safeConfiguredCardActions } from "../../shared/cardActions";
@@ -54,6 +54,23 @@ export function visibleCardGroups(feed: FeedView, tab: Tab): VisibleCardGroup[] 
       ?? group.visibleCards.reduce((latest, card) => (card.completedAt ?? card.updatedAt) > latest ? card.completedAt ?? card.updatedAt : latest, "");
     return at(right).localeCompare(at(left));
   }) : groups;
+}
+
+/** Keep this visit's reading position, never old card snapshots or completed action cards. */
+export function retainReadingSessionGroups(feed: FeedView, retainedIds: string[]): VisibleCardGroup[] {
+  const unread = visibleCardGroups(feed, "review");
+  const available = new Map(unread.map((group) => [group.id, group]));
+  const retained = new Set(retainedIds);
+  for (const group of groupReadingCards(feed.cards, feed.readingComparisons)) {
+    if (!retained.has(group.id) || available.has(group.id)) continue;
+    if (!group.cards.every((card) => isPassiveReadingCard(card) && !card.sweep?.hidden
+      && card.readyForPass <= feed.config.currentPass)) continue;
+    if (group.cards.some((card) => feed.work.some((work) => work.cardId === card.id
+      && ["queued", "working", "approved_blocked"].includes(work.status)))) continue;
+    available.set(group.id, { ...group, visibleCards: group.cards });
+  }
+  const order = [...new Set([...retainedIds, ...unread.map((group) => group.id)])];
+  return order.flatMap((id) => available.has(id) ? [available.get(id)!] : []);
 }
 
 export function currentReadingProgress(group: ReadingCardGroup, progress?: FeedView["readingProgress"]): ReadingProgressState | undefined {

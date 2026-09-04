@@ -9,7 +9,7 @@ import { ReadingCardRequestError, mindContextPublicationReceipt } from "../domai
 import { versionInfo } from "../version";
 import { body, mutation, mutationAccessError, type LocalRouteContext } from "./shared";
 
-async function readingMutation(c: any, context: LocalRouteContext, callback: () => Promise<unknown>) {
+async function readingMutation(c: any, context: LocalRouteContext, callback: () => Promise<unknown>, announce = true) {
   const accessError = mutationAccessError(c, context.mutationToken);
   if (accessError) return accessError;
   // Provider launches, ratings, and reading state require a current session even without Origin.
@@ -18,7 +18,7 @@ async function readingMutation(c: any, context: LocalRouteContext, callback: () 
   }
   try {
     const result = await callback();
-    context.notify({ changedAt: new Date().toISOString() });
+    if (announce) context.notify({ changedAt: new Date().toISOString() });
     return c.json(result);
   } catch (error) {
     if (error instanceof ReadingCardRequestError) {
@@ -116,6 +116,13 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   app.post("/api/feeds/:feed/cards/:card/reaction", async (c) => readingMutation(c, context, async () => {
     return domain.recordCardReaction(c.req.param("feed"), c.req.param("card"), await body(c) as any);
   }));
+  app.post("/api/feeds/:feed/cards/:card/engagement", async (c) => readingMutation(c, context, async () => {
+    return domain.recordReadingEngagement(c.req.param("feed"), c.req.param("card"), await body(c));
+  }, false));
+  app.get("/api/feeds/:feed/reading-engagement", async (c) => {
+    c.header("cache-control", "no-store");
+    return c.json(await domain.readingEngagement(c.req.param("feed"), c.req.query("card")));
+  });
   app.post("/api/feeds/:feed/reading-preferences", async (c) => readingMutation(c, context, async () => {
     return domain.recordReadingPreference(c.req.param("feed"), await body(c));
   }));

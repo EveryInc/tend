@@ -58,6 +58,9 @@ export function createFeedEventBridge(store: FeedEventReader, notify: Notify, op
 }
 
 function eventCursor(events: FeedEvent[]): string {
-  const last = events.at(-1);
-  return `${events.length}:${last?.at ?? ""}:${last?.id ?? ""}`;
+  // Descriptive interaction receipts do not change the workspace. Dwell heartbeats must
+  // not force a refresh that interrupts the same reading/selection being measured.
+  const changes = events.filter((event) => event.type !== "reading.engagement_recorded");
+  const last = changes.at(-1);
+  return `${changes.length}:${last?.at ?? ""}:${last?.id ?? ""}`;
 }

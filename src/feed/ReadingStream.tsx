@@ -4,6 +4,7 @@ import type { Card, ReadingGroupMember, ReadingProgressState } from "../../share
 import { ApiError, post } from "../app/api";
 import { emptyReadingExposure, READING_INPUT_WINDOW_MS, sampleReadingExposure } from "../state/readingExposure";
 import { readingMembers } from "./selectors";
+import { useReadingEngagement } from "../state/readingEngagement";
 
 type ProgressRequest = {
   clientEventId: string;
@@ -27,14 +28,14 @@ export function ReadingStreamControls({ mode, onChange, busy }: {
   return <section className="reading-stream-controls" aria-label="Reading behavior">
     <div>
       <label htmlFor="reading-mode">Reading cards</label>
-      <p>{mode === "stream" ? "Read, then scroll on. Ratings are optional. Everything stays in Read history." : "Cards stay until you review them. Or let reading cards clear as you scroll."}</p>
+      <p>{mode === "stream" ? "Read as you scroll. Cards stay here so you can go back and add feedback. Next visit starts with unread cards." : "Cards stay until you review them. Or mark them read as you scroll, with ratings optional."}</p>
     </div>
     <select id="reading-mode" value={mode} disabled={busy} onChange={(event) => {
       onChange(event.target.value as "review" | "stream");
       event.currentTarget.blur();
     }}>
       <option value="review">Keep until reviewed</option>
-      <option value="stream">Clear as I read</option>
+      <option value="stream">Mark read as I scroll</option>
     </select>
   </section>;
 }
@@ -77,7 +78,7 @@ export class ReadingStreamViewport extends Component<ViewportProps> {
   }
 }
 
-export function ReadingStreamCard({ group, card, enabled, history, progress, busy: workBusy, onChanged, onRead, onUnread, children }: {
+export function ReadingStreamCard({ group, card, enabled, history, progress, busy: workBusy, onChanged, onRead, onUnread, children, engagementSessionId }: {
   group: ReadingCardGroup;
   card: Card;
   enabled: boolean;
@@ -88,26 +89,34 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
   onRead: (undo: ReadingUndo) => void;
   onUnread?: (previous: ReadingProgressState) => void;
   children: ReactNode;
+  engagementSessionId?: string;
 }) {
   const root = useRef<HTMLDivElement>(null);
+  useReadingEngagement(root, card, engagementSessionId);
   const viewed = useRef(new Map<string, ReadingGroupMember>());
   const inFlight = useRef(false);
   const retryRequest = useRef<ProgressRequest | null>(null);
+  const savedReadKey = useRef<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [paused, setPaused] = useState(false);
   const membersKey = JSON.stringify(readingMembers(group));
   const attentionKey = JSON.stringify(group.cards.map((member) => [member.id, member.updatedAt, member.status, member.history]));
-  const enabledRef = useRef(enabled && !workBusy);
-  enabledRef.current = enabled && !workBusy;
+  const currentKey = `${membersKey}\0${attentionKey}`;
+  const read = progress?.read === true;
+  const reviewed = group.cards.every((member) => member.status === "done");
+  const canRead = enabled && !workBusy && !read && !reviewed;
+  const enabledRef = useRef(canRead);
+  enabledRef.current = canRead;
   const latest = useRef({ group, card, progress, onChanged, onRead, onUnread });
   latest.current = { group, card, progress, onChanged, onRead, onUnread };
 
   useEffect(() => { viewed.current.clear(); retryRequest.current = null; setPaused(false); setError(""); }, [membersKey, attentionKey, progress?.eventId, history]);
+  useEffect(() => { if (progress?.read === false) savedReadKey.current = null; }, [progress?.eventId, progress?.read]);
 
   const send = async (read: boolean, explicit = false) => {
     if (inFlight.current || workBusy) return;
-    if (read && !enabledRef.current) return;
+    if (read && (!enabledRef.current || savedReadKey.current === currentKey)) return;
     const current = latest.current;
     if (!current.card.reading) return;
     if (explicit && read) viewed.current.set(current.card.id, { cardId: current.card.id, contentRevision: current.card.reading.contentRevision });
@@ -125,6 +134,7 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
     try {
       const receipt = await post<ReadingProgressReceipt>(`/api/feeds/${encodeURIComponent(current.card.feedId)}/reading-progress`, request);
       retryRequest.current = null;
+      savedReadKey.current = receipt.progress?.read ? currentKey : null;
       if (request.read && receipt.progress?.read) current.onRead({ feedId: current.card.feedId, progress: receipt.progress, title: current.card.title });
       if (!request.read && !receipt.progress?.read && current.progress) current.onUnread?.(current.progress);
       current.onChanged();
@@ -141,7 +151,7 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
   sendRef.current = send;
 
   useEffect(() => {
-    if (!enabled || workBusy || paused || !card.reading || history) return;
+    if (!canRead || paused || !card.reading || history) return;
     let exposure = emptyReadingExposure();
     let lastForwardInput = -Infinity;
     let previousY = window.scrollY;
@@ -214,15 +224,16 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
       window.removeEventListener("blur", reset);
       document.removeEventListener("visibilitychange", reset);
     };
-  }, [enabled, workBusy, paused, card.id, card.reading?.contentRevision, history, membersKey, attentionKey, progress?.eventId]);
+  }, [canRead, paused, card.id, card.reading?.contentRevision, history, membersKey, attentionKey, progress?.eventId]);
 
-  return <div ref={root} data-reading-slot={group.id} tabIndex={-1} className="reading-stream-slot">
+  const readingState = (enabled || history) && !workBusy ? read ? "read" : reviewed ? "reviewed" : "unread" : "unread";
+  return <div ref={root} data-reading-slot={group.id} data-reading-state={readingState} tabIndex={-1} className={`reading-stream-slot${readingState !== "unread" ? " is-complete" : ""}`}>
     {children}
-    {(enabled || (history && progress?.read)) && <div className="reading-progress-control">
-      <span>{history ? `${progress?.viewedMembers.length ?? 0} of ${group.cards.length} version${group.cards.length === 1 ? "" : "s"} viewed · no rating implied` : "No opinion needed"}</span>
-      <button type="button" className="button text" disabled={saving || workBusy} onClick={() => void send(!history, true)}>
-        {saving ? "Saving…" : history ? "Mark unread" : "Mark read"}
-      </button>
+    {(enabled || (history && read)) && <div className="reading-progress-control">
+      <span>{read ? `Read · ${progress?.viewedMembers.length ?? 0} of ${group.cards.length} version${group.cards.length === 1 ? "" : "s"} viewed · no rating implied` : reviewed ? "Reviewed · you can still compare and add feedback" : "No opinion needed"}</span>
+      {(read || !reviewed) && <button type="button" className="button text" data-reading-interaction={read ? "mark_unread" : "mark_read"} disabled={saving || workBusy} onClick={() => void send(!read, true)}>
+        {saving ? "Saving…" : read ? "Mark unread" : "Mark read"}
+      </button>}
     </div>}
     {error && <div className="reading-progress-error" role="alert">{error} <button type="button" className="button text" disabled={saving} onClick={() => retryRequest.current ? void send(retryRequest.current.read) : onChanged()}>{retryRequest.current ? "Retry" : "Refresh"}</button></div>}
   </div>;

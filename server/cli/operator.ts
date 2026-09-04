@@ -224,6 +224,12 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
       case "reading:progress":
         output = await domain.recordReadingProgress(required("feed"), await structured("progress"));
         break;
+      case "reading:engagement":
+        output = await domain.readingEngagement(required("feed"), value("card") ?? undefined);
+        break;
+      case "reading:record-engagement":
+        output = await domain.recordReadingEngagement(required("feed"), required("card"), await structured("engagement"));
+        break;
       case "routine:upsert":
         output = await domain.upsertRoutineActionGroup(
           required("feed"),

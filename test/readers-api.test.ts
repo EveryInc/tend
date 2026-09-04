@@ -37,9 +37,10 @@ async function setup(withRunner = true) {
   };
   const runner = new ReaderRunner(store, { adapters: { codex: adapter, claude: adapter }, timeoutMs: 10_000 });
   fixtures.push({ root, runner, run });
+  const notifications: unknown[] = [];
   const app = apiRoutes({ root, artifactsDir: root, dataDir: root, domain, store,
     ...(withRunner ? { readers: runner } : {}), sqlite: { status: () => ({ ok: true }) } as any,
-    port: 0, mutationToken: "fixture-browser-token", notify: () => {} });
+    port: 0, mutationToken: "fixture-browser-token", notify: (value) => notifications.push(value) });
   const runPath = `/api/feeds/${run.feedId}/runs/${run.id}`;
   const start = () => app.request(`${runPath}/readers`, { method: "POST", headers: browserHeaders, body: JSON.stringify({ packet, readers }) });
   const readingCard = async () => {
@@ -51,7 +52,7 @@ async function setup(withRunner = true) {
       reading: { runId: run.id, readerId: readers[0].id, draftId: "draft-one", topicKey: "fixture-topic" },
     });
   };
-  return { root, store, domain, runner, run, app, calls, runPath, start, readingCard };
+  return { root, store, domain, runner, run, app, calls, runPath, start, readingCard, notifications };
 }
 
 afterEach(async () => {
@@ -63,6 +64,23 @@ afterEach(async () => {
 });
 
 describe("native reader HTTP routes", () => {
+  test("engagement uses native authorization, idempotency and quiet telemetry receipts", async () => {
+    const { app, run, readingCard, notifications } = await setup();
+    const card = await readingCard();
+    notifications.length = 0;
+    const endpoint = `/api/feeds/${run.feedId}/cards/${card.id}/engagement`;
+    const input = { clientEventId: "http-highlight", sessionId: "browser-visit", contentRevision: card.reading!.contentRevision, type: "selection", selectionChars: 25 };
+    expect((await app.request(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) })).status).toBe(403);
+    const response = await app.request(endpoint, { method: "POST", headers: browserHeaders, body: JSON.stringify(input) });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ duplicate: false, event: { cardId: card.id, type: "reading.engagement_recorded" } });
+    expect((await app.request(endpoint, { method: "POST", headers: browserHeaders, body: JSON.stringify(input) })).status).toBe(200);
+    expect(notifications).toHaveLength(0);
+    const summary = await (await app.request(`/api/feeds/${run.feedId}/reading-engagement?card=${card.id}`)).json();
+    expect(summary.cards).toHaveLength(1);
+    expect(summary.cards[0]).toMatchObject({ cardId: card.id, selections: 1, dwellMs: 0, clicks: {} });
+  });
+
   test("a server bind failure cannot interrupt a recorded reader", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "tend-reader-bind-"));
     const occupied = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("occupied") });

@@ -7,8 +7,9 @@ import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { CardView } from "../src/feed/CardView";
 import { ReadingStreamCard, ReadingStreamControls } from "../src/feed/ReadingStream";
+import { engagementClickTarget } from "../src/state/readingEngagement";
 import App from "../src/App";
-import { countFor, currentReadingPreference, readingMembers, selectedGroupCard, visibleCardActions, visibleCardGroups } from "../src/feed/selectors";
+import { countFor, currentReadingPreference, readingMembers, retainReadingSessionGroups, selectedGroupCard, visibleCardActions, visibleCardGroups } from "../src/feed/selectors";
 import { groupReadingCards } from "../shared/readingGroups";
 import { Dock } from "../src/shell/Dock";
 import { SourceRunHistory } from "../src/workspace/PromptWorkspace";
@@ -291,6 +292,27 @@ test("reading mode is an explicit choice and manual read records only the select
   expect(requests[0]).not.toHaveProperty("reaction");
 });
 
+test("a retained visit resolves fresh groups while dropping deleted, hidden, and active-work cards", () => {
+  const versions = readingVersions(2);
+  const first = groupReadingCards(versions)[0];
+  const action = readingCard({ id: "ordinary-action", reading: undefined, proposedAction: { label: "Send", instruction: "Send after approval." } });
+  const next = readingCard({ id: "later-reading" });
+  const feed = readingWorkspace([...versions, action, next]).active;
+  const initial = retainReadingSessionGroups(feed, []);
+  const retainedIds = initial.map((group) => group.id);
+  const updated = versions.map((card) => ({ ...card, status: "done" as const, updatedAt: "2026-09-04T12:00:00Z", why: "Current saved content." }));
+  const latest = { ...feed, cards: [...updated, { ...action, status: "done" as const }, next] };
+  const kept = retainReadingSessionGroups(latest, retainedIds);
+  expect(kept.map((group) => group.id)).toEqual(retainedIds.filter((id) => id !== `card:${action.id}`));
+  expect(kept[0].cards.every((card) => updated.includes(card))).toBe(true);
+  expect(retainReadingSessionGroups(latest, []).map((group) => group.id)).toEqual([`card:${next.id}`]);
+  expect(retainReadingSessionGroups({ ...latest, cards: [next] }, retainedIds).map((group) => group.id)).toEqual([`card:${next.id}`]);
+  const hidden = updated.map((card) => ({ ...card, sweep: { hidden: true } } as Card));
+  expect(retainReadingSessionGroups({ ...latest, cards: [...hidden, next] }, retainedIds).some((group) => group.id === first.id)).toBe(false);
+  const active = { cardId: versions[0].id, status: "queued" } as FeedView["work"][number];
+  expect(retainReadingSessionGroups({ ...latest, work: [active] }, retainedIds).some((group) => group.id === first.id)).toBe(false);
+});
+
 test("manual read retries the same receipt and history undo is conditional on the exact read event", async () => {
   const group = groupReadingCards(readingVersions(2))[0];
   const card = group.cards[0];
@@ -312,7 +334,7 @@ test("manual read retries the same receipt and history undo is conditional on th
   await waitFor(() => expect(ui.queryByRole("button", { name: "Saving…" }) === null).toBe(true));
   const progress = { ...requests[0], eventId: "read-1", at: "2026-09-04T12:00:00Z" } as unknown as ReadingProgressState;
   ui.rerender(wrapper(true, progress));
-  expect(ui.getByText("1 of 2 versions viewed · no rating implied")).toBeTruthy();
+  expect(ui.getByText("Read · 1 of 2 versions viewed · no rating implied")).toBeTruthy();
   fireEvent.click(ui.getByRole("button", { name: "Mark unread" }));
   await waitFor(() => expect(requests).toHaveLength(3));
   expect(requests[2]).toMatchObject({ read: false, expectedEventId: "read-1", members: progress.members, viewedMembers: progress.viewedMembers });
@@ -328,7 +350,7 @@ async function mountReadingApp(feedId: string) {
   return { ui, client, close: () => { ui.unmount(); client.clear(); } };
 }
 
-test("a neutrally read card leaves the feed and voice target follows the next visible card; Undo restores it", async () => {
+test("a neutrally read card keeps its place and feedback target; Undo restores unread without duplicating the card", async () => {
   sessionStorage.clear();
   globalThis.EventSource = class { addEventListener() {} close() {} } as unknown as typeof EventSource;
   const first = readingCard();
@@ -356,13 +378,18 @@ test("a neutrally read card leaves the feed and voice target follows the next vi
   try {
     await waitFor(() => expect(ui.queryByRole("heading", { name: first.title }) !== null).toBe(true));
     await waitFor(() => expect(ui.container.querySelector(".dock-target")?.textContent).toBe(first.title));
+    const order = Array.from(ui.container.querySelectorAll("[data-reading-slot]")).map((slot) => slot.getAttribute("data-reading-slot"));
+    fireEvent.click(ui.getAllByRole("button", { name: "Feedback" })[0]);
     fireEvent.click(ui.getAllByRole("button", { name: "Mark read" })[0]);
-    await waitFor(() => expect(ui.queryByRole("heading", { name: first.title }) === null).toBe(true));
-    await waitFor(() => expect(ui.container.querySelector(".dock-target")?.textContent).toBe(second.title));
+    await waitFor(() => expect(ui.container.querySelector("[data-reading-slot]")?.getAttribute("data-reading-state")).toBe("read"));
+    expect(ui.queryByRole("heading", { name: first.title }) !== null).toBe(true);
+    expect(Array.from(ui.container.querySelectorAll("[data-reading-slot]")).map((slot) => slot.getAttribute("data-reading-slot"))).toEqual(order);
+    expect(ui.container.querySelector(".dock-target")?.textContent).toBe(first.title);
+    expect(ui.container.querySelector(".tabs button")?.textContent).toBe("Feed1 unread");
     expect(state.active.cards[0].status).toBe("to_review_new");
     expect(state.active.readingReactions).toBeUndefined();
     fireEvent.click(ui.getByRole("button", { name: "Undo" }));
-    await waitFor(() => expect(ui.queryByRole("heading", { name: first.title }) !== null).toBe(true));
+    await waitFor(() => expect(ui.container.querySelector("[data-reading-slot]")?.getAttribute("data-reading-state")).toBe("unread"));
     expect(requests[1]).toMatchObject({ read: false, expectedEventId: "progress-1" });
     fireEvent.click(ui.getAllByRole("button", { name: "Mark read" })[0]);
     await waitFor(() => expect(ui.container.querySelector(".reading-undo") !== null).toBe(true));
@@ -1040,4 +1067,173 @@ test("generic reader receipts stay in source-run history with requested and actu
   expect(html).toContain("Unrated");
   expect(html).toContain(liked.why);
   expect(html).not.toContain("Feed for One");
+});
+
+test("a stream visit retains the chosen version for feedback and history navigation, but a fresh visit starts unread", async () => {
+  sessionStorage.clear();
+  globalThis.EventSource = class { addEventListener() {} close() {} } as unknown as typeof EventSource;
+  const versions = readingVersions(2);
+  const nextIdea = readingCard({ id: "stream-next-idea", title: "Another idea still waiting to be read" });
+  const group = groupReadingCards(versions)[0];
+  let state = readingWorkspace([...versions, nextIdea]);
+  state.active.config.readingMode = "stream";
+  const preferences: ReadingPreferenceInput[] = [];
+  const instructions: Array<{ target: unknown; instruction: string }> = [];
+  const waitOptions = { timeout: 5_000, onTimeout: (error: Error) => error };
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/session") return Response.json({ mutationToken: "fixture-token" });
+    if (url.startsWith("/api/state?")) return Response.json(state);
+    if (url.endsWith("/native-approvals")) return Response.json([]);
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (url === "/api/voice/target-change") return Response.json(body.target);
+    if (url.endsWith("/engagement")) return Response.json({ duplicate: false, event: {} });
+    if (url.endsWith("/reading-preferences")) {
+      preferences.push(body);
+      // Return fresh objects, as an actual state refresh does. Retaining the cards must
+      // retain their position and selection, not stale pre-preference card objects.
+      const cards = state.active.cards.map((card) => versions.some((version) => version.id === card.id)
+        ? { ...card, status: "done" as const, updatedAt: "2026-09-04T12:05:00.000Z" }
+        : { ...card });
+      state = { ...state, active: { ...state.active, cards, readingPreferences: {
+        [group.id]: { ...body, eventId: "stream-preference", at: "2026-09-04T12:05:00Z" },
+      } } };
+      return Response.json({ duplicate: false, cards: cards.filter((card) => card.reading?.topicKey === group.topicKey) });
+    }
+    if (url === "/api/voice/instructions") {
+      instructions.push(body);
+      return Response.json({ kind: "scoped_work", work: { id: "stream-reason", intent: "voice_instruction" } });
+    }
+    throw new Error(`Unexpected fixture request: ${url}`);
+  }) as typeof fetch;
+  let app = await mountReadingApp(versions[0].feedId);
+  try {
+    let ui = app.ui;
+    await waitFor(() => expect(ui.queryByRole("button", { name: "Next version" }) !== null).toBe(true), waitOptions);
+    const positionsBefore = Array.from(ui.container.querySelectorAll("[data-reading-slot]")).map((slot) => slot.getAttribute("data-reading-slot"));
+    fireEvent.click(ui.getByRole("button", { name: "Next version" }));
+    const chosenId = ui.container.querySelector("article[data-reading-group]")!.getAttribute("data-card-id")!;
+    const chosen = versions.find((card) => card.id === chosenId)!;
+    fireEvent.click(ui.getByRole("button", { name: "Prefer this version" }));
+    await waitFor(() => expect(preferences.length).toBe(1), waitOptions);
+    await waitFor(() => expect(ui.container.querySelector("article[data-reading-group]")?.closest("[data-reading-slot]")?.getAttribute("data-reading-state")).toBe("reviewed"), waitOptions);
+    expect(ui.queryByRole("heading", { name: chosen.title }) !== null).toBe(true);
+    expect(ui.container.querySelector("article[data-reading-group]")!.getAttribute("data-card-id")).toBe(chosenId);
+    expect(Array.from(ui.container.querySelectorAll("[data-reading-slot]")).map((slot) => slot.getAttribute("data-reading-slot"))).toEqual(positionsBefore);
+    expect(ui.container.querySelector(".tabs button")?.textContent).toBe("Feed1 unread");
+    expect(ui.getByRole("button", { name: "Prefer this version" }).getAttribute("aria-pressed")).toBe("true");
+    expect(ui.container.querySelector("article[data-reading-group]")!.closest("[data-reading-slot]")!.textContent).toContain("Reviewed · feedback welcome");
+    expect(state.active.readingReactions).toBeUndefined();
+    const readHistory = Array.from(ui.container.querySelectorAll(".tabs button")).find((button) => button.textContent?.startsWith("Read history"))!;
+    fireEvent.click(readHistory);
+    await waitFor(() => expect(ui.queryByRole("heading", { name: chosen.title }) !== null).toBe(true), waitOptions);
+    fireEvent.click(ui.container.querySelector(".tabs button")!);
+    await waitFor(() => expect(ui.queryByRole("heading", { name: nextIdea.title }) !== null).toBe(true), waitOptions);
+    expect(ui.queryByRole("heading", { name: chosen.title }) !== null).toBe(true);
+    const article = ui.container.querySelector("article[data-reading-group]")!;
+    fireEvent.click(Array.from(article.querySelectorAll("button")).find((button) => button.textContent === "Feedback")!);
+    expect(ui.container.querySelector(".dock-target")?.textContent).toBe(chosen.title);
+    const input = ui.getByRole("textbox", { name: "Instruction for Codex" });
+    input.focus();
+    fireEvent.input(input, { target: { value: "I prefer this version because it names the concrete tradeoff." } });
+    fireEvent.keyUp(input, { key: "." });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(instructions.length).toBe(1), waitOptions);
+    expect(instructions[0]).toMatchObject({ target: { kind: "card", feedId: chosen.feedId, cardId: chosen.id }, instruction: "I prefer this version because it names the concrete tradeoff." });
+    app.close();
+    app = await mountReadingApp(chosen.feedId);
+    ui = app.ui;
+    await waitFor(() => expect(ui.queryByRole("heading", { name: nextIdea.title }) !== null).toBe(true), waitOptions);
+    expect(ui.queryByRole("heading", { name: chosen.title }) === null).toBe(true);
+    expect(ui.container.querySelector("article[data-reading-group]") === null).toBe(true);
+    expect(ui.container.querySelector(".tabs button")?.textContent).toBe("Feed1 unread");
+  } finally { app.close(); sessionStorage.clear(); }
+}, 20_000);
+
+test("liking one stream version keeps the topic unread and unmuted until its alternatives are handled", async () => {
+  sessionStorage.clear();
+  globalThis.EventSource = class { addEventListener() {} close() {} } as unknown as typeof EventSource;
+  const versions = readingVersions(2);
+  const nextIdea = readingCard({ id: "partial-like-next", title: "An independent unread idea" });
+  let state = readingWorkspace([...versions, nextIdea]);
+  state.active.config.readingMode = "stream";
+  const reactions: Array<{ cardId: string; body: Record<string, unknown> }> = [];
+  const waitOptions = { timeout: 5_000, onTimeout: (error: Error) => error };
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/session") return Response.json({ mutationToken: "fixture-token" });
+    if (url.startsWith("/api/state?")) return Response.json(state);
+    if (url.endsWith("/native-approvals")) return Response.json([]);
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (url === "/api/voice/target-change") return Response.json(body.target);
+    if (url.endsWith("/engagement")) return Response.json({ duplicate: false, event: {} });
+    const card = versions.find((version) => url.endsWith(`/cards/${version.id}/reaction`));
+    if (card) {
+      reactions.push({ cardId: card.id, body });
+      const done = { ...card, status: "done" as const, updatedAt: "2026-09-04T12:06:00.000Z" };
+      state = { ...state, active: { ...state.active, cards: state.active.cards.map((member) => member.id === card.id ? done : { ...member }), readingReactions: {
+        [card.id]: { reaction: "like", contentRevision: card.reading!.contentRevision, eventId: "stream-like", at: "2026-09-04T12:06:00Z" },
+      } } };
+      return Response.json({ duplicate: false, card: done });
+    }
+    throw new Error(`Unexpected fixture request: ${url}`);
+  }) as typeof fetch;
+  const app = await mountReadingApp(versions[0].feedId);
+  const { ui } = app;
+  try {
+    await waitFor(() => expect(ui.queryByRole("button", { name: "Next version" }) !== null).toBe(true), waitOptions);
+    const article = ui.container.querySelector("article[data-reading-group]")!;
+    const chosenId = article.getAttribute("data-card-id")!;
+    const like = Array.from(article.querySelectorAll("button")).find((button) => button.textContent === "Like")!;
+    fireEvent.click(like);
+    await waitFor(() => expect(reactions.length).toBe(1), waitOptions);
+    await waitFor(() => expect(ui.container.querySelector("article[data-reading-group]")!.textContent).toContain("Liked · saved"), waitOptions);
+    const current = ui.container.querySelector("article[data-reading-group]")!;
+    const slot = current.closest("[data-reading-slot]")!;
+    expect(current.getAttribute("data-card-id")).toBe(chosenId);
+    expect(slot.getAttribute("data-reading-state")).toBe("unread");
+    expect(slot.classList.contains("is-complete")).toBe(false);
+    expect(ui.container.querySelector(".tabs button")?.textContent).toBe("Feed2 unread");
+    expect(state.active.cards.find((card) => card.id === chosenId)?.status).toBe("done");
+    expect(state.active.cards.find((card) => versions.some((version) => version.id === card.id) && card.id !== chosenId)?.status).toBe("to_review_new");
+    expect(state.active.readingPreferences).toBeUndefined();
+    expect(state.active.readingProgress).toBeUndefined();
+  } finally { app.close(); sessionStorage.clear(); }
+}, 20_000);
+
+test("untrusted programmatic clicks never record engagement, including after switching the displayed version", async () => {
+  const group = groupReadingCards(readingVersions(2))[0];
+  const first = group.cards[0];
+  const second = group.cards[1];
+  const versionChanges: string[] = [];
+  const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/session") return Response.json({ mutationToken: "fixture-token" });
+    requests.push({ url, body: JSON.parse(String(init?.body ?? "{}")) });
+    return Response.json({ duplicate: false, event: {} });
+  }) as typeof fetch;
+  const wrapper = (card: Card) => <ReadingStreamCard group={group} card={card} enabled={false} history={false} busy={false} onRead={() => {}} onChanged={() => {}} engagementSessionId="fixture-browser-session">{readingView(card, { readingGroup: group, onReadingVersion: (cardId) => versionChanges.push(cardId) })}</ReadingStreamCard>;
+  const ui = render(wrapper(first));
+  expect(requests).toHaveLength(0);
+  fireEvent.click(ui.getByRole("button", { name: "Next version" }));
+  expect(versionChanges).toEqual([second.id]);
+  ui.rerender(wrapper(second));
+  fireEvent.click(ui.getByRole("button", { name: "Feedback" }));
+  // Let any accidentally launched session-token/post promise finish before asserting.
+  // Genuine trusted interaction and exact-version attribution are exercised in browser QA.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(requests).toHaveLength(0);
+});
+
+test("engagement distinguishes source expansion, collapse and links without preserving source URLs", () => {
+  const ui = render(readingView());
+  const details = ui.container.querySelector<HTMLDetailsElement>(".reading-sources")!;
+  const summary = details.querySelector("summary")!;
+  details.open = false;
+  expect(engagementClickTarget(summary)).toBe("sources_open");
+  details.open = true;
+  expect(engagementClickTarget(summary)).toBe("sources_close");
+  expect(engagementClickTarget(ui.getByRole("link", { name: "Fixture transcript" }))).toBe("source_link");
+  expect(engagementClickTarget(ui.getByRole("heading", { name: readingCard().title }))).toBe("card");
 });

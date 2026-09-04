@@ -14,7 +14,7 @@ export async function api<T>(url: string, init?: RequestInit): Promise<T> {
   return value as T;
 }
 
-export async function post<T>(url: string, value: unknown = {}): Promise<T> {
+export async function post<T>(url: string, value: unknown = {}, options: Pick<RequestInit, "keepalive"> = {}): Promise<T> {
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const mutationToken = await localMutationToken();
     try {
@@ -25,6 +25,7 @@ export async function post<T>(url: string, value: unknown = {}): Promise<T> {
           "x-attention-mutation-token": mutationToken,
         },
         body: JSON.stringify(value),
+        ...options,
       });
     } catch (error) {
       if (!(error instanceof ApiError) || error.status !== 403 || attempt > 0) throw error;

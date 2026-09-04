@@ -447,6 +447,57 @@ describe("native reading cards", () => {
   });
 });
 
+describe("descriptive reading engagement", () => {
+  test("records exact-version dwell, clicks and selection without changing taste or lifecycle", async () => {
+    const { store, domain } = await setup();
+    const { card, alternative } = await readingGroupFixture(store, domain);
+    const before = await store.readFeed("company-attention");
+    const input = { clientEventId: "dwell-one", sessionId: "visit-one", contentRevision: card.reading!.contentRevision, type: "dwell", dwellMs: 2400 };
+    const receipts = await Promise.all([
+      domain.recordReadingEngagement("company-attention", card.id, input),
+      domain.recordReadingEngagement("company-attention", card.id, input),
+    ]);
+    expect(receipts.map((receipt) => receipt.duplicate).sort()).toEqual([false, true]);
+    await domain.recordReadingEngagement("company-attention", card.id, { clientEventId: "source-click", sessionId: "visit-one", contentRevision: card.reading!.contentRevision, type: "click", target: "sources_open" });
+    await domain.recordReadingEngagement("company-attention", card.id, { clientEventId: "highlight", sessionId: "visit-one", contentRevision: card.reading!.contentRevision, type: "selection", selectionChars: 42 });
+    await domain.recordReadingEngagement("company-attention", alternative.id, { ...input, clientEventId: "alternative-time", contentRevision: alternative.reading!.contentRevision, dwellMs: 900 });
+    expect(await store.readFeed("company-attention")).toEqual(before);
+    const summary = await domain.readingEngagement("company-attention", card.id);
+    expect(summary).toEqual({ metric: "foreground_visible_ms", cards: [{
+      cardId: card.id, contentRevision: card.reading!.contentRevision, runId: card.reading!.runId,
+      readerId: card.reading!.readerId, dwellMs: 2400, clicks: { sources_open: 1 }, selections: 1,
+      lastEngagedAt: expect.any(String),
+    }] });
+    const engagement = (await store.readEvents("company-attention")).filter((event) => event.type === "reading.engagement_recorded");
+    expect(engagement).toHaveLength(4);
+    expect(engagement[0].detail).toMatchObject({ readerId: card.reading!.readerId, requestedModel: card.reading!.writer.requestedModel });
+    expect(engagement.every((event) => !(event.detail && typeof event.detail === "object" && "readingCard" in event.detail))).toBe(true);
+    const compound = await domain.queueCompound("company-attention");
+    expect(compound.learningContext).toBeUndefined();
+    expect(compound.instruction).toContain("Do not infer sentiment");
+  });
+
+  test("rejects text, malformed measurements, stale revisions and conflicting retries", async () => {
+    const { store, domain } = await setup();
+    const { card, alternative } = await readingGroupFixture(store, domain);
+    const input = { clientEventId: "one-click", sessionId: "visit-one", contentRevision: card.reading!.contentRevision, type: "click", target: "feedback" };
+    const first = await domain.recordReadingEngagement("company-attention", card.id, input);
+    for (const invalid of [
+      { ...input, text: "never retain selected text" }, { ...input, target: "https://private.example" },
+      { ...input, type: "dwell", dwellMs: 0, target: undefined },
+      { clientEventId: "x", sessionId: "visit", contentRevision: input.contentRevision, type: "dwell", dwellMs: 60001 },
+      { clientEventId: "x", sessionId: "visit", contentRevision: input.contentRevision, type: "selection", selectionChars: 1.5 },
+      { ...input, sessionId: "x".repeat(201) },
+    ]) await expect(domain.recordReadingEngagement("company-attention", card.id, invalid)).rejects.toMatchObject({ code: "invalid_engagement" });
+    await expect(domain.recordReadingEngagement("company-attention", alternative.id, input)).rejects.toMatchObject({ code: "client_event_conflict" });
+    await expect(domain.recordReadingEngagement("company-attention", card.id, { ...input, target: "like" })).rejects.toMatchObject({ code: "client_event_conflict" });
+    await domain.returnCardToReview("company-attention", card.id);
+    expect((await domain.recordReadingEngagement("company-attention", card.id, input)).event.id).toBe(first.event.id);
+    await expect(domain.recordReadingEngagement("company-attention", card.id, { ...input, clientEventId: "new-stale-click", contentRevision: "0".repeat(64) })).rejects.toMatchObject({ code: "stale_content" });
+    expect((await store.readEvents("company-attention")).filter((event) => event.type === "reading.engagement_recorded")).toHaveLength(1);
+  });
+});
+
 describe("neutral reading stream progress", () => {
   test("is opt-in, idempotent, and preserves cards, work, sources, and explicit taste", async () => {
     const { store, domain } = await setup();

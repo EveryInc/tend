@@ -29,6 +29,8 @@ export const CLI_COMMANDS = [
   "card:prefer --feed <id> --preference-file <path>",
   "feed:reading-mode --feed <id> --mode <review|stream>",
   "reading:progress --feed <id> --progress-file <path>",
+  "reading:engagement --feed <id> [--card <id>]",
+  "reading:record-engagement --feed <id> --card <id> --engagement-file <path>",
   "routine:upsert --feed <id> --group <json>",
   "routine:approve --feed <id> --group <id>",
   "card:dismiss --feed <id> --card <id>",

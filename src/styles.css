@@ -412,6 +412,8 @@ pre { overflow: auto; padding: 12px; background: #f4f2eb; color: var(--ink-2); w
 .reading-stream-end h2 { color: var(--ink-2); font-size: 24px; }
 .reading-stream-end p { font-size: 13px; }
 .reading-stream-slot { outline: none; }
+.reading-stream-slot.is-complete .reading-card { background: var(--bg); box-shadow: none; }
+.reading-stream-slot.is-complete .card-rule { background: var(--line-2); }
 .reading-stream-slot:focus-visible { outline: 2px solid var(--blue); outline-offset: 5px; border-radius: 10px; }
 .reading-progress-control { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: -12px 4px 24px; color: var(--ink-3); font-size: 11px; }
 .reading-progress-control .button { padding: 4px 7px; font-size: 12px; }

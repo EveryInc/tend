@@ -16,6 +16,8 @@ import type {
   ReadingPreferenceInput,
   ReadingProgressInput,
   ReadingProgressState,
+  ReadingEngagementInput,
+  ReadingEngagementSummary,
   FeedConfig,
   FeedEvent,
   FeedMindContext,
@@ -48,6 +50,7 @@ import type {
   WorkItemView,
   WorkspaceRevision,
 } from "../shared/types";
+import { READING_ENGAGEMENT_CLICK_TARGETS } from "../shared/types";
 import type { MobileActionProjection, MobileCommand, MobileCommandResult, MobileCommandReceipt } from "../shared/mobile";
 import { isDeepStrictEqual } from "node:util";
 import { isReservedCardActionId, safeConfiguredCardActions } from "../shared/cardActions";
@@ -159,6 +162,33 @@ export interface ReadingProgressReceipt {
 interface ReadingProgressEventDetail extends ReadingProgressInput {
   progressSequence: number;
   attentionRevisions: Record<string, string>;
+}
+
+type ReadingEngagementEventDetail = ReadingEngagementInput & {
+  runId: string;
+  readerId: string;
+  requestedModel: string;
+  actualModel?: string;
+  metric: "foreground_visible_ms";
+};
+
+function validateReadingEngagement(body: unknown): ReadingEngagementInput {
+  const invalid = (): never => { throw new ReadingCardRequestError("Engagement requires exact version/session IDs and one bounded dwell, click, or selection value; text and URLs are not accepted.", 400, "invalid_engagement"); };
+  if (!body || typeof body !== "object" || Array.isArray(body)) invalid();
+  const input = body as Record<string, unknown>;
+  for (const key of ["clientEventId", "sessionId"]) {
+    if (typeof input[key] !== "string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(input[key])) invalid();
+  }
+  if (typeof input.contentRevision !== "string" || !/^[a-f0-9]{64}$/.test(input.contentRevision)) invalid();
+  const field = input.type === "dwell" ? "dwellMs" : input.type === "click" ? "target" : input.type === "selection" ? "selectionChars" : invalid();
+  if (Object.keys(input).some((key) => !["clientEventId", "sessionId", "contentRevision", "type", field].includes(key))) invalid();
+  if (input.type === "click") {
+    if (!(READING_ENGAGEMENT_CLICK_TARGETS as readonly unknown[]).includes(input.target)) invalid();
+  } else {
+    const value = input[field];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > (input.type === "dwell" ? 60_000 : 50_000)) invalid();
+  }
+  return input as ReadingEngagementInput;
 }
 
 interface ReadingPreferenceEventDetail extends ReadingPreferenceInput {
@@ -2175,7 +2205,7 @@ export class AttentionDomain {
       const existing = (await this.store.readWorkItems(feedId)).find((work) => work.kind === "compound_learnings" && (work.status === "queued" || work.status === "working"));
       if (existing) return existing;
       const feedbackEvents = readingFeedbackEvents(await this.store.readEvents(feedId));
-      const instruction = "The user approved a learning pass. Review raw snapshots, runs, events, outcomes, and policy history. Distill a compact feed-policy improvement, then create an editable revision proposal with revision:propose --source compound. Do not apply it. The browser will bring the proposal back to the user for review. Reading progress and scrolling are neutral consumption state, never a Like, dislike, preference, or evidence of taste."
+      const instruction = "The user approved a learning pass. Review raw snapshots, runs, events, outcomes, and policy history. Distill a compact feed-policy improvement, then create an editable revision proposal with revision:propose --source compound. Do not apply it. The browser will bring the proposal back to the user for review. Reading progress is neutral consumption state. Foreground-visible dwell, clicks, and text-selection counts are descriptive engagement. Neither is a Like, dislike, preference, action permission, or proof of taste. Do not infer sentiment or a reason for a rating from these signals."
         + (feedbackEvents.length ? " The attached learningContext.readingFeedbackEvents contains the exact card faces and writers for explicit Likes, Not for me, cleared reactions, version preferences, and subsequent voice feedback, including archived cards. Treat these as feedback evidence, not action permission. Use the latest explicit reaction per card and preference per exact compared group; no reaction is not a dislike. A preferred version does not make its alternatives disliked. Join voice feedback by cardId and contentRevision. Do not infer a reason for a Like or preference, or rewrite source facts from feedback." : "");
       const work = queuedWork(feedId, "__feed__", instruction, { kind: "compound_learnings" });
       if (feedbackEvents.length) work.learningContext = { readingFeedbackEvents: feedbackEvents };
@@ -2879,6 +2909,58 @@ export class AttentionDomain {
       const event = await this.store.appendEvent({ feedId, type: "reading.progress_recorded", detail: { ...input, progressSequence, attentionRevisions } satisfies ReadingProgressEventDetail });
       return { duplicate: false, event, progress: readingProgressState(event) };
     });
+  }
+
+  async recordReadingEngagement(feedId: string, cardId: string, body: unknown): Promise<{ duplicate: boolean; event: FeedEvent }> {
+    const input = validateReadingEngagement(body);
+    return this.store.serializeAtomic(async () => {
+      const events = await this.store.readEvents(feedId);
+      const existing = events.find((event) => event.type === "reading.engagement_recorded"
+        && (event.detail as ReadingEngagementEventDetail | undefined)?.clientEventId === input.clientEventId);
+      if (existing) {
+        const { runId: _runId, readerId: _readerId, requestedModel: _requested, actualModel: _actual, metric: _metric, ...recorded } = existing.detail as ReadingEngagementEventDetail;
+        if (existing.cardId !== cardId || !isDeepStrictEqual(recorded, input)) {
+          throw new ReadingCardRequestError("This engagement ID already records a different interaction.", 409, "client_event_conflict");
+        }
+        return { duplicate: true, event: existing };
+      }
+      const card = await this.store.readCard(feedId, cardId);
+      if (!card.reading) throw new ReadingCardRequestError("Engagement is only recorded for reading cards.", 404, "not_found");
+      if (card.reading.contentRevision !== input.contentRevision || readingContentRevision(card) !== input.contentRevision) {
+        throw new ReadingCardRequestError("This card version changed; engagement was not reassigned to the new version.", 409, "stale_content");
+      }
+      const detail: ReadingEngagementEventDetail = {
+        ...input, runId: card.reading.runId, readerId: card.reading.readerId,
+        requestedModel: card.reading.writer.requestedModel,
+        ...(card.reading.writer.actualModel ? { actualModel: card.reading.writer.actualModel } : {}),
+        metric: "foreground_visible_ms",
+      };
+      const event = await this.store.appendEvent({ feedId, cardId, type: "reading.engagement_recorded", detail });
+      return { duplicate: false, event };
+    });
+  }
+
+  async readingEngagement(feedId: string, cardId?: string): Promise<{ metric: "foreground_visible_ms"; cards: ReadingEngagementSummary[] }> {
+    await this.store.readConfig(feedId);
+    const summaries = new Map<string, ReadingEngagementSummary>();
+    for (const event of await this.store.readEvents(feedId)) {
+      if (event.type !== "reading.engagement_recorded" || !event.cardId || (cardId && event.cardId !== cardId)) continue;
+      const detail = event.detail as ReadingEngagementEventDetail | undefined;
+      if (!detail || typeof detail.runId !== "string" || typeof detail.readerId !== "string") continue;
+      const { runId, readerId, requestedModel: _requested, actualModel: _actual, metric: _metric, ...input } = detail;
+      try { validateReadingEngagement(input); } catch { continue; }
+      const key = JSON.stringify([event.cardId, detail.contentRevision]);
+      const summary: ReadingEngagementSummary = summaries.get(key) ?? {
+        cardId: event.cardId, contentRevision: detail.contentRevision, runId, readerId,
+        dwellMs: 0, clicks: {}, selections: 0, lastEngagedAt: event.at,
+      };
+      if (detail.type === "dwell") summary.dwellMs += detail.dwellMs;
+      if (detail.type === "selection") summary.selections += 1;
+      if (detail.type === "click") summary.clicks[detail.target] = (summary.clicks[detail.target] ?? 0) + 1;
+      if (event.at > summary.lastEngagedAt) summary.lastEngagedAt = event.at;
+      summaries.set(key, summary);
+    }
+    return { metric: "foreground_visible_ms", cards: [...summaries.values()] };
   }
 
   async recordCardReaction(feedId: string, cardId: string, body: unknown): Promise<CardReactionReceipt> {
