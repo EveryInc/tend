@@ -143,6 +143,7 @@ export class AttentionStore {
   private readonly workspaceFeeds: WorkspaceFeedRepository;
   private readonly runAtomic?: AtomicRunner;
   private readonly agentWakeSeq = new Map<AgentPresence["agent"], number>();
+  private initialization?: Promise<void>;
 
   constructor(dataDir: string, options: { cards?: CardRepository; events?: FeedEventRepository; mindContext?: MindContextRepository; mobileCommandReceipts?: MobileCommandReceiptRepository; revisions?: RevisionRepository; routineActionGroups?: RoutineActionGroupRepository; sourceRuns?: SourceRunRepository; sources?: SourceRepository; sweeps?: SweepRepository; textDocuments?: TextDocumentRepository; workItems?: WorkItemRepository; workspaceFeeds?: WorkspaceFeedRepository; runAtomic?: AtomicRunner } = {}) {
     this.dataDir = dataDir;
@@ -162,6 +163,16 @@ export class AttentionStore {
   }
 
   async init(): Promise<void> {
+    if (!this.initialization) {
+      this.initialization = this.initialize().catch((error) => {
+        this.initialization = undefined;
+        throw error;
+      });
+    }
+    await this.initialization;
+  }
+
+  private async initialize(): Promise<void> {
     await mkdir(this.dataDir, { recursive: true });
     await mkdir(this.agentPath("claude"), { recursive: true });
     const dictationPath = this.path("integrations/dictation.json");
