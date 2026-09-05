@@ -143,6 +143,28 @@ export function parseReaderContent(text: string): unknown {
 
 function number(value: unknown): number | undefined { return typeof value === "number" && Number.isFinite(value) ? value : undefined; }
 
+function claudePrimaryUsage(response: Record<string, any>, requestedModel: string): { actualModel: string; usage: Record<string, any> } | undefined {
+  const usages = response.modelUsage;
+  if (!usages || typeof usages !== "object") return undefined;
+  const exact = usages[requestedModel];
+  if (exact && number(exact.outputTokens)! > 0) {
+    return { actualModel: typeof exact.canonicalModel === "string" ? exact.canonicalModel : requestedModel, usage: exact };
+  }
+  if (!/^[a-zA-Z0-9]+$/.test(requestedModel)) return undefined;
+  const primaryOutputTokens = number(response.usage?.output_tokens);
+  if (!primaryOutputTokens) return undefined;
+  const prefix = `claude-${requestedModel}-`;
+  const matches = Object.entries(usages).flatMap(([reportedModel, value]) => {
+    if (!value || typeof value !== "object") return [];
+    const usage = value as Record<string, any>;
+    const actualModel = typeof usage.canonicalModel === "string" ? usage.canonicalModel : reportedModel;
+    return number(usage.outputTokens) === primaryOutputTokens && (actualModel === `claude-${requestedModel}` || actualModel.startsWith(prefix))
+      ? [{ actualModel, usage }]
+      : [];
+  });
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
 export function parseClaudeResult(stdout: string, requestedModel: string): ReaderResult {
   let response: Record<string, any>;
   try { response = JSON.parse(stdout); } catch { throw new ReaderExecutionError("Claude returned an invalid CLI receipt.", stdout); }
@@ -150,12 +172,12 @@ export function parseClaudeResult(stdout: string, requestedModel: string): Reade
     throw loginFailure("claude", stdout);
   }
   if (response?.is_error !== false || typeof response.result !== "string") throw new ReaderExecutionError("Claude did not complete successfully. No alternate model or API route was attempted.", stdout);
-  const usage = response.modelUsage?.[requestedModel];
-  if (!usage || !(number(usage.outputTokens)! > 0)) throw new ReaderExecutionError("Claude did not attribute output to the requested model. No cards were published.", stdout);
+  const primary = claudePrimaryUsage(response, requestedModel);
+  if (!primary) throw new ReaderExecutionError("Claude did not attribute output to the requested model. No cards were published.", stdout);
   return {
-    output: parseReaderContent(response.result), rawOutput: response.result, actualModel: requestedModel, authentication: "claude_subscription",
-    usage: { inputTokens: number(usage.inputTokens), outputTokens: number(usage.outputTokens),
-      cachedInputTokens: number(usage.cacheReadInputTokens) },
+    output: parseReaderContent(response.result), rawOutput: response.result, actualModel: primary.actualModel, authentication: "claude_subscription",
+    usage: { inputTokens: number(primary.usage.inputTokens), outputTokens: number(primary.usage.outputTokens),
+      cachedInputTokens: number(primary.usage.cacheReadInputTokens) },
   };
 }
 
