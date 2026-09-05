@@ -66,6 +66,7 @@ export interface UserAuthorizationReceipt {
     text?: string;
     items?: CardBlock["items"];
   };
+  exactApprovedAttachments?: CardBlock[];
   completionCleanup?: string;
   riskConfirmation?: {
     kind: "external_recipient";
@@ -145,6 +146,7 @@ function buildAuthorizationReceipt(work: WorkItem, context: WorkClaimContext): U
       card: cardReceipt(context.card),
       ...(context.card.sourceMailbox ? { sourceMailbox: context.card.sourceMailbox } : {}),
       ...(artifact ? { exactApprovedArtifact: artifactReceipt(artifact) } : {}),
+      ...(context.card.blocks.some((block) => block.type === "image") ? { exactApprovedAttachments: context.card.blocks.filter((block) => block.type === "image") } : {}),
       ...(work.completionCleanup ? { completionCleanup: work.completionCleanup } : {}),
       ...(risk ? { riskConfirmation: risk } : {}),
       invalidatesIf: APPROVAL_INVALIDATIONS,

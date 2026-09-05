@@ -21,6 +21,7 @@ export const CLI_COMMANDS = [
   "source:import-json-file --feed <id> --source <id> --path <local-json-file>",
   "source:import-file --feed <id> --source <id> --path <local-text-or-jsonl-file>",
   "card:upsert --feed <id> (--card <json> | --card-file <path>)",
+  "image:import --feed <id> --source-card <id> --revision <hash> --path <png> [--filename <name.png>]",
   "readers:run --feed <id> --run <source-run-id> --packet-file <path> --readers-file <path> [--prompt-sha256 <hash>]",
   "readers:status --feed <id> --run <source-run-id>",
   "readers:output --feed <id> --run <source-run-id> --reader <id>",

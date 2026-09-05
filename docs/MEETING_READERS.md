@@ -26,8 +26,8 @@ every permitted meeting or that an interpretation is correct.
 
 ## Set up another person's feed
 
-Use a Tend build that includes the `readers:*` commands (`tend version` reports CLI contract `0.6`
-with retry comparisons). Copying the prompt into an older install does not install the runner or comparison UI.
+Use a Tend build that includes the `readers:*` commands (`tend version` reports CLI contract `0.7`
+with retry comparisons and imported card images). Copying the prompt into an older install does not install the runner or comparison UI.
 
 Use their own local Tend runtime and their own Codex/Claude accounts. The installed app defaults to
 `~/.attention`; set `ATTENTION_HOME` explicitly for an isolated test. Do not restore another person's
@@ -267,6 +267,16 @@ Review every complete transcript before choosing among drafts. Check these separ
   uncertainty. Do not reject them merely for lacking urgency or invent a grand implication to make
   a recap seem new. The allowance is zero to four cards per reader, not a quota.
 
+Before publication, actively resolve speakers using the complete participant record and transcript
+handoffs. Check spelling against person records or explicit user corrections. If the packet cannot
+resolve a name, inspect the original meeting or recording participant data using permitted
+connectors; a missing diarization label is not the end of the investigation. Record attribution
+evidence in Sources. Do not infer identity from role or topic alone, or put source-processing labels
+such as “unlabeled speaker” on the card face. Necessary substantive uncertainty still belongs in the
+claim. Strong but inconclusive identity evidence can support “likely Name,” with its basis in
+Sources; if the evidence is genuinely inconclusive, say so. Make the best supported attribution
+instead of forcing either a certain name or an unknown label.
+
 Record the reviewed source run in the shared current sweep before publishing:
 
 ```bash
@@ -308,9 +318,10 @@ taste-ranking system that discards a model's worthwhile selection merely for bei
 Versions share a card only with the same explicit run/topic key or a validated retry comparison.
 Do not group different observations merely because they came from one meeting. The UI retains each exact
 version and its author; hover/focus/click the info control to reveal it. Use the arrows or Left/Right
-outside editable controls to compare. Like/Not for me archive a single card locally. Prefer this
-version archives the comparison without treating other versions as disliked. Give the reason through
-the existing voice dock, targeted to the selected version—even after archival.
+outside editable controls to compare. Like/Not for me record a reaction on a single card. Prefer this
+version records the exact comparison without treating other versions as disliked. In stream mode,
+handled cards remain muted in the current visit so you can scroll back and use the voice dock on the
+selected version; a fresh visit starts with unread cards. Review mode retains local archival.
 
 ### Read without dismissing each card
 
@@ -449,19 +460,43 @@ The second command records an automation that already exists; it does not create
 availability visible. Neither reader installation nor a completed run enables automatic collection,
 sharing or policy changes.
 
-## Image sharing and remaining gaps
+## Image sharing
 
-An image share currently needs a coordinating task to capture the exact selected card revision,
-generate a wide image, check its text, prepare a local preview with a separate editable note and
-recipient, obtain exact approval, send, and read back the result. Do not upload to a recipient's DM
-as a preview. Generated images can alter words. The current action digest binds the action and its
-selected artifact block, not arbitrary referenced file bytes; independently verify the intended
-image until immutable attachment verification is a product capability.
+The coordinating task captures the selected card revision, generates a wide image (1536 × 1024 is a
+useful default), and compares its wording and source context with that face. PNG validation proves
+file integrity, not that the generated image contains the correct words or renders correctly.
 
-Follow-up improvements are a reusable packet builder from native snapshots, an inline immutable
-image-attachment/preview contract, and a reliable trusted chat-to-exact-approval handoff. None is
-silently provided by these docs. They do not require hosted multi-tenancy, shared credentials, a new
-comparison database, or importing someone else's personal calibration.
+Import the checked image into this runtime:
+
+```bash
+tend cli image:import --feed <feed-id> --source-card <card-id> \
+  --revision <exact-content-revision> --path <checked-image.png> --filename <share-name.png>
+```
+
+The command returns an `image` block with the source revision, dimensions, filename and SHA-256.
+It copies the PNG into the existing local artifact directory under a content-addressed name; it
+never overwrites a prior image. Re-importing identical bytes is safe. The equivalent local-session
+API is `POST /api/feeds/:feed/images` with `cardId`, `contentRevision`, `filename` and `pngBase64`.
+
+Put the returned block on a normal action card beside a visible recipient and separate
+`editable_text` note. Keep the note as the action's `artifactBlockId`; name the recipient and exact
+delivery in the normal action instruction. All image blocks visible on that card are included in
+its approval digest. The card displays the image inline at full available width, with a link to
+open it. Generation and preview are local; uploading to a recipient's DM is a send.
+
+Use the normal approval and `action:verify` path immediately before sending. Verification returns
+the approved note and `attachments`, and checks the stored PNG bytes against their hashes and
+dimensions. A replaced, missing or corrupt image fails verification; changing its descriptor or
+the note invalidates approval. The preview route also refuses bytes that no longer match their
+content-addressed filename. Send those exact bytes with the approved note, read back the destination,
+and save the connector's message/file IDs in the ordinary completion receipt. If a send is uncertain,
+inspect the destination before retrying. Local image approvals stay on the Mac because the phone
+mirror cannot display those local files.
+
+The existing voice dock can ask for a share or a revision of the note. Generation, generated-text
+checking and connector delivery remain coordinator-operated. Direct user approval in a coordinating
+chat is not an in-app click; do not manufacture a native click receipt. A trusted chat-to-native
+approval handoff and a reusable packet builder remain separate follow-up improvements.
 
 A small second-user pilot succeeds when that person can review two useful sweeps using only their
 accounts and sources, compare versions, leave feedback, find provenance, and review a Compound

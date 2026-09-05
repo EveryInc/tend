@@ -161,6 +161,10 @@ h2 { margin: 0; font: 500 26px/1.12 var(--serif); letter-spacing: -.02em; }
 .button kbd { margin-left: 4px; color: inherit; opacity: .6; }
 .button.large { min-height: 42px; padding: 0 17px; }
 
+.block-image { margin-inline: 0; }
+.block-image figcaption { margin-bottom: 12px; color: var(--ink-2); font-size: 13px; }
+.block-image a { display: block; }
+.block-image img { display: block; width: 100%; height: auto; border-radius: 10px; }
 .native-approval { margin-bottom: 24px; padding: 25px 28px; border: 1px solid #bdc9e5; border-left: 3px solid var(--blue); border-radius: 11px; background: var(--paper); }
 .native-approval .panel-kicker { margin-bottom: 7px; color: #395aa8; }
 .native-approval p { margin: 10px 0 18px; color: var(--ink-2); }

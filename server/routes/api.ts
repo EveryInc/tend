@@ -7,6 +7,7 @@ import type { NativeApprovalSubmission } from "../../shared/nativeApproval";
 import type { ReaderConfig } from "../../shared/readers";
 import { ReadingCardRequestError, mindContextPublicationReceipt } from "../domain";
 import { versionInfo } from "../version";
+import { IMAGE_NAME, MAX_CARD_IMAGE_BYTES, readCardImage } from "../imageAttachments";
 import { body, mutation, mutationAccessError, type LocalRouteContext } from "./shared";
 
 async function readingMutation(c: any, context: LocalRouteContext, callback: () => Promise<unknown>, announce = true) {
@@ -69,12 +70,21 @@ export function apiRoutes(context: LocalRouteContext): Hono {
     const artifactType = artifactTypes[path.extname(name).toLowerCase()];
     if (path.basename(name) !== name || !artifactType) return c.text("Artifact not found.", 404);
     try {
-      const contents = await readFile(path.join(artifactsDir, artifactType.directory, name));
-      return c.body(contents, 200, { "content-type": artifactType.contentType, "content-disposition": `inline; filename="${name}"` });
+      const contents = IMAGE_NAME.test(name)
+        ? await readCardImage(artifactsDir, name)
+        : await readFile(path.join(artifactsDir, artifactType.directory, name));
+      return c.body(new Uint8Array(contents), 200, { "content-type": artifactType.contentType, "content-disposition": `inline; filename="${name}"`, "cache-control": "no-store", "x-content-type-options": "nosniff" });
     } catch {
       return c.text("Artifact not found.", 404);
     }
   });
+  app.post("/api/feeds/:feed/images", async (c) => readingMutation(c, context, async () => {
+    const input = await body(c);
+    if (typeof input.pngBase64 !== "string" || input.pngBase64.length > Math.ceil(MAX_CARD_IMAGE_BYTES / 3) * 4 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.pngBase64)) throw new Error("A PNG encoded as base64 is required (up to 20 MB).");
+    if (typeof input.cardId !== "string" || typeof input.contentRevision !== "string" || typeof input.filename !== "string") throw new Error("Source card, revision and filename are required.");
+    return domain.importImage(c.req.param("feed"), input.cardId, input.contentRevision, Buffer.from(input.pngBase64, "base64"), input.filename);
+  }, false));
   app.get("/api/feeds/:feed/how", async (c) => c.json(await domain.inspectHowFeedWorks(c.req.param("feed"))));
   app.get("/api/feeds/:feed/runs/:run", async (c) => {
     c.header("cache-control", "no-store");

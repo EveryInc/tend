@@ -32,7 +32,7 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
     dataDir,
     resolveDbPath(root),
   );
-  const domain = new AttentionDomain(store);
+  const domain = new AttentionDomain(store, resolveArtifactsDir(root));
 
   const value = (name: string) => {
     const index = argv.indexOf(`--${name}`);
@@ -186,6 +186,11 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
           { importedFrom: sourcePath, importedAt: new Date().toISOString() },
           value("work"),
         );
+        break;
+      }
+      case "image:import": {
+        const imagePath = required("path");
+        output = await domain.importImage(required("feed"), required("source-card"), required("revision"), await readFile(imagePath), value("filename") ?? path.basename(imagePath));
         break;
       }
       case "card:upsert":

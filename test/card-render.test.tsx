@@ -58,6 +58,27 @@ test("renders structured evidence hrefs as clickable anchors", () => {
   expect(html).toContain(">Signed agreement</a>");
 });
 
+test("renders the imported wide card image inline with a separate editable note", () => {
+  const name = `card-image-${"a".repeat(64)}.png`;
+  const card: Card = {
+    id: "image-share", feedId: "company-attention", kind: "attention", status: "to_review_new",
+    title: "Send this card", eyebrow: "Private message", why: "Review the image and note.",
+    blocks: [
+      { id: "image", type: "image", label: "Card image", image: {
+        name, filename: "card.png", sha256: "a".repeat(64), mediaType: "image/png", byteLength: 100,
+        width: 1536, height: 1024, alt: "The concrete original headline", source: { cardId: "source", contentRevision: "b".repeat(64) },
+      } },
+      { id: "note", type: "editable_text", label: "Your note", value: "What do you think?", editable: true },
+    ],
+    readyForPass: 1, createdAt: "2026-09-05T12:00:00.000Z", updatedAt: "2026-09-05T12:00:00.000Z", history: [],
+  };
+  const html = renderToStaticMarkup(<CardView card={card} active={false} onActivate={() => {}} onChanged={() => {}} onAction={() => {}} onReturnToReview={() => {}} />);
+  expect(html).toContain(`src="/api/artifacts/${name}"`);
+  expect(html).toContain('alt="The concrete original headline" width="1536" height="1024"');
+  expect(html).toContain('aria-label="Your note"');
+  expect(html).toContain("What do you think?");
+});
+
 test("renders a visible lens receipt for a context-influenced card", () => {
   const card: Card = {
     id: "paywall-context",

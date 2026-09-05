@@ -31,6 +31,18 @@ if they independently corroborated a claim. Note any access gap or ambiguity rat
 with a plausible story. If a packet is incomplete, disclose that; never claim to have read missing
 lines.
 
+Make a real effort to identify the people in the exchange. Use the supplied participant roster,
+introductions, direct handoffs, replies addressed to a person, and the surrounding conversation
+throughout the full meeting. Check names against supplied person records and explicit owner
+corrections in the brief; transcript spellings can be wrong. A missing speaker label is a reason
+to investigate those clues, not to stop. Do not identify someone from their role, subject matter,
+or a plausible guess alone. Record the evidence for a resolved name, and any remaining uncertainty,
+in supporting context or notes. If the packet lacks enough evidence, say what would resolve it so
+the coordinator can check the original participant record before publishing.
+When the clues strongly support a person but do not conclusively identify them, "likely Name" is
+appropriate; explain the basis in Sources. Say the identity is genuinely uncertain when the evidence
+remains inconclusive. The goal is the best supported attribution, not certainty at any cost.
+
 Use the person's dated current questions as a lens, not a checklist that every meeting must answer.
 The brief's `known_context` and each source's `owner_participation` help assess familiarity. Freshly
 fetched is not newly learned. A participant list alone is not proof someone heard every exchange;
@@ -115,8 +127,11 @@ the face when omitting them would change the claim.
 
 Title plus face must work without opening a source drawer. Assume the reader knows their company,
 but not every tool name or the setup to this particular exchange. Explain an unfamiliar noun in a
-few useful words rather than adding a long glossary. Name supported speakers; keep an uncertain
-attribution visibly tentative or leave it unnamed.
+few useful words rather than adding a long glossary. Name supported speakers using verified
+spellings. Keep source-processing labels such as "unlabeled speaker" out of the face. If a name
+remains unresolved after investigation, write the supported exchange naturally without claiming a
+name and retain the attribution limitation in Sources. If that uncertainty changes the substantive
+claim, qualify the claim itself or withhold it rather than hiding the uncertainty.
 
 `context` is separate supporting background, one or two sentences: what this meeting was for and
 what was happening immediately before the quoted exchange. `why` is one sentence addressed to the
@@ -139,9 +154,12 @@ an ellipsis into the quoted span. `line` is the original integer locator. A quot
 should have that setup in a preceding quote record, not an unsupported context sentence. Prefer
 where the point lands; skip stutter fragments and unresolved pronouns.
 
-Use source speaker labels exactly. If a line is unlabelled, infer a name only when the supplied
-evidence supports it; otherwise use `unlabeled`. Put supported names in `people`, or `[]` when
-unknown. For `tiebreaker`, `options` holds two or three actual alternatives; otherwise use `[]`.
+Preserve the source speaker label in quote records when it is present. Resolve missing labels using
+the identity checks above; never invent a name merely to avoid an unknown label. Keep `unlabeled`
+only in the quote record when the speaker remains unresolved, with the limitation in supporting
+notes rather than the face. Put supported names in `people`, or `[]` when unknown. Correct spelling
+in the card prose when verified, but keep the quoted transcript characters unchanged.
+For `tiebreaker`, `options` holds two or three actual alternatives; otherwise use `[]`.
 For `off_strategy`, provide the exact reference sentence in `strategy_quote`; otherwise use `null`.
 For `message_tested`, `reaction_inferred` is a boolean; for other kinds it is `null`.
 

@@ -53,6 +53,8 @@ import type {
 import { READING_ENGAGEMENT_CLICK_TARGETS } from "../shared/types";
 import type { MobileActionProjection, MobileCommand, MobileCommandResult, MobileCommandReceipt } from "../shared/mobile";
 import { isDeepStrictEqual } from "node:util";
+import path from "node:path";
+import { importCardImage, validateCardImage, verifyCardImages } from "./imageAttachments";
 import { isReservedCardActionId, safeConfiguredCardActions } from "../shared/cardActions";
 import { containsFullEmail } from "../shared/emailThread";
 import type { ReaderDraft } from "../shared/readers";
@@ -340,6 +342,7 @@ function revisionLabel(target: VoiceTarget): string {
 }
 
 const CARD_BLOCK_TYPES = new Set<CardBlock["type"]>([
+  "image",
   "rich_text",
   "evidence",
   "editable_text",
@@ -426,6 +429,10 @@ function validateCardBlocks(blocks: unknown): asserts blocks is CardBlock[] {
       throw new Error(`${blockDescription(block, index)} has a non-string \`label\`.`);
     }
     switch (block.type) {
+      case "image":
+        validateCardImage(block.image);
+        if (block.editable) throw new Error("Imported image blocks cannot be edited in place.");
+        break;
       case "quote":
         validateTextBlock(block, index);
         if (block.attribution !== undefined && !hasText(block.attribution)) {
@@ -855,7 +862,16 @@ function verifyMobileRiskConfirmation(
 }
 
 export class AttentionDomain {
-  constructor(readonly store: AttentionStore) {}
+  constructor(readonly store: AttentionStore, readonly artifactsDir = path.join(path.dirname(store.dataDir), "output")) {}
+
+  async importImage(feedId: string, cardId: string, contentRevision: string, bytes: Buffer, filename: string): Promise<CardBlock> {
+    safeIdentifier(feedId, "Feed id");
+    safeIdentifier(cardId, "Card id");
+    const card = await this.store.readCard(feedId, cardId);
+    if (readingContentRevision(card) !== contentRevision) throw new Error("Source card changed. Reload the selected version before generating its image.");
+    const image = await importCardImage(this.artifactsDir, bytes, { filename, alt: card.title, source: { cardId, contentRevision } });
+    return { id: "card-image", type: "image", label: "Card image", image };
+  }
 
   private async maybeEmitClaudeWake(
     feedId: string,
@@ -2346,6 +2362,7 @@ export class AttentionDomain {
 
   async completeWork(feedId: string, workId: string, token: string, result: { response: string; blocks?: CardBlock[]; proposedAction?: ProposedAction; actions?: CardAction[]; done?: boolean; postAction?: PostActionCompletion }): Promise<WorkItem> {
     if (result.blocks) validateCardBlocks(result.blocks);
+    if (result.blocks) await verifyCardImages(this.artifactsDir, result.blocks);
     validateCardActions(result.actions);
     return this.store.serialize(async () => {
       const work = await this.store.readWork(feedId, workId);
@@ -2484,13 +2501,13 @@ export class AttentionDomain {
     });
   }
 
-  async verifyApprovedAction(feedId: string, workId: string, token: string, authenticatedMailbox?: string): Promise<{ approvalDigest: string; action: ProposedAction; artifact?: CardBlock; verifiedMailbox?: string; completionCleanup?: string }> {
+  async verifyApprovedAction(feedId: string, workId: string, token: string, authenticatedMailbox?: string): Promise<{ approvalDigest: string; action: ProposedAction; artifact?: CardBlock; attachments?: CardBlock[]; verifiedMailbox?: string; completionCleanup?: string }> {
     return this.store.serialize(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "working") throw new Error("Approved action work must be claimed before verification.");
       if ((work.kind !== "execute_approved_action" && work.kind !== "default_cleanup" && work.kind !== "routine_action_batch") || !work.approvalDigest) throw new Error("Work item is not an approved action.");
       if (work.capabilityToken !== token) throw new Error("Invalid scoped work capability token.");
-      let result: { approvalDigest: string; action: ProposedAction; artifact?: CardBlock; verifiedMailbox?: string; completionCleanup?: string };
+      let result: { approvalDigest: string; action: ProposedAction; artifact?: CardBlock; attachments?: CardBlock[]; verifiedMailbox?: string; completionCleanup?: string };
       if (work.kind === "routine_action_batch") {
         if (!work.routineActionGroupId) throw new Error("Routine action work is missing its group.");
         const group = await this.store.readRoutineActionGroup(feedId, work.routineActionGroupId);
@@ -2512,10 +2529,12 @@ export class AttentionDomain {
             throw new Error("Approval stale - the configured completion cleanup changed after approval.");
           }
           const verifiedMailbox = verifySourceMailbox(feedId, card, action, authenticatedMailbox);
+          const attachments = await verifyCardImages(this.artifactsDir, card.blocks);
           result = {
             approvalDigest: work.approvalDigest,
             action,
             artifact: action.artifactBlockId ? card.blocks.find((block) => block.id === action.artifactBlockId) : undefined,
+            ...(attachments.length ? { attachments } : {}),
             ...(verifiedMailbox ? { verifiedMailbox } : {}),
             ...(work.completionCleanup ? { completionCleanup: work.completionCleanup } : {}),
           };
@@ -2796,6 +2815,7 @@ export class AttentionDomain {
     safeIdentifier(feedId, "Feed id");
     safeIdentifier(input.id, "Card id");
     validateCardBlocks(input.blocks);
+    await verifyCardImages(this.artifactsDir, input.blocks);
     validateCardActions(input.actions);
     const sourceRunIds = validateSourceRunIds(input.sourceRunIds);
     return this.store.serialize(async () => {

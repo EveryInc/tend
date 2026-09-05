@@ -112,6 +112,16 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
       </section>
     );
   }
+  if (block.type === "image" && block.image) {
+    return (
+      <figure className="block block-image">
+        {block.label && <figcaption>{block.label}</figcaption>}
+        <DetachedLink href={`/api/artifacts/${block.image.name}`} aria-label={`Open card image: ${block.image.alt}`}>
+          <img src={`/api/artifacts/${block.image.name}`} alt={block.image.alt} width={block.image.width} height={block.image.height} />
+        </DetachedLink>
+      </figure>
+    );
+  }
   if (block.type === "profile" && block.profile) {
     return (
       <section className="block block-profile">

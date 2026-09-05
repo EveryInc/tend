@@ -44,7 +44,10 @@ export function verifySourceMailbox(feedId: string, card: Card, action: Proposed
 export function actionDigest(card: Card, cardActionId?: string): string {
   const action = configuredApprovalAction(card, cardActionId);
   const artifact = action?.artifactBlockId ? card.blocks.find((block) => block.id === action.artifactBlockId) : undefined;
-  return digest({ cardActionId: cardActionId ?? null, action, artifact });
+  const attachments = card.blocks.filter((block) => block.type === "image");
+  // Every image visible on an action card is part of the reviewed payload.
+  // Omit the field for legacy cards so their existing approvals remain valid.
+  return digest({ cardActionId: cardActionId ?? null, action, artifact, ...(attachments.length ? { attachments } : {}) });
 }
 
 export function cleanupDigest(card: Card, instruction: string): string {

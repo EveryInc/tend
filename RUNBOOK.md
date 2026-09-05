@@ -191,9 +191,11 @@ Give equivalent observations the same explicit `topicKey` within the same reader
 meeting is not enough. This matching is coordinator judgment, not automatic semantic deduplication.
 The browser groups those versions without destroying originals, switches by arrows or Left/Right
 outside editable controls, and reveals the writer on hover, focus or click of its info control.
-Like and Not for me archive locally; Prefer this version records the exact comparison and archives
-the group without marking alternatives disliked. Use the existing voice dock for reasons. Active
-work blocks archival; clearing feedback does not reopen cards or alter an external source.
+Like and Not for me record a reaction; Prefer this version records the exact comparison without
+marking alternatives disliked. In stream mode, handled cards remain muted in the current visit so
+the reader can scroll back and give reasons through the voice dock; a fresh visit starts unread.
+Review mode retains local archival. Active work blocks archival; clearing feedback does not reopen
+cards or alter an external source.
 
 For explicit feedback through the CLI, use the existing native event contracts:
 

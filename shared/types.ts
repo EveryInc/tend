@@ -34,6 +34,7 @@ export type BlockType =
   | "video"
   | "chart"
   | "receipt"
+  | "image"
   | "quote";
 
 export interface SourceRecipe {
@@ -126,6 +127,18 @@ export interface FeedConfig {
   updatedAt: string;
 }
 
+export interface CardImage {
+  name: string;
+  filename: string;
+  sha256: string;
+  mediaType: "image/png";
+  byteLength: number;
+  width: number;
+  height: number;
+  alt: string;
+  source: { cardId: string; contentRevision: string };
+}
+
 export interface CardBlock {
   id: string;
   type: BlockType;
@@ -138,6 +151,7 @@ export interface CardBlock {
   before?: string;
   after?: string;
   editable?: boolean;
+  image?: CardImage;
   profile?: {
     name: string;
     subtitle?: string;

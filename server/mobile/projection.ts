@@ -105,7 +105,9 @@ function projectFeedItems(feed: FeedView): MobileCardProjection[] {
 
 function projectCard(feed: FeedView, card: Card, generation: string, reviewIndex: number): MobileCardProjection {
   const reviewable = isReviewableCard(feed, card);
-  const actions = visibleCardActions(card).map((action) => projectCardAction(feed, card, action));
+  const actions = visibleCardActions(card)
+    .filter((action) => action.behavior !== "approve_action" || !card.blocks.some((block) => block.type === "image"))
+    .map((action) => projectCardAction(feed, card, action));
   const activeWork = latestActiveWork(feed.work, card.id);
   const base = {
     key: `${feed.config.id}:${card.id}`,
@@ -272,6 +274,7 @@ function projectWork(work: WorkItemView): MobileWorkProjection {
 }
 
 function sanitizeBlock(block: CardBlock): MobileCardBlock {
+  if (block.type === "image") return { id: block.id, type: "memo", label: "Card image", text: "Review the image and approve sending it on your Mac." };
   const common: MobileCardBlock = {
     id: block.id,
     type: block.type,
