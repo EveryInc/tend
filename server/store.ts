@@ -89,6 +89,7 @@ export function agentPresenceLiveness(presence: AgentPresence | null, now = Date
 export class AttentionStore {
   readonly dataDir: string;
   private tail = Promise.resolve();
+  private committedCallbacks: Array<() => Promise<unknown>> | null = null;
   private readonly cards: CardRepository;
   private readonly events: FeedEventRepository;
   private readonly mindContext: MindContextRepository;
@@ -629,7 +630,26 @@ export class AttentionStore {
   }
 
   async serializeAtomic<T>(callback: () => Promise<T>): Promise<T> {
-    return this.serialize(() => this.runAtomic ? this.runAtomic(callback) : callback());
+    return this.serialize(async () => {
+      const callbacks: Array<() => Promise<unknown>> = [];
+      this.committedCallbacks = callbacks;
+      let result: T;
+      try {
+        result = await (this.runAtomic ? this.runAtomic(callback) : callback());
+      } finally {
+        this.committedCallbacks = null;
+      }
+      for (const notify of callbacks) {
+        try { await notify(); }
+        catch (error) { console.error("Notification failed after transaction committed:", error); }
+      }
+      return result;
+    });
+  }
+
+  async afterCommit(callback: () => Promise<unknown>): Promise<void> {
+    if (this.committedCallbacks) this.committedCallbacks.push(callback);
+    else await callback();
   }
 
   private async withAgentWakeLock<T>(callback: () => Promise<T>): Promise<T> {

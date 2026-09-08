@@ -701,7 +701,7 @@ export class AttentionDomain {
     if (work.status !== "queued") throw new Error(`Cannot persist non-queued work through queued wake helper: ${work.status}`);
     await this.store.writeWork(work);
     await options.afterWrite?.();
-    await this.maybeEmitClaudeWake(feedId, work, options.thread, options.wake);
+    await this.store.afterCommit(() => this.maybeEmitClaudeWake(feedId, work, options.thread, options.wake));
   }
 
   private requeueWorkItem(work: WorkItem): void {
@@ -1186,7 +1186,7 @@ export class AttentionDomain {
   }
 
   async requestSweepRecollection(feedId: string): Promise<WorkItem> {
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       const feed = await this.store.readFeed(feedId);
       const existing = (await this.store.readWorkItems(feedId)).find((work) => work.intent === "recollect_sources" && (work.status === "queued" || work.status === "working"));
       if (existing) return existing;
@@ -1514,13 +1514,13 @@ export class AttentionDomain {
   async queueInstruction(feedId: string, cardId: string, instruction: string, options: { assignee?: WorkAgent } = {}): Promise<WorkItem> {
     if (!instruction.trim()) throw new Error("Instruction is required.");
     await this.assertClaudeRoutingAllowed(feedId, options.assignee);
-    return this.store.serialize(() => this.queueInstructionLocked(feedId, cardId, instruction, undefined, options));
+    return this.store.serializeAtomic(() => this.queueInstructionLocked(feedId, cardId, instruction, undefined, options));
   }
 
   async queueFeedInstruction(feedId: string, instruction: string, options: { assignee?: WorkAgent } = {}): Promise<WorkItem> {
     if (!instruction.trim()) throw new Error("Instruction is required.");
     await this.assertClaudeRoutingAllowed(feedId, options.assignee);
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       const work = queuedWork(feedId, "__feed__", instruction, { kind: "instruction", ...(options.assignee ? { assignee: options.assignee } : {}) });
       await this.persistQueuedWork(feedId, work, {
         afterWrite: () => this.store.appendEvent({ feedId, workId: work.id, type: "feed.instruction_queued", detail: { instruction: work.instruction } }),
@@ -1530,7 +1530,7 @@ export class AttentionDomain {
   }
 
   async approveAction(feedId: string, cardId: string, cardActionId?: string): Promise<WorkItem> {
-    return this.store.serialize(() => this.approveActionLocked(feedId, cardId, cardActionId));
+    return this.store.serializeAtomic(() => this.approveActionLocked(feedId, cardId, cardActionId));
   }
 
   async runCardAction(feedId: string, cardId: string, cardActionId: string): Promise<WorkItem | Card> {
@@ -1554,7 +1554,7 @@ export class AttentionDomain {
   // Queue the feed's configured source cleanup as verified work. This can mutate the source
   // connector (for example, archiving an email) and is intentionally separate from local dismissal.
   async queueSourceCleanup(feedId: string, cardId: string): Promise<WorkItem> {
-    return this.store.serialize(() => this.queueSourceCleanupLocked(feedId, cardId));
+    return this.store.serializeAtomic(() => this.queueSourceCleanupLocked(feedId, cardId));
   }
 
   // Local, connector-free dismissal: removes a card from review without creating any WorkItem,
@@ -1643,7 +1643,7 @@ export class AttentionDomain {
   }
 
   async approveRoutineActionGroup(feedId: string, groupId: string): Promise<WorkItem> {
-    return this.store.serialize(() => this.approveRoutineActionGroupLocked(feedId, groupId));
+    return this.store.serializeAtomic(() => this.approveRoutineActionGroupLocked(feedId, groupId));
   }
 
   private async approveRoutineActionGroupLocked(
@@ -1784,7 +1784,7 @@ export class AttentionDomain {
 
   async reassignQueuedWork(feedId: string, workId: string, agent: WorkAgent): Promise<WorkItemView & { warning?: string }> {
     await this.assertClaudeRoutingAllowed(feedId, agent);
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "queued") throw new Error("Only queued work can be reassigned.");
       if (agent === "codex") {
@@ -1999,7 +1999,7 @@ export class AttentionDomain {
   }
 
   async queueCompound(feedId: string): Promise<WorkItem> {
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       const existing = (await this.store.readWorkItems(feedId)).find((work) => work.kind === "compound_learnings" && (work.status === "queued" || work.status === "working"));
       if (existing) return existing;
       const work = queuedWork(feedId, "__feed__", "The user approved a learning pass. Review raw snapshots, runs, events, outcomes, and policy history. Distill a compact feed-policy improvement, then create an editable revision proposal with revision:propose --source compound. Do not apply it. The browser will bring the proposal back to the user for review.", {
@@ -2079,7 +2079,7 @@ export class AttentionDomain {
   }
 
   async releaseWork(feedId: string, workId: string, token: string, sessionId?: string): Promise<WorkItemView> {
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "working") throw new Error("Only working work can be released.");
       if (work.capabilityToken !== token) throw new Error("Invalid scoped work capability token.");
@@ -2448,7 +2448,8 @@ export class AttentionDomain {
   }
 
   async retryApprovedWork(feedId: string, workId: string): Promise<WorkItemView> {
-    return this.store.serialize(async () => {
+    let staleError: Error | undefined;
+    const retried = await this.store.serializeAtomic(async () => {
       const work = await this.store.readWork(feedId, workId);
       if ((work.status !== "approved_blocked" && work.status !== "failed") || work.kind !== "execute_approved_action" || !work.approvalDigest) {
         throw new Error("Only an approved blocked action can be retried.");
@@ -2467,7 +2468,8 @@ export class AttentionDomain {
         await this.store.writeWork(work);
         await this.store.writeCard(card);
         await this.store.appendEvent({ feedId, cardId: card.id, workId, type: "action.stale" });
-        throw new Error(work.error);
+        staleError = new Error(work.error);
+        return workItemView(work);
       }
       this.requeueWorkItem(work);
       card.status = "queued";
@@ -2480,6 +2482,8 @@ export class AttentionDomain {
       });
       return workItemView(work);
     });
+    if (staleError) throw staleError;
+    return retried;
   }
 
   async createFeedFromBrief(brief: string, currentThreadId: string | null): Promise<FeedConfig> {
