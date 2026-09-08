@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { attentionDataDir, attentionHome, attentionLogDir } from "../paths";
+import { withProcessLock } from "../processLock";
 import { apiPort, apiUrl, print } from "./shared";
 
 export async function startBackgroundCommand(): Promise<void> {
@@ -155,17 +156,7 @@ async function checkUrl(url: string): Promise<boolean> {
 }
 
 async function withServiceLock(callback: () => Promise<void>): Promise<void> {
-  await mkdir(attentionHome(), { recursive: true });
-  try {
-    await mkdir(lockDir());
-  } catch {
-    throw new Error("Another Tend service command is already running.");
-  }
-  try {
-    await callback();
-  } finally {
-    await rm(lockDir(), { recursive: true, force: true });
-  }
+  await withProcessLock(lockDir(), callback, 0);
 }
 
 type ServicePidRecord = {

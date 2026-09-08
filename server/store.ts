@@ -43,6 +43,7 @@ import {
   threadBinding,
 } from "./templates";
 import { isoNow, makeId, readJson, withMutationLock, writeJson, writeText } from "./util";
+import { withProcessLock } from "./processLock";
 import { defaultDictationCapability } from "./monologue";
 import { FileCardRepository, type CardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
@@ -633,22 +634,7 @@ export class AttentionStore {
   }
 
   private async withAgentWakeLock<T>(callback: () => Promise<T>): Promise<T> {
-    // The domain currently serializes wake-producing mutations; keep this file lock for future non-serialized callers.
-    const lockPath = this.path(".agent-wake-lock");
-    for (let attempt = 0; attempt < 400; attempt += 1) {
-      try {
-        await mkdir(lockPath);
-        try {
-          return await callback();
-        } finally {
-          await rm(lockPath, { recursive: true, force: true });
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        await new Promise((resolve) => setTimeout(resolve, 15));
-      }
-    }
-    throw new Error("Timed out waiting for the agent wake lock.");
+    return withProcessLock(this.path(".agent-wake-lock"), callback);
   }
 
   private agentPath(agent: AgentPresence["agent"], ...parts: string[]): string {

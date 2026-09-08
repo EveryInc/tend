@@ -67,3 +67,12 @@ Import first copies the backup into a temporary staging directory. Tend refuses 
 the same runtime home is active, then swaps the staged database and data into place with rollback if
 the swap fails. Older data-directory-only backups are still accepted; the next local runtime start
 rehydrates `attention.db` from those imported file mirrors.
+
+## Process locks
+
+Service commands, mutations, and agent wake writes use separate SQLite lock files whose operating-system locks end when the owning process exits.
+An empty marker file at the old lock path prevents older binaries from entering the same critical section.
+Keep the marker and SQLite files in place; deleting a lock file can let processes lock different files at the same path.
+Stop all older Tend processes before upgrading this lock format.
+If an ownerless legacy `attention.lock`, `data/.mutation-lock`, or `data/.agent-wake-lock` directory remains, the command reports its exact path and refuses to reclaim it automatically.
+Remove that directory only after confirming no older process is using the home.
