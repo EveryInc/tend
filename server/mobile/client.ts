@@ -33,7 +33,14 @@ const mobileEnvKeys = [
   "TEND_MOBILE_WORKER_ID",
 ] as const;
 
+function mobileSyncEnabled(env: NodeJS.ProcessEnv): boolean {
+  if (env.TEND_MOBILE_SYNC === "0") return false;
+  if (env.TEND_MOBILE_SYNC === "1") return true;
+  return env.ATTENTION_HOME === undefined || path.resolve(env.ATTENTION_HOME) === path.join(homedir(), ".attention");
+}
+
 export function loadMobileCloudEnvFile(env: NodeJS.ProcessEnv = process.env): void {
+  if (!mobileSyncEnabled(env)) return;
   const configuredPath = env.TEND_MOBILE_ENV_FILE?.trim();
   const configRoot = env.XDG_CONFIG_HOME?.trim() || path.join(homedir(), ".config");
   const envFile = configuredPath || path.join(configRoot, "tend", "mobile.env");
@@ -69,6 +76,7 @@ export function loadMobileCloudEnvFile(env: NodeJS.ProcessEnv = process.env): vo
 }
 
 export function mobileCloudConfigFromEnv(env: NodeJS.ProcessEnv = process.env): MobileCloudConfig | null {
+  if (!mobileSyncEnabled(env)) return null;
   const url = env.TEND_MOBILE_SUPABASE_URL?.trim();
   const secretKey = env.TEND_MOBILE_SUPABASE_SECRET_KEY?.trim();
   const userId = env.TEND_MOBILE_USER_ID?.trim();

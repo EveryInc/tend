@@ -229,7 +229,17 @@ async function cliText(args: string[]): Promise<string> {
 }
 
 function runtimeEnv() {
-  return { ...process.env, ATTENTION_HOME: home, ATTENTION_API_PORT: port };
+  return {
+    ...process.env,
+    ATTENTION_HOME: home,
+    ATTENTION_API_PORT: port,
+    TEND_MOBILE_SYNC: "0",
+    TEND_MOBILE_ENV_FILE: "",
+    TEND_MOBILE_SUPABASE_URL: "",
+    TEND_MOBILE_SUPABASE_SECRET_KEY: "",
+    TEND_MOBILE_USER_ID: "",
+    TEND_MOBILE_WORKER_ID: "",
+  };
 }
 
 async function waitForStatus(): Promise<{

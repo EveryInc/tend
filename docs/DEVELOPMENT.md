@@ -36,7 +36,11 @@ pnpm tend:package
 
 ## Local Runtime
 
-Use `ATTENTION_HOME` to keep development data separate:
+Use `ATTENTION_HOME` to keep development data separate.
+Mobile synchronization defaults to off for a non-default home, including inherited cloud credentials.
+Set `TEND_MOBILE_SYNC=1` only when that home should synchronize with the configured cloud account; `TEND_MOBILE_SYNC=0` disables it for any home.
+
+Start an isolated runtime:
 
 ```sh
 ATTENTION_HOME=.local-tend pnpm tend -- start --foreground
