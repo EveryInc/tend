@@ -983,6 +983,12 @@ class SqliteFeedEventRepository implements FeedEventRepository {
       );
   }
 
+  async cursor(feedId: string): Promise<string> {
+    const row = this.database().query("SELECT COUNT(*) AS count, COALESCE(MAX(event_order), 0) AS latest FROM feed_events WHERE feed_id = ?")
+      .get(feedId) as { count: number; latest: number };
+    return `${row.count}:${row.latest}`;
+  }
+
   async list(feedId: string): Promise<FeedEvent[]> {
     const rows = this.database()
       .query("SELECT id, feed_id, type, at, card_id, work_id, detail_json FROM feed_events WHERE feed_id = ? ORDER BY event_order ASC")

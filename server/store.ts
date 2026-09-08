@@ -525,6 +525,12 @@ export class AttentionStore {
     return full;
   }
 
+  async readEventCursor(feedId: string): Promise<string> {
+    if (this.events.cursor) return this.events.cursor(feedId);
+    const events = await this.readEvents(feedId);
+    return `${events.length}:${events.at(-1)?.id ?? ""}`;
+  }
+
   async readEvents(feedId: string): Promise<FeedEvent[]> {
     return this.events.list(feedId);
   }
