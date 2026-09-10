@@ -85,6 +85,12 @@ export function mutationAccessError(c: any, expectedToken: string): Response | n
   return null;
 }
 
+export function hasCurrentMutationSession(c: any, expectedToken: string): boolean {
+  const origin = c.req.header("origin") ?? "";
+  return isLoopbackOrigin(origin)
+    && tokensMatch(c.req.header("x-attention-mutation-token") ?? "", expectedToken);
+}
+
 function isLoopbackOrigin(origin: string): boolean {
   try {
     const url = new URL(origin);

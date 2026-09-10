@@ -519,6 +519,8 @@ export interface WorkItem {
   status: WorkStatus;
   capabilityToken: string;
   approvalDigest?: string;
+  approvalSource?: "voice_instruction";
+  approvalInstruction?: string;
   completionCleanup?: string;
   cardActionId?: string;
   routineActionGroupId?: string;

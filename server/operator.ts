@@ -22,6 +22,7 @@ export interface ClaimedWorkOutput extends WorkItem {
     visibleCardIds?: string[];
     sourceRunRule?: string;
     postActionRule?: string;
+    voicePreparationRule?: string;
     readingCardRule?: string;
     readingFeedbackRule?: string;
   };
@@ -35,7 +36,7 @@ export interface WorkClaimContext {
 }
 
 export interface UserAuthorizationReceipt {
-  kind: "tend_action_click";
+  kind: "tend_action_click" | "tend_voice_instruction";
   scope: "tend_workflow";
   connectorAuthorization: "not_attested";
   statement: string;
@@ -44,6 +45,7 @@ export interface UserAuthorizationReceipt {
   actionLabel: string;
   approvedAt: string;
   approvalDigest: string;
+  approvalInstruction?: string;
   workKind: WorkItem["kind"];
   card?: {
     id: string;
@@ -107,7 +109,7 @@ function cardReceipt(card: Card): NonNullable<UserAuthorizationReceipt["card"]> 
   };
 }
 
-function riskConfirmation(card: Card, action: ProposedAction): UserAuthorizationReceipt["riskConfirmation"] | undefined {
+function riskConfirmation(card: Card, action: ProposedAction, approvalSource: WorkItem["approvalSource"]): UserAuthorizationReceipt["riskConfirmation"] | undefined {
   if (!action.externalMutation) return undefined;
   const recipients = actionEmailRecipients(card, action);
   if (!recipients.length) return undefined;
@@ -115,7 +117,7 @@ function riskConfirmation(card: Card, action: ProposedAction): UserAuthorization
   return {
     kind: "external_recipient",
     recipients,
-    statement: `The approved Tend action snapshot named recipient(s) ${recipients.join(", ")}. The user click recorded approval in Tend for ${verb} the exact content to those recipient(s) while action:verify still matches. This does not establish a connector-native risk confirmation.`,
+    statement: `The approved Tend action snapshot named recipient(s) ${recipients.join(", ")}. The user's ${approvalSource === "voice_instruction" ? "explicit card-scoped instruction" : "click"} recorded approval in Tend for ${verb} the exact content to those recipient(s) while action:verify still matches. This does not establish a connector-native risk confirmation.`,
   };
 }
 
@@ -132,16 +134,20 @@ function buildAuthorizationReceipt(work: WorkItem, context: WorkClaimContext): U
     }
     if (work.approvalDigest !== actionDigest(context.card, work.cardActionId)) return undefined;
     const artifact = action.artifactBlockId ? context.card.blocks.find((block) => block.id === action.artifactBlockId) : undefined;
-    const risk = riskConfirmation(context.card, action);
+    const risk = riskConfirmation(context.card, action, work.approvalSource);
+    const voiceApproval = work.approvalSource === "voice_instruction" && Boolean(work.approvalInstruction);
     return {
-      kind: "tend_action_click",
+      kind: voiceApproval ? "tend_voice_instruction" : "tend_action_click",
       scope: "tend_workflow",
       connectorAuthorization: "not_attested",
-      statement: `The user clicked "${action.label}" in Tend at ${approvedAt} and authorized this one external mutation for "${context.card.title}".${work.completionCleanup ? ` If the action succeeds, this approval also includes the configured completion cleanup: "${work.completionCleanup}".` : ""}${risk ? ` ${risk.statement}` : ""} ${RECEIPT_AUTHORITY}`,
+      statement: `${voiceApproval
+        ? `The user submitted the explicit card-scoped instruction "${work.approvalInstruction}" in Tend at ${approvedAt}`
+        : `The user clicked "${action.label}" in Tend at ${approvedAt}`} and authorized this one external mutation for "${context.card.title}".${work.completionCleanup ? ` If the action succeeds, this approval also includes the configured completion cleanup: "${work.completionCleanup}".` : ""}${risk ? ` ${risk.statement}` : ""} ${RECEIPT_AUTHORITY}`,
       noSecondChatConfirmationNeeded: true,
       actionLabel: action.label,
       approvedAt,
       approvalDigest: work.approvalDigest,
+      ...(voiceApproval ? { approvalInstruction: work.approvalInstruction } : {}),
       workKind: work.kind,
       card: cardReceipt(context.card),
       ...(context.card.sourceMailbox ? { sourceMailbox: context.card.sourceMailbox } : {}),
@@ -233,6 +239,10 @@ export function formatWorkClaimOutput(feedId: string, work: WorkClaimResult, con
   if (work.kind === "execute_approved_action" && work.completionCleanup) {
     operatorGuidance.completionPrerequisite = `After the approved action succeeds, perform the bundled completion cleanup "${work.completionCleanup}" and verify its authoritative outcome. Do not ask the user to click Archive separately.`;
     operatorGuidance.postActionRule = 'Complete with `--result \'{"response":"...","postAction":{"cleanup":{"status":"completed","detail":"fresh verification evidence"},"disposition":"done"}}\'`. Use cleanup status `not_required` only when the user asked to preserve the source or the configured cleanup genuinely does not apply. If the main action succeeded but cleanup failed, use status `blocked`; Tend will preserve the successful action and require `work:reconcile-approved` after retrying cleanup, rather than repeating the main action. Use disposition `review` only when a concrete next step remains.';
+  }
+
+  if (work.kind === "scoped_instruction" && work.intent === "voice_instruction" && work.target?.kind === "card") {
+    operatorGuidance.voicePreparationRule = "This card-scoped instruction is not an approved external action. If it asks for a mutation whose exact action was not already visible, prepare the exact proposedAction/actions and complete this work with that updated card returned to review. Do not execute it, call action:verify, call work:block, or fail merely because approval is still needed. Only a later digest-bound approval may authorize the prepared action.";
   }
 
   if (work.intent === "sweep_rejudge") {

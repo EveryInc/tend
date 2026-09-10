@@ -8,7 +8,7 @@ import type { ReaderConfig } from "../../shared/readers";
 import { ReadingCardRequestError, mindContextPublicationReceipt } from "../domain";
 import { versionInfo } from "../version";
 import { IMAGE_NAME, MAX_CARD_IMAGE_BYTES, readCardImage } from "../imageAttachments";
-import { body, mutation, mutationAccessError, type LocalRouteContext } from "./shared";
+import { body, hasCurrentMutationSession, mutation, mutationAccessError, type LocalRouteContext } from "./shared";
 
 async function readingMutation(c: any, context: LocalRouteContext, callback: () => Promise<unknown>, announce = true) {
   const accessError = mutationAccessError(c, context.mutationToken);
@@ -201,6 +201,9 @@ export function apiRoutes(context: LocalRouteContext): Hono {
     const input = await body(c);
     return domain.submitVoiceInstruction(String(input.feedId ?? "inbox"), input.target as VoiceTarget, String(input.instruction ?? ""), {
       assignee: parseOptionalWorkAgent(input.assignee),
+      ...(hasCurrentMutationSession(c, mutationToken) && typeof input.expectedCardUpdatedAt === "string"
+        ? { trustedCardSnapshot: { updatedAt: input.expectedCardUpdatedAt } }
+        : {}),
     });
   }));
   app.post("/api/revision-proposals/:proposal/apply", async (c) => mutation(c, notify, async () => domain.applyRevisionProposal(c.req.param("proposal"))));

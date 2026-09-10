@@ -145,6 +145,65 @@ describe("API routing and mutation hardening", () => {
     expect(JSON.parse(bytes)).toMatchObject({ work: { assignee: "claude" } });
   });
 
+  test("allows only a current authenticated browser snapshot to turn explicit card speech into approval", async () => {
+    const createCard = (domain: AttentionDomain, id: string) => domain.upsertCard("inbox", {
+      id,
+      title: "Review the exact reply.",
+      why: "One visible artifact is ready.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text" as const, value: "Exact reply.", editable: true }],
+      actions: [{ id: "send", label: "Send reply", behavior: "approve_action" as const, instruction: "Send the exact reply.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" as const }],
+    });
+    const requestBody = (card: { id: string; updatedAt: string }) => ({
+      feedId: "inbox",
+      target: { kind: "card", feedId: "inbox", cardId: card.id },
+      instruction: "This is fine",
+      expectedCardUpdatedAt: card.updatedAt,
+    });
+    const browserHeaders = {
+      origin: "http://127.0.0.1:4321",
+      "x-attention-mutation-token": "api-test-token",
+    };
+
+    const trusted = await setup();
+    const trustedCard = await createCard(trusted.domain, "trusted-voice-card");
+    const trustedResponse = await trusted.app.request("/api/voice/instructions", jsonPost(requestBody(trustedCard), browserHeaders));
+    const trustedBytes = await trustedResponse.text();
+    expect(trustedResponse.status).toBe(200);
+    expect(trustedBytes).not.toContain("capabilityToken");
+    expect(JSON.parse(trustedBytes)).toMatchObject({
+      kind: "approved_action",
+      actionLabel: "Send reply",
+      work: { kind: "execute_approved_action", approvalSource: "voice_instruction" },
+    });
+
+    const noSession = await setup();
+    const noSessionCard = await createCard(noSession.domain, "untrusted-voice-card");
+    const noSessionResponse = await noSession.app.request("/api/voice/instructions", jsonPost(requestBody(noSessionCard)));
+    expect(noSessionResponse.status).toBe(200);
+    expect(await noSessionResponse.json()).toMatchObject({
+      kind: "scoped_work",
+      approvalInterpretation: "not_approved",
+      work: { kind: "scoped_instruction" },
+    });
+
+    const stale = await setup();
+    const staleCard = await createCard(stale.domain, "stale-voice-card");
+    await Bun.sleep(2);
+    await stale.domain.updateBlock("inbox", staleCard.id, "draft", "Changed after it was displayed.");
+    const staleResponse = await stale.app.request("/api/voice/instructions", jsonPost(requestBody(staleCard), browserHeaders));
+    expect(staleResponse.status).toBe(400);
+    expect(await staleResponse.json()).toMatchObject({ error: expect.stringContaining("card changed") });
+    expect(await stale.store.readWorkItems("inbox")).toEqual([]);
+
+    const staleFeedbackResponse = await stale.app.request("/api/voice/instructions", jsonPost({
+      ...requestBody(staleCard),
+      instruction: "Rewrite the ending.",
+    }, browserHeaders));
+    expect(staleFeedbackResponse.status).toBe(400);
+    expect(await stale.store.readWorkItems("inbox")).toEqual([]);
+  });
+
   test("redacts capability tokens from browser work reassignment responses", async () => {
     const { app, domain } = await setup();
     await domain.bindFeed("inbox", "thread-codex");
