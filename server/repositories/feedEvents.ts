@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { FeedEvent } from "../../shared/types";
 import type { MirrorWriteCoordinator } from "./mirrorWrites";
@@ -8,6 +8,7 @@ export interface FeedEventRepository {
   init(feedIds: string[]): Promise<void>;
   append(event: FeedEvent): Promise<void>;
   list(feedId: string): Promise<FeedEvent[]>;
+  cursor?(feedId: string): Promise<string>;
 }
 
 export class FileFeedEventRepository implements FeedEventRepository {
@@ -24,6 +25,16 @@ export class FileFeedEventRepository implements FeedEventRepository {
     const file = this.eventsPath(feedId);
     if (!existsSync(file)) return [];
     return (await readFile(file, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as FeedEvent);
+  }
+
+  async cursor(feedId: string): Promise<string> {
+    try {
+      const info = await stat(this.eventsPath(feedId));
+      return `${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
+      throw error;
+    }
   }
 
   private feedPath(feedId: string): string {
@@ -56,6 +67,12 @@ export class MirroredFeedEventRepository implements FeedEventRepository {
 
   list(feedId: string): Promise<FeedEvent[]> {
     return this.primary.list(feedId);
+  }
+
+  async cursor(feedId: string): Promise<string> {
+    if (this.primary.cursor) return this.primary.cursor(feedId);
+    const events = await this.primary.list(feedId);
+    return `${events.length}:${events.at(-1)?.id ?? ""}`;
   }
 
   private async syncFeed(feedId: string): Promise<void> {
