@@ -1,3 +1,5 @@
+import type { ReaderReceipt } from "./readers";
+
 export type FeedId = string;
 export type CardStatus = "to_review_new" | "to_review_updated" | "queued" | "working" | "approved_blocked" | "done";
 export type CardKind = "attention" | "feed_improvement";
@@ -31,7 +33,9 @@ export type BlockType =
   | "profile"
   | "video"
   | "chart"
-  | "receipt";
+  | "receipt"
+  | "image"
+  | "quote";
 
 export interface SourceRecipe {
   id: string;
@@ -116,9 +120,23 @@ export interface FeedConfig {
   name: string;
   purpose: string;
   defaultCleanup: string;
+  /** Review is the default; stream keeps neutral reading progress separately from taste. */
+  readingMode?: "review" | "stream";
   currentPass: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface CardImage {
+  name: string;
+  filename: string;
+  sha256: string;
+  mediaType: "image/png";
+  byteLength: number;
+  width: number;
+  height: number;
+  alt: string;
+  source: { cardId: string; contentRevision: string };
 }
 
 export interface CardBlock {
@@ -127,11 +145,13 @@ export interface CardBlock {
   label?: string;
   title?: string;
   text?: string;
+  attribution?: string;
   value?: string;
   items?: Array<string | { label: string; detail?: string; checked?: boolean; href?: string }>;
   before?: string;
   after?: string;
   editable?: boolean;
+  image?: CardImage;
   profile?: {
     name: string;
     subtitle?: string;
@@ -296,6 +316,128 @@ export interface CardContextInfluence {
   sourceCount?: number;
 }
 
+/** Reading cards remain ordinary cards in the existing feed. */
+export interface CardReading {
+  runId: string;
+  readerId: string;
+  draftId: string;
+  topicKey?: string;
+  reviewEdit?: { by: string; note: string };
+  contentRevision: string;
+  writer: ReaderReceipt;
+}
+
+export type CardReadingInput = Pick<CardReading, "runId" | "readerId" | "draftId" | "topicKey" | "reviewEdit">;
+export type CardReaction = "like" | "not_for_me" | null;
+
+export interface ReadingCardSnapshot {
+  cardId: string;
+  contentRevision: string;
+  face: { title: string; body: string; sourceLabel: string; blocks: CardBlock[] };
+  reading: CardReading;
+}
+
+export interface ReadingReactionState {
+  reaction: CardReaction;
+  contentRevision: string;
+  eventId: string;
+  at: string;
+}
+
+export interface ReadingGroupMember {
+  cardId: string;
+  contentRevision: string;
+}
+
+export const READING_ENGAGEMENT_CLICK_TARGETS = [
+  "card", "sources_open", "sources_close", "source_link", "author_info",
+  "previous_version", "next_version", "like", "not_for_me", "prefer_version",
+  "feedback", "mark_read", "mark_unread",
+] as const;
+export type ReadingEngagementClickTarget = typeof READING_ENGAGEMENT_CLICK_TARGETS[number];
+
+/** Descriptive local interaction data, never an implicit rating or action permission. */
+export type ReadingEngagementInput = {
+  clientEventId: string;
+  sessionId: string;
+  contentRevision: string;
+} & (
+  | { type: "dwell"; dwellMs: number }
+  | { type: "click"; target: ReadingEngagementClickTarget }
+  | { type: "selection"; selectionChars: number }
+);
+
+export interface ReadingEngagementSummary {
+  cardId: string;
+  contentRevision: string;
+  runId: string;
+  readerId: string;
+  dwellMs: number;
+  clicks: Partial<Record<ReadingEngagementClickTarget, number>>;
+  selections: number;
+  lastEngagedAt: string;
+}
+
+/** Passing a reading group is not an explicit reaction, preference, or completed action. */
+export interface ReadingProgressInput {
+  clientEventId: string;
+  groupId: string;
+  members: ReadingGroupMember[];
+  viewedMembers: ReadingGroupMember[];
+  read: boolean;
+  expectedEventId?: string;
+  /** Required when marking read: timestamps of every version in the displayed group. */
+  expectedCardUpdatedAt?: Record<string, string>;
+}
+
+export interface ReadingProgressState {
+  groupId: string;
+  members: ReadingGroupMember[];
+  viewedMembers: ReadingGroupMember[];
+  read: boolean;
+  eventId: string;
+  at: string;
+}
+
+/** Explicitly matched moments across attempts; the cards keep their original run and writer. */
+export interface ReadingComparisonInput {
+  id: string;
+  topicKey: string;
+  runIds: string[];
+  members: ReadingGroupMember[];
+}
+
+export interface ReadingComparison extends ReadingComparisonInput {
+  feedId: string;
+  anchorRunId: string;
+  inputSha256: string;
+  promptSha256: string;
+  sequence: number;
+}
+
+/** A preference compares these exact versions; alternatives do not acquire a dislike. */
+export interface ReadingPreferenceInput {
+  clientEventId: string;
+  // The actual run for an ordinary group, or the anchor run of an explicit retry comparison.
+  runId: string;
+  comparisonId?: string;
+  topicKey: string;
+  members: ReadingGroupMember[];
+  preferredCardId: string | null;
+  reason?: string;
+}
+
+export interface ReadingPreferenceState {
+  runId: string;
+  comparisonId?: string;
+  topicKey: string;
+  members: ReadingGroupMember[];
+  preferredCardId: string | null;
+  reason?: string;
+  eventId: string;
+  at: string;
+}
+
 export interface Card {
   id: string;
   feedId: FeedId;
@@ -307,6 +449,7 @@ export interface Card {
   sourceMailbox?: string;
   sourceRunIds?: string[];
   contextInfluence?: CardContextInfluence;
+  reading?: CardReading;
   blocks: CardBlock[];
   proposedAction?: ProposedAction;
   actions?: CardAction[];
@@ -368,6 +511,9 @@ export interface WorkItem {
   target?: VoiceTarget;
   intent?: "voice_instruction" | "sweep_rejudge" | "recollect_sources";
   feedbackId?: string;
+  // Exact face and writer for a voice instruction, including feedback after a Like archived it.
+  readingCard?: ReadingCardSnapshot;
+  learningContext?: { readingFeedbackEvents: FeedEvent[] };
   startingBatchId?: string | null;
   previousSweepState?: SweepState;
   status: WorkStatus;
@@ -458,6 +604,7 @@ export interface SourceRun {
   sourceId: string;
   snapshots: number;
   judgments: unknown[];
+  readers?: ReaderReceipt[];
   contextUse?: SourceRunContextUse;
   triggerWorkId?: string;
   completedAt?: string;
@@ -529,6 +676,10 @@ export interface FeedView {
   sweep: SweepState;
   drain: DrainState;
   readyNextPass: number;
+  readingReactions?: Record<string, ReadingReactionState>;
+  readingPreferences?: Record<string, ReadingPreferenceState>;
+  readingComparisons?: ReadingComparison[];
+  readingProgress?: Record<string, ReadingProgressState>;
 }
 
 export interface WorkspaceView {

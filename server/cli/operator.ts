@@ -18,6 +18,7 @@ import {
   importLegacyInboxCard,
 } from "./legacyImports";
 import { assertCliRuntimeMatchesLive } from "./runtimeGuard";
+import { readersApi } from "./readersApi";
 
 export async function runOperatorCli(rawArgs: string[]): Promise<void> {
   const root = resolveAppRoot();
@@ -31,7 +32,7 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
     dataDir,
     resolveDbPath(root),
   );
-  const domain = new AttentionDomain(store);
+  const domain = new AttentionDomain(store, resolveArtifactsDir(root));
 
   const value = (name: string) => {
     const index = argv.indexOf(`--${name}`);
@@ -187,11 +188,52 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
         );
         break;
       }
+      case "image:import": {
+        const imagePath = required("path");
+        output = await domain.importImage(required("feed"), required("source-card"), required("revision"), await readFile(imagePath), value("filename") ?? path.basename(imagePath));
+        break;
+      }
       case "card:upsert":
         output = await domain.upsertCard(
           required("feed"),
           await structured("card"),
         );
+        break;
+      case "readers:run": {
+        const readersFile = required("readers-file");
+        const packet = await readFile(required("packet-file"), "utf8");
+        const readers = JSON.parse(await readFile(readersFile, "utf8"));
+        output = await readersApi(dataDir, `/api/feeds/${encodeURIComponent(required("feed"))}/runs/${encodeURIComponent(required("run"))}/readers`, {
+          packet, readers, ...(value("prompt-sha256") ? { promptSha256: value("prompt-sha256") } : {}),
+        });
+        break;
+      }
+      case "readers:status":
+        output = await readersApi(dataDir, `/api/feeds/${encodeURIComponent(required("feed"))}/runs/${encodeURIComponent(required("run"))}`);
+        break;
+      case "readers:output":
+        output = await readersApi(dataDir, `/api/feeds/${encodeURIComponent(required("feed"))}/runs/${encodeURIComponent(required("run"))}/readers/${encodeURIComponent(required("reader"))}/output`);
+        break;
+      case "readers:compare":
+        output = await domain.linkReadingComparison(required("feed"), await structured("comparison"));
+        break;
+      case "card:react":
+        output = await domain.recordCardReaction(required("feed"), required("card"), await structured("feedback"));
+        break;
+      case "card:prefer":
+        output = await domain.recordReadingPreference(required("feed"), await structured("preference"));
+        break;
+      case "feed:reading-mode":
+        output = await domain.setReadingMode(required("feed"), { mode: required("mode") });
+        break;
+      case "reading:progress":
+        output = await domain.recordReadingProgress(required("feed"), await structured("progress"));
+        break;
+      case "reading:engagement":
+        output = await domain.readingEngagement(required("feed"), value("card") ?? undefined);
+        break;
+      case "reading:record-engagement":
+        output = await domain.recordReadingEngagement(required("feed"), required("card"), await structured("engagement"));
         break;
       case "routine:upsert":
         output = await domain.upsertRoutineActionGroup(

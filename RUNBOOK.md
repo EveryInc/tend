@@ -152,6 +152,73 @@ treat broad natural-language dock input as a literal prompt edit.
 
 ## Collect
 
+### Compose meeting cards with independent readers
+
+The optional meeting-reading workflow uses ordinary feeds, source runs and cards. Follow
+[Meeting readers](docs/MEETING_READERS.md) for the portable prompt, explicit model configuration,
+synthetic access check and first manual run. Reader composition is not the Claude work-draining
+lane: a reader only receives a frozen packet and returns drafts; it cannot operate the feed.
+
+The coordinator collects complete permitted transcripts, removes generated summaries, deduplicates
+alternate captures, and records the source run before starting readers. Freeze the effective feed
+instructions, the owner's current questions and relevant explicit feedback, dated references, source
+manifest and complete transcripts into one identical packet. Preserve original source-line locators
+and uncertainty about attendance. Never copy another user's private workspace to bootstrap a feed.
+
+```bash
+tend cli readers:run --feed <feed-id> --run <source-run-id> --packet-file <packet.txt> --readers-file <readers.json>
+tend cli readers:status --feed <feed-id> --run <source-run-id>
+tend cli readers:output --feed <feed-id> --run <source-run-id> --reader <reader-id>
+```
+
+The explicit readers file lists configurations (`id`, `label`, `adapter`, `model`, `effort`). The
+supported adapters are `codex` and `claude`; there is no implicit model choice. Tend's existing
+server launches them in parallel, using that host user's subscription logins without an API-key
+fallback. Verify access through this actual host path before submitting private meeting material.
+Reader receipts, input and output hashes, raw outputs and failures belong to the source run.
+Identical requests reuse existing receipts without relaunching providers; changed inputs or an
+intentional rerun require a new source run. An unavailable reader is not an empty successful feed.
+
+Review factual support separately from readability. The saved output uses `flags`; each flag's
+unique `id` is its `draftId`, `title` becomes `Card.title`, and `face` becomes `Card.why`.
+`context` is supporting background, not the visible body. Publish reviewed drafts with `card:upsert`,
+the current `sourceRunIds`, and `reading: {runId, readerId, draftId, topicKey?}`. The run must contain
+that actual draft. If review changes title or face, record `reading.reviewEdit: {by, note}`; never
+claim a coordinator rewrite is unchanged reader output. Preserve the raw original. A later change
+to an already published face requires a new card ID so feedback stays attached to exact wording.
+
+Give equivalent observations the same explicit `topicKey` within the same reader run; sharing a
+meeting is not enough. This matching is coordinator judgment, not automatic semantic deduplication.
+The browser groups those versions without destroying originals, switches by arrows or Left/Right
+outside editable controls, and reveals the writer on hover, focus or click of its info control.
+Like and Not for me record a reaction; Prefer this version records the exact comparison without
+marking alternatives disliked. In stream mode, handled cards remain muted in the current visit so
+the reader can scroll back and give reasons through the voice dock; a fresh visit starts unread.
+Review mode retains local archival. Active work blocks archival; clearing feedback does not reopen
+cards or alter an external source.
+
+For explicit feedback through the CLI, use the existing native event contracts:
+
+```bash
+tend cli card:react --feed <feed-id> --card <card-id> --feedback-file <reaction.json>
+tend cli card:prefer --feed <feed-id> --preference-file <preference.json>
+```
+
+Reaction JSON contains `clientEventId`, exact `contentRevision`, and `reaction` (`like`,
+`not_for_me`, or `null`). Preference JSON contains `clientEventId`, `runId`, `topicKey`, every current
+member as `{cardId, contentRevision}` including Done variants, and `preferredCardId` (or `null`);
+`reason` is optional. Retry uncertain results with the same event ID and exact payload. Never create
+evaluation votes on the user's behalf or extend a preference to later-added versions.
+
+Prompts & sources shows reader results, exact cards, reactions and preferences in source-run history.
+Compound receives those faces and voice comments, including archived Likes; it proposes a policy
+revision and never turns an unrated card, cleared reaction or losing alternative into a dislike.
+
+Collection, packet assembly, substantive source review, topic matching and publication remain
+coordinator steps. Image generation and sharing also remain an explicit draft/preview/approval
+workflow, not an automatic reader capability. Installing readers does not schedule anything: prove
+one manual run, then propose a same-task heartbeat only if the user wants a cadence.
+
 Read the effective recipe with:
 
 ```bash

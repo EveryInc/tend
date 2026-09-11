@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/tend/meeting-readers-output.schema.json",
+  "title": "Meeting reader output",
+  "description": "Draft contract. Source membership, unique IDs, quote spans and factual support require separate coordinator checks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["flags", "reading_notes", "notes"],
+  "properties": {
+    "flags": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "meeting_id", "kind", "title", "face", "context", "moment", "why", "people", "options", "strategy_quote", "reaction_inferred", "confidence"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1, "maxLength": 200},
+          "meeting_id": {"type": "string", "minLength": 1},
+          "kind": {"type": "string", "enum": ["tiebreaker", "off_strategy", "worth_spreading", "room_texture", "message_tested"]},
+          "title": {"type": "string", "minLength": 1, "maxLength": 90},
+          "face": {"type": "string", "minLength": 1},
+          "context": {"type": "string", "minLength": 1},
+          "moment": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["line", "speaker", "quote"],
+              "properties": {
+                "line": {"type": "integer", "minimum": 1},
+                "speaker": {"type": "string", "minLength": 1},
+                "quote": {"type": "string", "minLength": 1, "maxLength": 320}
+              }
+            }
+          },
+          "why": {"type": "string", "minLength": 1},
+          "people": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+          "options": {"type": "array", "maxItems": 3, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+          "strategy_quote": {"type": ["string", "null"]},
+          "reaction_inferred": {"type": ["boolean", "null"]},
+          "confidence": {"type": "number", "minimum": 0.5, "maximum": 1}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"kind": {"const": "tiebreaker"}}},
+            "then": {"properties": {"options": {"minItems": 2}}},
+            "else": {"properties": {"options": {"maxItems": 0}}}
+          },
+          {
+            "if": {"properties": {"kind": {"const": "off_strategy"}}},
+            "then": {"properties": {"strategy_quote": {"type": "string", "minLength": 1}}},
+            "else": {"properties": {"strategy_quote": {"type": "null"}}}
+          },
+          {
+            "if": {"properties": {"kind": {"const": "message_tested"}}},
+            "then": {"properties": {"reaction_inferred": {"type": "boolean"}, "moment": {"minItems": 2}}},
+            "else": {"properties": {"reaction_inferred": {"type": "null"}}}
+          }
+        ]
+      }
+    },
+    "reading_notes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["meeting_id", "substance", "selection_reason"],
+        "properties": {
+          "meeting_id": {"type": "string", "minLength": 1},
+          "substance": {"type": "string", "minLength": 1},
+          "selection_reason": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "notes": {"type": "string"}
+  }
+}

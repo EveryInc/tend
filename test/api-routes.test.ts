@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AttentionDomain } from "../server/domain";
 import { apiRoutes } from "../server/routes/api";
-import { AttentionStore } from "../server/store";
+import { AttentionStore, readingContentRevision } from "../server/store";
 
 const roots: string[] = [];
 
@@ -13,7 +13,7 @@ async function setup(notify: (data: unknown) => void = () => {}) {
   roots.push(root);
   const store = new AttentionStore(root);
   await store.init();
-  const domain = new AttentionDomain(store);
+  const domain = new AttentionDomain(store, root);
   const app = apiRoutes({
     artifactsDir: root,
     dataDir: root,
@@ -23,8 +23,9 @@ async function setup(notify: (data: unknown) => void = () => {}) {
     root,
     sqlite: { status: () => ({ ok: true }) } as any,
     store,
+    mutationToken: "api-test-token",
   });
-  return { app, domain, store };
+  return { app, domain, store, root };
 }
 
 function jsonPost(body: unknown, headers: Record<string, string> = {}): RequestInit {
@@ -40,6 +41,25 @@ afterEach(async () => {
 });
 
 describe("API routing and mutation hardening", () => {
+  test("image import requires a local session, serves the exact bytes, and refuses a tampered preview", async () => {
+    const { app, domain, root } = await setup();
+    const pngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGP4DwQACfsD/fteaysAAAAASUVORK5CYII=";
+    const source = await domain.upsertCard("company-attention", { id: "source", title: "Source card", why: "A fact.", blocks: [] });
+    const input = { cardId: source.id, contentRevision: readingContentRevision(source), filename: "card.png", pngBase64 };
+    expect((await app.request("/api/feeds/company-attention/images", jsonPost(input))).status).toBe(403);
+    const response = await app.request("/api/feeds/company-attention/images", jsonPost(input, { "x-attention-mutation-token": "api-test-token" }));
+    expect(response.status).toBe(200);
+    const block = await response.json() as { image: { name: string } };
+    const preview = `/api/artifacts/${block.image.name}`;
+    const served = await app.request(preview);
+    expect(served.status).toBe(200);
+    expect(Buffer.from(await served.arrayBuffer()).toString("base64")).toBe(pngBase64);
+    const file = path.join(root, "artifacts", block.image.name);
+    await chmod(file, 0o644);
+    await writeFile(file, "changed");
+    expect((await app.request(preview)).status).toBe(404);
+  });
+
   test("rejects foreign Origin mutations and allows no-Origin CLI-style mutations", async () => {
     const { app } = await setup();
 

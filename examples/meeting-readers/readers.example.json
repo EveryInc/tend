@@ -1,0 +1,16 @@
+[
+  {
+    "id": "codex-reader",
+    "label": "Codex reader",
+    "adapter": "codex",
+    "model": "REPLACE_WITH_ACCESSIBLE_CODEX_MODEL",
+    "effort": "high"
+  },
+  {
+    "id": "claude-reader",
+    "label": "Claude reader",
+    "adapter": "claude",
+    "model": "REPLACE_WITH_ACCESSIBLE_CLAUDE_MODEL",
+    "effort": "high"
+  }
+]

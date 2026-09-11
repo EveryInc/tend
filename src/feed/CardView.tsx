@@ -1,9 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { containsFullEmail } from "../../shared/emailThread";
-import { post } from "../app/api";
-import type { Card, CardAction, CardBlock, WorkItemView } from "../types";
+import type { ReadingCardGroup } from "../../shared/readingGroups";
+import type { ReadingPreferenceState } from "../../shared/types";
+import { ApiError, post } from "../app/api";
+import type { Card, CardAction, CardBlock, FeedView, WorkItemView } from "../types";
 import { DetachedLink } from "../ui/DetachedLink";
 import { FormattedText } from "../ui/FormattedText";
+import { ReadingIdentity } from "./ReadingIdentity";
+import { ReadingPreferenceFooter } from "./ReadingPreferenceFooter";
 import { visibleCardActions } from "./selectors";
 
 function readableHistory(card: Card): Array<{ at: string; label: string; detail: string; tone?: "attention" }> {
@@ -106,6 +110,16 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
           rows={Math.max(4, value.split("\n").length + 1)}
         />
       </section>
+    );
+  }
+  if (block.type === "image" && block.image) {
+    return (
+      <figure className="block block-image">
+        {block.label && <figcaption>{block.label}</figcaption>}
+        <DetachedLink href={`/api/artifacts/${block.image.name}`} aria-label={`Open card image: ${block.image.alt}`}>
+          <img src={`/api/artifacts/${block.image.name}`} alt={block.image.alt} width={block.image.width} height={block.image.height} />
+        </DetachedLink>
+      </figure>
     );
   }
   if (block.type === "profile" && block.profile) {
@@ -266,6 +280,163 @@ function ContextInfluenceReceipt({ card }: { card: Card }) {
   );
 }
 
+type ReadingReaction = NonNullable<FeedView["readingReactions"]>[string];
+type ReactionValue = ReadingReaction["reaction"];
+type ReactionRequest = { clientEventId: string; contentRevision: string; reaction: ReactionValue };
+
+function ReadingCardView({ card, active, reaction, group, preference, onVersion, onActivate, onChanged, onFeedback, onReactionRecorded, readingSession = false }: {
+  card: Card;
+  active: boolean;
+  reaction?: ReadingReaction;
+  group?: ReadingCardGroup;
+  preference?: ReadingPreferenceState;
+  onVersion?: (cardId: string) => void;
+  onActivate: () => void;
+  onChanged: () => void;
+  onFeedback?: () => void;
+  onReactionRecorded?: () => void;
+  readingSession?: boolean;
+}) {
+  const reading = card.reading!;
+  const article = useRef<HTMLElement>(null);
+  const key = `${card.id}:${reading.contentRevision}`;
+  const currentKey = useRef(key);
+  currentKey.current = key;
+  const requestRef = useRef<ReactionRequest | null>(null);
+  const inFlight = useRef(false);
+  const [busy, setBusy] = useState(false);
+  const [preferenceBusy, setPreferenceBusy] = useState(false);
+  const [stale, setStale] = useState(false);
+  const [error, setError] = useState("");
+  const [posted, setPosted] = useState<{ key: string; value: ReactionValue } | null>(null);
+  const recorded = reaction?.contentRevision === reading.contentRevision ? reaction.reaction : null;
+  const selected = posted?.key === key ? posted.value : recorded;
+  const workActive = card.status === "queued" || card.status === "working" || card.status === "approved_blocked";
+  const comparison = group && group.cards.length > 1 && group.runId && group.topicKey ? group : undefined;
+  const versionIndex = comparison?.cards.findIndex((version) => version.id === card.id) ?? 0;
+  const disposition = card.status === "queued" ? "feedback queued" : card.status === "working" ? "feedback being reviewed" : readingSession ? "saved" : "archived in Tend";
+
+  useEffect(() => {
+    requestRef.current = null;
+    setError("");
+    setStale(false);
+    setPosted(null);
+  }, [key]);
+  useEffect(() => setPosted(null), [reaction?.eventId]);
+
+  const switchVersion = (direction: number, fromKeyboard = false) => {
+    if (!comparison || preferenceBusy || busy || !onVersion) return;
+    const index = (versionIndex + direction + comparison.cards.length) % comparison.cards.length;
+    if (fromKeyboard) article.current?.dispatchEvent(new CustomEvent("reading-shortcut", { bubbles: true, detail: direction < 0 ? "previous_version" : "next_version" }));
+    onVersion(comparison.cards[index].id);
+  };
+  useEffect(() => {
+    if (!active || !comparison || !onVersion) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || event.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      const target = event.target;
+      if (target instanceof Element && target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='textbox']")) return;
+      event.preventDefault();
+      switchVersion(event.key === "ArrowLeft" ? -1 : 1, event.isTrusted);
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [active, comparison, versionIndex, preferenceBusy, busy, onVersion]);
+
+  const send = async (value: ReactionValue) => {
+    if (inFlight.current || stale || workActive) return;
+    // An uncertain response can be retried with the same event ID, never recorded twice.
+    const previous = requestRef.current;
+    const request = previous?.contentRevision === reading.contentRevision && previous.reaction === value
+      ? previous
+      : { clientEventId: crypto.randomUUID(), contentRevision: reading.contentRevision, reaction: value };
+    requestRef.current = request;
+    inFlight.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      await post(`/api/feeds/${encodeURIComponent(card.feedId)}/cards/${encodeURIComponent(card.id)}/reaction`, request);
+      if (currentKey.current !== key) return;
+      requestRef.current = null;
+      setPosted({ key, value });
+      onReactionRecorded?.();
+      onChanged();
+    } catch (caught) {
+      if (currentKey.current !== key) return;
+      if (caught instanceof ApiError && caught.status === 409) {
+        requestRef.current = null;
+        const changed = caught.code === "stale_content" || caught.message === "stale_content";
+        setStale(changed);
+        setError(changed ? "This card changed. Refresh it before recording a reaction." : caught.message);
+        onChanged();
+      } else {
+        setError(caught instanceof Error ? caught.message : "Your reaction could not be saved. Try again.");
+      }
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
+    }
+  };
+
+  return (
+    <article ref={article} className={`attention-card reading-card ${active ? "is-active" : ""}`} data-card-id={card.id} data-reading-group={comparison?.id} onClick={onActivate} onMouseEnter={onActivate} onFocusCapture={onActivate}>
+      <div className="card-rule" />
+      <header className="card-head">
+        <span className="kind-dot" />
+        <div>
+          <div className="reading-card-meta">
+            <div className="eyebrow">{card.eyebrow}</div>
+            <div className="reading-meta-controls">
+              {reading.reviewEdit && <span className="reading-edit-marker">Edited</span>}
+              {comparison && <div className="reading-versions" role="group" aria-label="Compare versions">
+                <button type="button" data-reading-interaction="previous_version" aria-label="Previous version" title="Previous version · ←" disabled={preferenceBusy || busy} onClick={(event) => { event.stopPropagation(); switchVersion(-1); }}>←</button>
+                <span aria-live="polite" aria-atomic="true">Version {versionIndex + 1} of {comparison.cards.length}</span>
+                <button type="button" data-reading-interaction="next_version" aria-label="Next version" title="Next version · →" disabled={preferenceBusy || busy} onClick={(event) => { event.stopPropagation(); switchVersion(1); }}>→</button>
+              </div>}
+              <ReadingIdentity key={key} reader={reading.writer} reviewEdit={reading.reviewEdit} />
+            </div>
+          </div>
+          <h2>{card.title}</h2>
+        </div>
+      </header>
+      <p className="why reading-face">{card.why}</p>
+      <details className="reading-sources" key={key}>
+        <summary>Sources</summary>
+        <div className="blocks">
+          {card.blocks.map((block) => block.type === "quote"
+            ? <blockquote className="block block-quote" key={block.id}><p>{block.text}</p>{block.attribution && <cite>{block.attribution}</cite>}</blockquote>
+            : <Block key={block.id} feedId={card.feedId} cardId={card.id} block={block.type === "editable_text" ? { ...block, type: "memo", text: block.value ?? block.text } : block} onChanged={onChanged} />)}
+        </div>
+        <a className="reading-run-link" href={`/feed/${encodeURIComponent(card.feedId)}/prompts#source-run-${encodeURIComponent(reading.runId)}`}>View this source run</a>
+        <CardHistory card={card} />
+      </details>
+      <footer className="card-action reading-footer" aria-busy={busy}>
+        <div className="reading-reaction-row">
+          <div className="reading-reaction-state" role="status" aria-live="polite">
+            {busy ? "Saving…" : selected === "like" ? `Liked · ${disposition}` : selected === "not_for_me" ? `Not for me · ${disposition}` : card.status === "done" ? readingSession ? "Reviewed · feedback welcome" : "Archived in Tend" : card.status === "queued" ? "Feedback queued" : card.status === "working" ? "Feedback being reviewed" : "What did you think?"}
+          </div>
+          <div className="action-buttons">
+            {(["like", "not_for_me"] as const).map((value) => <button
+              type="button"
+              key={value}
+              data-reading-interaction={value}
+              className={`button ghost reading-reaction ${selected === value ? "selected" : ""}`}
+              aria-pressed={selected === value}
+              disabled={busy || preferenceBusy || stale || workActive}
+              onClick={(event) => { event.stopPropagation(); void send(selected === value ? null : value); }}
+            >{value === "like" ? "Like" : "Not for me"}</button>)}
+            {onFeedback && !comparison && <button type="button" data-reading-interaction="feedback" className="button text" onClick={(event) => { event.stopPropagation(); onFeedback(); }}>Feedback</button>}
+          </div>
+        </div>
+        {!selected && card.status !== "done" && <small className="reading-local-note">{comparison ? "Rates only this version. Other versions keep their own ratings." : readingSession ? "Ratings are optional. The card stays here so you can add feedback." : "Reactions move this card to Done in Tend. The source is unchanged."}</small>}
+        {error && <div className="reading-error" role="alert"><span>{error}</span>{!stale && requestRef.current && <button type="button" className="button text" disabled={busy} onClick={(event) => { event.stopPropagation(); if (requestRef.current) void send(requestRef.current.reaction); }}>Retry</button>}{stale && <button type="button" className="button text" onClick={(event) => { event.stopPropagation(); onChanged(); }}>Refresh card</button>}</div>}
+      </footer>
+      {comparison && <ReadingPreferenceFooter group={comparison} card={card} preference={preference} reaction={reaction} onChanged={onChanged} onFeedback={onFeedback} onRecorded={onReactionRecorded} onBusy={setPreferenceBusy} disabled={busy} readingSession={readingSession} />}
+    </article>
+  );
+}
+
 export function CardView({
   card,
   queuedNote,
@@ -275,6 +446,13 @@ export function CardView({
   onAction,
   onReturnToReview,
   queuedFor,
+  readingReaction,
+  onReadingFeedback,
+  onReadingReaction,
+  readingGroup,
+  readingPreference,
+  onReadingVersion,
+  readingSession,
 }: {
   card: Card;
   queuedNote?: WorkItemView;
@@ -284,7 +462,15 @@ export function CardView({
   onAction: (action: CardAction) => void;
   onReturnToReview: () => void;
   queuedFor?: string;
+  readingReaction?: ReadingReaction;
+  onReadingFeedback?: () => void;
+  onReadingReaction?: () => void;
+  readingGroup?: ReadingCardGroup;
+  readingPreference?: ReadingPreferenceState;
+  onReadingVersion?: (cardId: string) => void;
+  readingSession?: boolean;
 }) {
+  if (card.reading) return <ReadingCardView card={card} active={active} reaction={readingReaction} group={readingGroup} preference={readingPreference} onVersion={onReadingVersion} onActivate={onActivate} onChanged={onChanged} onFeedback={onReadingFeedback} onReactionRecorded={onReadingReaction} readingSession={readingSession} />;
   const actions = visibleCardActions(card);
   const nextThing = card.proposedAction?.label === "Decide disposition"
     ? "Dismiss, or tell Codex what to do"

@@ -15,6 +15,13 @@ import type {
   MindContextBinding,
   MindContextUpdate,
   PolicyRevision,
+  ReadingCardSnapshot,
+  ReadingComparison,
+  ReadingGroupMember,
+  ReadingProgressInput,
+  ReadingProgressState,
+  ReadingPreferenceState,
+  ReadingReactionState,
   RevisionProposal,
   RoutineActionGroup,
   SourceRun,
@@ -42,7 +49,8 @@ import {
   setupCard,
   threadBinding,
 } from "./templates";
-import { isoNow, makeId, readJson, withMutationLock, writeJson, writeText } from "./util";
+import { digest, isoNow, makeId, readJson, withMutationLock, writeJson, writeText } from "./util";
+import { groupReadingCards, isPassiveReadingCard, readingGroupKey, sameReadingMembers } from "../shared/readingGroups";
 import { defaultDictationCapability } from "./monologue";
 import { FileCardRepository, type CardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
@@ -69,6 +77,37 @@ type AtomicRunner = <T>(callback: () => Promise<T>) => Promise<T>;
 
 function defaultDrainState(): DrainState {
   return { status: "idle", consecutiveFailures: 0 };
+}
+
+function canonicalReadingValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalReadingValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonicalReadingValue(item)]));
+  }
+  return value;
+}
+
+export function readingContentRevision(card: Pick<Card, "title" | "why" | "eyebrow" | "blocks" | "reading">): string {
+  const { contentRevision: _revision, ...reading } = card.reading ?? {};
+  return digest(canonicalReadingValue({
+    title: card.title, body: card.why, sourceLabel: card.eyebrow, blocks: card.blocks, reading,
+  }));
+}
+
+/** Explicit ratings can archive versions without reopening the already-read topic. */
+export function readingAttentionRevision(card: Pick<Card, "readyForPass" | "history">): string {
+  const history = card.history.filter((entry) => entry.type !== "user.reading_reaction" && entry.type !== "user.reading_preference");
+  return digest(canonicalReadingValue({ readyForPass: card.readyForPass, history }));
+}
+
+export function snapshotReadingCard(card: Card): ReadingCardSnapshot | undefined {
+  if (!card.reading) return undefined;
+  return structuredClone({
+    cardId: card.id,
+    contentRevision: card.reading.contentRevision,
+    face: { title: card.title, body: card.why, sourceLabel: card.eyebrow, blocks: card.blocks },
+    reading: card.reading,
+  });
 }
 
 export function workItemView(work: WorkItem): WorkItemView {
@@ -373,6 +412,93 @@ export class AttentionStore {
     runs.sort((a, b) => (a.completedAt ?? "").localeCompare(b.completedAt ?? "") || a.id.localeCompare(b.id));
     routineActions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     work.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const readingCards = new Map(cards.filter((card) => card.reading).map((card) => [card.id, card]));
+    const readingReactions: Record<string, ReadingReactionState> = {};
+    const readingPreferences: Record<string, ReadingPreferenceState> = {};
+    const readingProgress: Record<string, ReadingProgressState> = {};
+    const readingComparisons = new Map<string, ReadingComparison>();
+    const reactionSequences = new Map<string, number>();
+    const preferenceSequences = new Map<string, number>();
+    if (readingCards.size) {
+      const events = await this.readEvents(feedId);
+      for (const event of events) {
+        if (event.type !== "reading.comparison_linked" || !event.detail || typeof event.detail !== "object") continue;
+        const comparison = event.detail as ReadingComparison;
+        if (comparison.feedId !== feedId || typeof comparison.id !== "string" || typeof comparison.topicKey !== "string"
+          || !Array.isArray(comparison.runIds) || comparison.runIds.length < 2 || !comparison.runIds.every((id) => typeof id === "string")
+          || comparison.anchorRunId !== comparison.runIds[0] || !Array.isArray(comparison.members)
+          || !Number.isSafeInteger(comparison.sequence) || comparison.sequence < 1) continue;
+        if (comparison.sequence > (readingComparisons.get(comparison.id)?.sequence ?? 0)) readingComparisons.set(comparison.id, comparison);
+      }
+      for (const event of events) {
+        if (event.type === "reading.preference_recorded" && event.detail && typeof event.detail === "object") {
+          const detail = event.detail as Record<string, unknown>;
+          if (typeof detail.runId !== "string" || typeof detail.topicKey !== "string" || !detail.topicKey.trim() || !Array.isArray(detail.members) || detail.members.length < 2) continue;
+          const comparison = typeof detail.comparisonId === "string" ? readingComparisons.get(detail.comparisonId) : undefined;
+          if (detail.comparisonId !== undefined && (!comparison || comparison.anchorRunId !== detail.runId || comparison.topicKey !== detail.topicKey)) continue;
+          const members = detail.members as ReadingGroupMember[];
+          if (!members.every((member) => {
+            if (!member || typeof member.cardId !== "string" || typeof member.contentRevision !== "string") return false;
+            const reading = readingCards.get(member.cardId)?.reading;
+            return Boolean(reading && (comparison ? comparison.runIds.includes(reading.runId) : reading.runId === detail.runId)
+              && reading.topicKey === detail.topicKey && reading.contentRevision === member.contentRevision);
+          })) continue;
+          if (detail.preferredCardId !== null && !members.some((member) => member.cardId === detail.preferredCardId)) continue;
+          const key = readingGroupKey(detail.runId, detail.topicKey, comparison?.id);
+          const sequence = typeof detail.preferenceSequence === "number" && Number.isSafeInteger(detail.preferenceSequence) && detail.preferenceSequence > 0 ? detail.preferenceSequence : 0;
+          if (sequence < (preferenceSequences.get(key) ?? 0)) continue;
+          preferenceSequences.set(key, sequence);
+          readingPreferences[key] = {
+            runId: detail.runId, topicKey: detail.topicKey, members,
+            ...(comparison ? { comparisonId: comparison.id } : {}),
+            preferredCardId: detail.preferredCardId as string | null,
+            ...(typeof detail.reason === "string" ? { reason: detail.reason } : {}), eventId: event.id, at: event.at,
+          };
+          continue;
+        }
+        if (event.type !== "card.reaction_recorded" || !event.cardId || !event.detail || typeof event.detail !== "object") continue;
+        const detail = event.detail as Record<string, unknown>;
+        const card = readingCards.get(event.cardId);
+        if (!card || detail.contentRevision !== card.reading!.contentRevision) continue;
+        if (detail.reaction !== null && detail.reaction !== "like" && detail.reaction !== "not_for_me") continue;
+        const sequence = typeof detail.reactionSequence === "number" && Number.isSafeInteger(detail.reactionSequence) && detail.reactionSequence > 0 ? detail.reactionSequence : 0;
+        // Event repositories may sort equal timestamps by random IDs; causal vote order is explicit.
+        if (sequence < (reactionSequences.get(event.cardId) ?? 0)) continue;
+        reactionSequences.set(event.cardId, sequence);
+        readingReactions[event.cardId] = {
+          reaction: detail.reaction, contentRevision: card.reading!.contentRevision, eventId: event.id, at: event.at,
+        };
+      }
+      const progressEvents = new Map<string, FeedEvent>();
+      for (const event of events) {
+        if (event.type !== "reading.progress_recorded" || !event.detail || typeof event.detail !== "object") continue;
+        const detail = event.detail as ReadingProgressInput & { progressSequence: number };
+        if (typeof detail.groupId !== "string" || typeof detail.read !== "boolean"
+          || !Array.isArray(detail.members) || !detail.members.length || !Array.isArray(detail.viewedMembers)
+          || (detail.read && !detail.viewedMembers.length)
+          || ![...detail.members, ...detail.viewedMembers].every((member) => member && typeof member.cardId === "string" && typeof member.contentRevision === "string")
+          || !Number.isSafeInteger(detail.progressSequence) || detail.progressSequence < 1) continue;
+        const previous = progressEvents.get(detail.groupId)?.detail as { progressSequence: number } | undefined;
+        if (!previous || detail.progressSequence > previous.progressSequence) progressEvents.set(detail.groupId, event);
+      }
+      for (const group of groupReadingCards(cards, [...readingComparisons.values()])) {
+        const event = progressEvents.get(group.id);
+        if (!event || group.cards.some((card) => !isPassiveReadingCard(card)
+          || card.reading!.contentRevision !== readingContentRevision(card))
+          || work.some((item) => group.cards.some((card) => card.id === item.cardId) && ["queued", "working", "approved_blocked"].includes(item.status))) continue;
+        const detail = event.detail as ReadingProgressInput & { attentionRevisions?: Record<string, string> };
+        const current = group.cards.map((card) => ({ cardId: card.id, contentRevision: card.reading!.contentRevision }));
+        // Select the latest event first. A new variant or revision must never revive an older matching read.
+        if (!sameReadingMembers(current, detail.members) || !sameReadingMembers(detail.viewedMembers, detail.viewedMembers)
+          || detail.viewedMembers.some((viewed) => !current.some((member) => member.cardId === viewed.cardId && member.contentRevision === viewed.contentRevision))) continue;
+        // Voice work and return-to-review retain content revisions. Once a later attention cycle
+        // starts, this receipt stays invalid even when that work completes, fails, or is cancelled.
+        if (group.cards.some((card) => detail.attentionRevisions?.[card.id] !== readingAttentionRevision(card))) continue;
+        readingProgress[group.id] = {
+          groupId: group.id, members: detail.members, viewedMembers: detail.viewedMembers, read: detail.read, eventId: event.id, at: event.at,
+        };
+      }
+    }
     return {
       config,
       thread,
@@ -385,6 +511,7 @@ export class AttentionStore {
       sweep,
       drain,
       readyNextPass: cards.filter((card) => card.status === "to_review_updated" && card.readyForPass > config.currentPass).length,
+      ...(readingCards.size ? { readingReactions, readingPreferences, readingProgress, readingComparisons: [...readingComparisons.values()] } : {}),
     };
   }
 
@@ -473,7 +600,25 @@ export class AttentionStore {
   }
 
   async writeCard(card: Card): Promise<void> {
-    card.updatedAt = isoNow();
+    const existing = await this.cards.has(card.feedId, card.id) ? await this.cards.get(card.feedId, card.id) : null;
+    if (existing?.reading && !card.reading) throw new Error("Reading-card provenance cannot be removed.");
+    if (card.reading) {
+      if (card.reading.contentRevision !== readingContentRevision(card)) throw new Error("Reading-card content is immutable; publish a new card for changed text.");
+      if (existing && (!existing.reading || existing.reading.contentRevision !== card.reading.contentRevision)) {
+        throw new Error("Reading-card content is immutable; publish a new card for changed text.");
+      }
+      if (card.kind !== "attention" || card.proposedAction || card.actions?.length || card.routineActionGroupId) {
+        throw new Error("Reading cards cannot carry executable actions.");
+      }
+      if (card.blocks.some((block) => block.type === "editable_text" || block.editable)) {
+        throw new Error("Reading cards cannot contain editable blocks.");
+      }
+    }
+    const now = isoNow();
+    // Reaction retry recovery relies on a later deliberate edit having a newer timestamp.
+    card.updatedAt = card.reading && existing && now <= existing.updatedAt
+      ? new Date(Date.parse(existing.updatedAt) + 1).toISOString()
+      : now;
     await this.cards.write(card);
   }
 

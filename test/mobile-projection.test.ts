@@ -23,6 +23,21 @@ afterEach(async () => {
 });
 
 describe("mobile workspace projection", () => {
+  test("keeps image approval on the Mac where the exact attachment can be previewed", async () => {
+    const { store, domain } = await setup();
+    const card = await domain.upsertCard("company-attention", {
+      id: "local-image", title: "Image share", why: "Review the image and note.", blocks: [],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the image.", externalMutation: true }],
+    });
+    // Stored fixture only: this test exercises the phone projection, not image import.
+    card.blocks = [{ id: "image", type: "image" }];
+    await store.writeCard(card);
+    const projected = (await projectMobileWorkspace(store)).cards.find((item) => item.cardId === card.id)!;
+    expect(projected.blocks).toEqual([{ id: "image", type: "memo", label: "Card image", text: "Review the image and approve sending it on your Mac." }]);
+    expect(projected.actions.some((action) => action.behavior === "approve_action")).toBe(false);
+    expect(projected.actions.some((action) => action.behavior === "dismiss_card")).toBe(true);
+  });
+
   test("discovers every feed and keeps identical card ids isolated by feed", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "attention-mobile-sqlite-"));
     roots.push(root);

@@ -4,6 +4,7 @@ import type { LocalSqliteStore } from "../sqlite";
 import type { AttentionStore } from "../store";
 import type { MobileSyncStatus } from "../../shared/mobile";
 import type { NativeApprovalBroker } from "../nativeApprovals";
+import type { ReaderRunner } from "../readers";
 
 export type Notify = (data: unknown) => void;
 
@@ -19,6 +20,7 @@ export type LocalRouteContext = {
   mobileStatus?: () => MobileSyncStatus;
   mutationToken: string;
   nativeApprovals?: NativeApprovalBroker;
+  readers?: ReaderRunner;
 };
 
 export async function body(c: any): Promise<Record<string, unknown>> {

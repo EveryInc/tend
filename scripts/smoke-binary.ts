@@ -132,6 +132,11 @@ async function validateCliContract(): Promise<{
     "work:complete --feed <id> --work <id> --token <token> --result <json>",
     "card:upsert --feed <id> (--card <json> | --card-file <path>)",
     "source:record-run --feed <id> --source <id> (--snapshots <json> | --snapshots-file <path>) (--judgments <json> | --judgments-file <path>) (--checkpoint <json> | --checkpoint-file <path>) [--work <recollection-work-id>] [--context-use <json> | --context-use-file <path>]",
+    "readers:run --feed <id> --run <source-run-id> --packet-file <path> --readers-file <path> [--prompt-sha256 <hash>]",
+    "readers:status --feed <id> --run <source-run-id>",
+    "readers:output --feed <id> --run <source-run-id> --reader <id>",
+    "card:react --feed <id> --card <id> --feedback-file <path>",
+    "card:prefer --feed <id> --preference-file <path>",
     "sweep:record-batch --feed <id> --runs <json-array> [--work <recollection-work-id>] [--context <mind-update-id>]",
     "learning:request --feed <id>",
   ];

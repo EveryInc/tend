@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { usePushToTalk } from "../state/pushToTalk";
 import { sameTarget } from "../state/voiceTarget";
 import type { FeedView, VoiceTarget, WorkspaceView } from "../types";
@@ -26,9 +26,11 @@ export function Dock({
   target,
   ladder,
   targetVersion,
+  focusRequest = 0,
   routeToClaude,
   canRouteToClaude,
   onTarget,
+  onDraftStart,
   onRouteToClaude,
   onSubmit,
   onRecollect,
@@ -38,15 +40,20 @@ export function Dock({
   target: VoiceTarget;
   ladder: VoiceTarget[];
   targetVersion: number;
+  focusRequest?: number;
   routeToClaude: boolean;
   canRouteToClaude: boolean;
   onTarget: (target: VoiceTarget) => void;
+  onDraftStart?: (target: VoiceTarget) => void;
   onRouteToClaude: (enabled: boolean) => void;
   onSubmit: (instruction: string) => void;
   onRecollect: () => void;
 }) {
   const [value, setValue] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (focusRequest) inputRef.current?.focus({ preventScroll: true });
+  }, [focusRequest]);
   const targetIndex = Math.max(0, ladder.findIndex((item) => sameTarget(item, target)));
   const zoom = (offset: number) => {
     const next = ladder[Math.max(0, Math.min(ladder.length - 1, targetIndex + offset))];
@@ -97,7 +104,7 @@ export function Dock({
           </div>
         </div>
         <div className="dock-row">
-          <textarea aria-label={`Instruction for ${routedAgent}`} ref={inputRef} value={value} onChange={(event) => setValue(event.target.value)} onKeyDown={onDockKeyDown} rows={1} placeholder={`Tell ${routedAgent} what to notice, change, or do…`} />
+          <textarea aria-label={`Instruction for ${routedAgent}`} ref={inputRef} value={value} onFocus={() => onDraftStart?.(target)} onChange={(event) => { if (!value) onDraftStart?.(target); setValue(event.target.value); }} onKeyDown={onDockKeyDown} rows={1} placeholder={`Tell ${routedAgent} what to notice, change, or do…`} />
           <button className="button primary" type="submit" disabled={!value.trim()}>Send</button>
         </div>
         <div className="dock-footer">
