@@ -66,6 +66,10 @@ waking this same thread and saying `go deal with the feed`.
 8. For source recollection, record source runs and a sweep batch with the claimed `--work` id before completing the work.
    If context influenced collection, include a file-backed `contextUse` on the relevant source run
    and pin the same update id to the sweep batch.
+   A full Gmail sweep must begin with paginated `gmail_search_email_ids(query: "", label_ids:
+   ["INBOX"])`. Its checkpoint's `inboxEnumeration.messages` must map every authoritative
+   `messageId` to its direct-read `threadId`; every resulting conversation must then appear exactly
+   once in `readThreadIds` or `carriedForwardThreadIds`. Search results alone never define the Inbox.
 9. Repeat until `work:claim` returns idle.
 10. If a meaningful sweep or refresh happened, ask whether to compound learnings.
 

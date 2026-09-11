@@ -63,7 +63,9 @@ tend-backup/
 file mirrors and immutable raw evidence snapshots. Export writes through a temporary staging
 directory and refuses to overwrite or delete an existing destination.
 
-Import first copies the backup into a temporary staging directory. Tend refuses to import while
-the same runtime home is active, then swaps the staged database and data into place with rollback if
-the swap fails. Older data-directory-only backups are still accepted; the next local runtime start
-rehydrates `attention.db` from those imported file mirrors.
+Import requires an explicit source containing a Tend database or `workspace.json`.
+It stages and opens the replacement under the runtime home before moving any current data.
+Older data-directory-only backups are rehydrated in staging.
+Tend refuses to import while its configured API reports the same home active.
+If replacement fails, rollback restores only files that were moved.
+If rollback fails, the error identifies the preserved recovery directory instead of deleting it.
