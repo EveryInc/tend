@@ -48,6 +48,18 @@ describe("CLI contract", () => {
     for (const command of documented) expect(commandNames).toContain(command);
   });
 
+  test("source:record-run supports file-backed full-sweep manifests", async () => {
+    const command = CLI_COMMANDS.find((candidate) => cliCommandName(candidate) === "source:record-run");
+    expect(command).toContain("--snapshots-file <path>");
+    expect(command).toContain("--judgments-file <path>");
+    expect(command).toContain("--checkpoint-file <path>");
+
+    const operator = await readFile("server/cli/operator.ts", "utf8");
+    expect(operator).toContain('await structured("snapshots")');
+    expect(operator).toContain('await structured("judgments")');
+    expect(operator).toContain('await structured("checkpoint")');
+  });
+
   test("formats command-owned usage hints for missing flags", () => {
     const error = formatCliError(new MissingFlagError("work:claim", "thread"));
 

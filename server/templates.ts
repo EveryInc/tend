@@ -139,6 +139,17 @@ thread before composing a card. Treat Gmail's subject and latest snippet as evid
 concrete event, decision, or request, and summarize that plainly instead of pasting reply-chain
 fragments.
 
+For a full sweep, begin by paginating \`gmail_search_email_ids(query: "", label_ids: ["INBOX"])\`
+until it returns no next page. That complete message-ID list is the authoritative Inbox manifest;
+\`gmail_search_emails(query: "in:inbox")\` may enrich the run, but its result set must never define
+the sweep universe. Direct-read every enumerated message and map it to its conversation. Record
+\`fullSweep: true\` and an \`inboxEnumeration\` containing \`method\`, empty \`query\`, \`labelIds\`,
+\`labelMessageCount\`, \`labelThreadCount\`, a \`messages\` array mapping every \`messageId\` to its
+\`threadId\`, \`readThreadIds\`, and \`carriedForwardThreadIds\`. Tend derives the conversation
+universe from those mappings and accepts the checkpoint only when manifest counts match and every
+conversation has exactly one disposition. Prefer \`source:record-run --snapshots-file ...
+--judgments-file ... --checkpoint-file ...\` for these larger structured payloads.
+
 Separate conservative low-attention cleanup into a proposed \`routine_action\` group such as
 \`Likely archive\`. Keep requests, ambiguous threads, and anything with a meaningful next move as
 full review cards. The group is an approval surface, not permission to archive automatically.

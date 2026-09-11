@@ -5,6 +5,9 @@ a promise of ongoing maintenance.
 
 ## Unreleased
 
+- Make full Gmail sweeps start from paginated Inbox label-ID enumeration, require every message to
+  resolve to a conversation, and reject checkpoints that do not read or explicitly carry forward
+  every resulting thread.
 - Separate local card dismissal from source cleanup. `tend cli card:dismiss` now moves a reviewable
   card to `done` with no work item, approval digest, `action:verify`, or connector call, and is
   reversible with `card:return-to-review`. Explicit source cleanup moves to

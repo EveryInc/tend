@@ -65,6 +65,10 @@ For `sweep_rejudge` work:
 For `recollect_sources` work:
 
 - Record source runs with `tend cli source:record-run --work <work>`.
+- A full Gmail run must begin with paginated `gmail_search_email_ids(query: "", label_ids:
+  ["INBOX"])`. Its checkpoint's `inboxEnumeration.messages` must map every authoritative
+  `messageId` to its direct-read `threadId`; every resulting conversation must appear exactly once
+  in `readThreadIds` or `carriedForwardThreadIds` before recording the batch.
 - Record the resulting sweep with `tend cli sweep:record-batch --work <work>`.
 - Complete the work only after the source run and sweep batch are written back.
 
@@ -89,7 +93,7 @@ Run `tend cli help` for the full command surface. Core feed-runner commands are:
 | Record heartbeat install | `tend cli feed:heartbeat:installed --feed <feed> --automation <id>` |
 | Add source | `tend cli source:add --feed <feed> --brief <brief>` |
 | Remove source | `tend cli source:remove --feed <feed> --source <source>` |
-| Record source run | `tend cli source:record-run --feed <feed> --source <source> --snapshots <json> --judgments <json> --checkpoint <json> [--context-use-file <path>]` |
+| Record source run | `tend cli source:record-run --feed <feed> --source <source> (--snapshots <json> \| --snapshots-file <path>) (--judgments <json> \| --judgments-file <path>) (--checkpoint <json> \| --checkpoint-file <path>) [--context-use-file <path>]` |
 | Record sweep batch | `tend cli sweep:record-batch --feed <feed> --runs <json-array> [--context <mind-update-id>]` |
 | Record sweep rejudgment | `tend cli sweep:rejudge --feed <feed> --feedback <id> --ordered-cards <json-array> --removed-cards <json-array>` |
 | Upsert card | `tend cli card:upsert --feed <feed> --card <json>` |
