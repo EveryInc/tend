@@ -26,6 +26,7 @@ describe("CLI contract", () => {
     expect(commandNames).toContain("work:complete");
     expect(commandNames).toContain("work:reconcile-approved");
     expect(commandNames).toContain("source:record-run");
+    expect(commandNames).toContain("sweep:status");
     expect(commandNames).toContain("card:upsert");
     expect(commandNames).toContain("card:dismiss");
     expect(commandNames).toContain("card:cleanup-source");
@@ -163,6 +164,11 @@ describe("CLI contract", () => {
       const restored = await run(["card:undo-cleanup-source", "--feed", "inbox", "--card", card.id]);
       expect(restored).toMatchObject({ status: "to_review_updated" });
       expect(restored.completionDisposition).toBeUndefined();
+      expect(await run(["sweep:status", "--feed", "inbox"])).toMatchObject({
+        status: "committed",
+        currentBatchId: null,
+        pendingBatchId: null,
+      });
     } finally {
       await rm(home, { recursive: true, force: true });
     }

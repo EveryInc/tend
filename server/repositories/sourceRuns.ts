@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { SourceRun } from "../../shared/types";
 import { readJson, writeJson } from "../util";
+import type { MirrorWriteCoordinator } from "./mirrorWrites";
 
 export interface SourceRunRepository {
   init(feedIds: string[]): Promise<void>;
@@ -41,7 +42,11 @@ export class FileSourceRunRepository implements SourceRunRepository {
 }
 
 export class MirroredSourceRunRepository implements SourceRunRepository {
-  constructor(private readonly primary: SourceRunRepository, private readonly mirror: SourceRunRepository) {}
+  constructor(
+    private readonly primary: SourceRunRepository,
+    private readonly mirror: SourceRunRepository,
+    private readonly mirrorWrites?: MirrorWriteCoordinator,
+  ) {}
 
   async init(feedIds: string[]): Promise<void> {
     await this.mirror.init(feedIds);
@@ -59,7 +64,8 @@ export class MirroredSourceRunRepository implements SourceRunRepository {
 
   async write(run: SourceRun): Promise<void> {
     await this.primary.write(run);
-    await this.mirror.write(run);
+    if (this.mirrorWrites) await this.mirrorWrites.write(() => this.mirror.write(run));
+    else await this.mirror.write(run);
   }
 
   private async syncFeed(feedId: string): Promise<void> {

@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import type { SourceRecipe } from "../../shared/types";
 import { readJson, writeJson, writeText } from "../util";
+import type { MirrorWriteCoordinator } from "./mirrorWrites";
 
 export interface SourceRecord {
   recipe: SourceRecipe;
@@ -92,7 +93,11 @@ export class FileSourceRepository implements SourceRepository {
 }
 
 export class MirroredSourceRepository implements SourceRepository {
-  constructor(private readonly primary: SourceRepository, private readonly mirror: SourceRepository) {}
+  constructor(
+    private readonly primary: SourceRepository,
+    private readonly mirror: SourceRepository,
+    private readonly mirrorWrites?: MirrorWriteCoordinator,
+  ) {}
 
   async init(feedIds: string[]): Promise<void> {
     await this.mirror.init(feedIds);
@@ -110,22 +115,22 @@ export class MirroredSourceRepository implements SourceRepository {
 
   async write(feedId: string, recipe: SourceRecipe, content: string, checkpoint?: unknown): Promise<void> {
     await this.primary.write(feedId, recipe, content, checkpoint);
-    await this.mirror.write(feedId, recipe, content, checkpoint);
+    await this.writeMirror(() => this.mirror.write(feedId, recipe, content, checkpoint));
   }
 
   async remove(feedId: string, sourceId: string): Promise<void> {
     await this.primary.remove(feedId, sourceId);
-    await this.mirror.remove(feedId, sourceId);
+    await this.writeMirror(() => this.mirror.remove(feedId, sourceId));
   }
 
   async writeContent(feedId: string, sourceId: string, content: string): Promise<void> {
     await this.primary.writeContent(feedId, sourceId, content);
-    await this.mirror.writeContent(feedId, sourceId, content);
+    await this.writeMirror(() => this.mirror.writeContent(feedId, sourceId, content));
   }
 
   async writeCheckpoint(feedId: string, sourceId: string, checkpoint: unknown): Promise<void> {
     await this.primary.writeCheckpoint(feedId, sourceId, checkpoint);
-    await this.mirror.writeCheckpoint(feedId, sourceId, checkpoint);
+    await this.writeMirror(() => this.mirror.writeCheckpoint(feedId, sourceId, checkpoint));
   }
 
   private async syncFeed(feedId: string): Promise<void> {
@@ -139,5 +144,10 @@ export class MirroredSourceRepository implements SourceRepository {
     for (const record of primary.filter((item) => !mirrorIds.has(item.recipe.id))) {
       await this.mirror.write(feedId, record.recipe, record.content, record.checkpoint);
     }
+  }
+
+  private async writeMirror(callback: () => Promise<void>): Promise<void> {
+    if (this.mirrorWrites) await this.mirrorWrites.write(callback);
+    else await callback();
   }
 }

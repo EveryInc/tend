@@ -154,6 +154,9 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
           value("context"),
         );
         break;
+      case "sweep:status":
+        output = await domain.sweepCommitStatus(required("feed"));
+        break;
       case "sweep:rejudge":
         output = await domain.recordSweepRejudgment(
           required("feed"),

@@ -21,6 +21,7 @@ export interface SweepRepository {
 export function defaultSweepState(): SweepState {
   return {
     currentBatchId: null,
+    pendingBatchId: null,
     lastFeedbackId: null,
     recollectionOffered: false,
     statusMessage: null,
@@ -30,6 +31,7 @@ export function defaultSweepState(): SweepState {
 export function normalizeSweepState(state: SweepState & { currentRunId?: string | null }): SweepState {
   return {
     currentBatchId: state.currentBatchId ?? state.currentRunId ?? null,
+    pendingBatchId: state.pendingBatchId ?? null,
     lastFeedbackId: state.lastFeedbackId,
     recollectionOffered: state.recollectionOffered,
     statusMessage: state.statusMessage,

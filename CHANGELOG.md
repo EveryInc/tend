@@ -5,6 +5,8 @@ a promise of ongoing maintenance.
 
 ## Unreleased
 
+- Stage source checkpoints and require stable `cardId` presentation obligations for kept judgments. Pending sweeps now surface a recovery card and `sweep:status`, while the final required card write atomically commits cards, checkpoints, and the current batch with deterministic retry identities.
+- Advance the CLI contract to `0.5` for the additive `sweep:status` command and the required stable `cardId` on new kept judgments.
 - Separate local card dismissal from source cleanup. `tend cli card:dismiss` now moves a reviewable
   card to `done` with no work item, approval digest, `action:verify`, or connector call, and is
   reversible with `card:return-to-review`. Explicit source cleanup moves to

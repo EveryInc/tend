@@ -17,6 +17,7 @@ export const CLI_COMMANDS = [
   "source:remove --feed <id> --source <id>",
   "source:record-run --feed <id> --source <id> --snapshots <json> --judgments <json> --checkpoint <json> [--work <recollection-work-id>] [--context-use <json> | --context-use-file <path>]",
   "sweep:record-batch --feed <id> --runs <json-array> [--work <recollection-work-id>] [--context <mind-update-id>]",
+  "sweep:status --feed <id>",
   "sweep:rejudge --feed <id> --feedback <id> --ordered-cards <json-array> --removed-cards <json-array>",
   "source:import-json-file --feed <id> --source <id> --path <local-json-file>",
   "source:import-file --feed <id> --source <id> --path <local-text-or-jsonl-file>",
