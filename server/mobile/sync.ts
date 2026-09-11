@@ -1,4 +1,4 @@
-import type { MobileCommandProgress, MobileSyncStatus } from "../../shared/mobile";
+import type { MobileCommandProgress, MobileCommandResult, MobileSyncStatus } from "../../shared/mobile";
 import type { AttentionDomain } from "../domain";
 import type { AttentionStore } from "../store";
 import type { MobileCloudClient } from "./client";
@@ -71,14 +71,16 @@ export class MobileSyncWorker {
       const commands = await this.client.claimCommands();
       this.setStatus({ ...this.status, lastPullAt: now.toISOString() });
       for (const command of commands) {
+        let result: MobileCommandResult;
         try {
-          const result = await this.domain.applyMobileCommand(command);
-          await this.client.completeCommand(command.id, "applied", { workId: result.workId });
+          result = await this.domain.applyMobileCommand(command);
         } catch (error) {
           await this.client.completeCommand(command.id, "rejected", {
             error: sanitizeText(error instanceof Error ? error.message : String(error)),
           });
+          continue;
         }
+        await this.client.completeCommand(command.id, "applied", { workId: result.workId });
       }
       if (commands.length) {
         const refreshed = await projectMobileWorkspace(this.store, this.options.now());

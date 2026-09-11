@@ -1,3 +1,6 @@
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import path from "node:path";
 import type {
   MobileCommand,
   MobileCommandProgress,
@@ -21,6 +24,48 @@ export interface MobileCloudClient {
     result: { workId?: string; error?: string },
   ): Promise<void>;
   syncCommandProgress(progress: MobileCommandProgress[]): Promise<void>;
+}
+
+const mobileEnvKeys = [
+  "TEND_MOBILE_SUPABASE_URL",
+  "TEND_MOBILE_SUPABASE_SECRET_KEY",
+  "TEND_MOBILE_USER_ID",
+  "TEND_MOBILE_WORKER_ID",
+] as const;
+
+export function loadMobileCloudEnvFile(env: NodeJS.ProcessEnv = process.env): void {
+  const configuredPath = env.TEND_MOBILE_ENV_FILE?.trim();
+  const configRoot = env.XDG_CONFIG_HOME?.trim() || path.join(homedir(), ".config");
+  const envFile = configuredPath || path.join(configRoot, "tend", "mobile.env");
+  if (!existsSync(envFile)) return;
+
+  const metadata = statSync(envFile);
+  if (!metadata.isFile()) throw new Error(`Tend mobile config is not a regular file: ${envFile}`);
+  if (process.platform !== "win32") {
+    const mode = metadata.mode & 0o777;
+    if (mode !== 0o400 && mode !== 0o600) {
+      throw new Error(`Refusing Tend mobile config with permissions ${mode.toString(8)}; expected 400 or 600: ${envFile}`);
+    }
+    const currentUserId = process.getuid?.();
+    if (currentUserId !== undefined && metadata.uid !== currentUserId) {
+      throw new Error(`Refusing Tend mobile config not owned by the current user: ${envFile}`);
+    }
+  }
+
+  const seen = new Set<string>();
+  const lines = readFileSync(envFile, "utf8").split(/\r?\n/);
+  for (const [index, line] of lines.entries()) {
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    const separator = line.indexOf("=");
+    if (separator <= 0) throw new Error(`Invalid Tend mobile config at line ${index + 1}: ${envFile}`);
+    const key = line.slice(0, separator).trim();
+    if (!mobileEnvKeys.includes(key as (typeof mobileEnvKeys)[number])) {
+      throw new Error(`Unsupported Tend mobile config key ${key || "(empty)"}: ${envFile}`);
+    }
+    if (seen.has(key)) throw new Error(`Duplicate Tend mobile config key ${key}: ${envFile}`);
+    seen.add(key);
+    env[key] ??= line.slice(separator + 1);
+  }
 }
 
 export function mobileCloudConfigFromEnv(env: NodeJS.ProcessEnv = process.env): MobileCloudConfig | null {

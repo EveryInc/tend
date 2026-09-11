@@ -6,7 +6,6 @@ struct SignInView: View {
 
     private enum Field {
         case email
-        case code
     }
 
     var body: some View {
@@ -32,8 +31,8 @@ struct SignInView: View {
                     }
 
                     VStack(alignment: .leading, spacing: 16) {
-                        if model.authState == .codeSent {
-                            codeField
+                        if model.authState == .linkSent {
+                            linkSent
                         } else {
                             emailField
                         }
@@ -52,10 +51,10 @@ struct SignInView: View {
             }
         }
         .onAppear {
-            focusedField = model.authState == .codeSent ? .code : .email
+            focusedField = model.authState == .signedOut ? .email : nil
         }
         .onChange(of: model.authState) { _, state in
-            focusedField = state == .codeSent ? .code : .email
+            focusedField = state == .signedOut ? .email : nil
         }
     }
 
@@ -71,15 +70,15 @@ struct SignInView: View {
                 .focused($focusedField, equals: .email)
                 .submitLabel(.continue)
                 .onSubmit {
-                    Task { await model.requestCode() }
+                    Task { await model.requestSignInLink() }
                 }
                 .padding(14)
                 .background(TendTheme.paper)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             Button {
-                Task { await model.requestCode() }
+                Task { await model.requestSignInLink() }
             } label: {
-                submitLabel("Email me a code")
+                submitLabel("Email me a sign-in link")
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
@@ -87,25 +86,16 @@ struct SignInView: View {
         }
     }
 
-    private var codeField: some View {
+    private var linkSent: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Check your email")
                 .font(.headline)
-            Text("Enter the six-digit code sent to \(model.email).")
+            Text("Open the sign-in link sent to \(model.email). It will bring you back to Tend.")
                 .foregroundStyle(.secondary)
-            TextField("000000", text: $model.code)
-                .textContentType(.oneTimeCode)
-                .keyboardType(.numberPad)
-                .focused($focusedField, equals: .code)
-                .font(.system(.title2, design: .monospaced, weight: .semibold))
-                .padding(14)
-                .background(TendTheme.paper)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .accessibilityLabel("Six-digit email code")
             Button {
-                Task { await model.verifyCode() }
+                Task { await model.requestSignInLink() }
             } label: {
-                submitLabel("Open Tend")
+                submitLabel("Send the link again")
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
@@ -113,7 +103,6 @@ struct SignInView: View {
 
             Button("Use a different email") {
                 model.authState = .signedOut
-                model.code = ""
             }
             .font(.subheadline.weight(.medium))
         }

@@ -4,18 +4,34 @@ For contribution workflow, architecture expectations, and PR gates, start with
 [`CONTRIBUTING.md`](../CONTRIBUTING.md). This page is the shorter command reference for local
 development.
 
+## Requirements
+
+Core development requires:
+
+- Git
+- Bun 1.3.11 or newer
+- Node.js 22 or newer
+- pnpm 9.15.4
+
+Additional requirements apply only to their respective test paths:
+
+- A Docker-compatible daemon for the local Supabase migration and bridge tests
+- macOS with Xcode and XcodeGen for native iPhone unit and UI tests
+
 ## Scripts
 
 ```sh
+corepack enable
+corepack prepare pnpm@9.15.4 --activate
 pnpm install
 pnpm start
 pnpm check
 pnpm build
-pnpm attention -- version
-pnpm attention -- doctor
-pnpm attention:build
-pnpm attention:smoke
-pnpm attention:package
+pnpm tend -- version
+pnpm tend -- doctor
+pnpm tend:build
+pnpm tend:smoke
+pnpm tend:package
 ```
 
 ## Local Runtime
@@ -23,13 +39,13 @@ pnpm attention:package
 Use `ATTENTION_HOME` to keep development data separate:
 
 ```sh
-ATTENTION_HOME=.local-attention pnpm attention -- start --foreground
+ATTENTION_HOME=.local-tend pnpm tend -- start --foreground
 ```
 
 In another terminal, verify the runtime:
 
 ```sh
-ATTENTION_HOME=.local-attention pnpm attention -- doctor
+ATTENTION_HOME=.local-tend pnpm tend -- doctor
 ```
 
 The doctor output is fully green only while the local API is running.
@@ -37,9 +53,9 @@ The doctor output is fully green only while the local API is running.
 For the background runner, use:
 
 ```sh
-ATTENTION_HOME=.local-attention pnpm attention -- start
-ATTENTION_HOME=.local-attention pnpm attention -- health
-ATTENTION_HOME=.local-attention pnpm attention -- stop
+ATTENTION_HOME=.local-tend pnpm tend -- start
+ATTENTION_HOME=.local-tend pnpm tend -- health
+ATTENTION_HOME=.local-tend pnpm tend -- stop
 ```
 
 ## Adding Capabilities
@@ -63,10 +79,13 @@ Domain tests live under `test/`. Add coverage for new invariants before exposing
 Start and validate the local Supabase stack:
 
 ```sh
-npx --yes supabase@latest start
-npx --yes supabase@latest db reset --local
-npx --yes supabase@latest test db
+pnpm exec supabase start
+pnpm exec supabase db reset --local
+pnpm exec supabase test db
 ```
+
+The repository pins the Supabase CLI as a development dependency, so these are the same commands
+used in CI.
 
 Generate the Xcode project and run the `Tend` scheme:
 
@@ -99,20 +118,24 @@ Pull requests run the same core gates expected locally:
 pnpm install --frozen-lockfile
 pnpm check
 pnpm build
-pnpm attention:build
-pnpm attention:smoke
-pnpm attention:package
+pnpm tend:build
+pnpm tend:smoke
+pnpm tend:package
 ```
 
-`pnpm check` runs TypeScript, Oxlint, and Bun tests. `pnpm attention:smoke` starts the compiled
-`dist-bin/attention` binary in foreground mode against a temporary `ATTENTION_HOME`, checks
-`attention version`, checks `/api/status`, validates the app version, CLI contract version and schema
+`pnpm check` runs TypeScript, Oxlint, and Bun tests. `pnpm tend:smoke` starts the compiled
+`dist-bin/tend` binary in foreground mode against a temporary `ATTENTION_HOME`, checks
+`tend version`, checks `/api/status`, validates the app version, CLI contract version and schema
 version, verifies the built UI is served, confirms core JSON CLI commands work, stops the server,
 and removes the temporary data directory.
 
-Use `pnpm attention:package` after the smoke check when preparing a local release archive. It writes
+Use `pnpm tend:package` after the smoke check when preparing a local release archive. It writes
 a platform-specific tarball and checksum under `dist-bin/releases/`. The tarball includes the
 compiled binary, built `dist/` UI assets, license, and release docs.
+
+CI also starts a local Supabase stack, resets and pgTAP-tests the database, runs the real mobile
+bridge integration test, generates the Xcode project, and runs the native `Tend` unit and UI test
+targets on a macOS runner.
 
 ## Releases
 

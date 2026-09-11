@@ -13,7 +13,7 @@ export async function startCommand(args: string[] = []): Promise<void> {
   await initRuntime();
   process.env.ATTENTION_CLIENT_DIR ??= defaultClientDir();
   const version = versionInfo();
-  print(`attention starting
+  print(`Tend starting
 Version: ${version.version}
 UI:  ${apiUrl()}
 API: ${apiUrl()}

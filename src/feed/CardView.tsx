@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { containsFullEmail } from "../../shared/emailThread";
 import { post } from "../app/api";
-import type { Card, CardAction, CardBlock, WorkItem } from "../types";
+import type { Card, CardAction, CardBlock, WorkItemView } from "../types";
 import { DetachedLink } from "../ui/DetachedLink";
 import { FormattedText } from "../ui/FormattedText";
 import { visibleCardActions } from "./selectors";
@@ -28,6 +28,9 @@ function readableHistory(card: Card): Array<{ at: string; label: string; detail:
     }
     if (entry.type === "user.edited_queued_instruction") {
       return [{ at: entry.at, label: "You corrected", detail: entry.detail ?? "The queued note." }];
+    }
+    if (entry.type === "user.card_dismissed") {
+      return [{ at: entry.at, label: "You dismissed", detail: "Removed this card from review. The source was not changed." }];
     }
     if (entry.type === "user.returned_to_review") {
       return [{ at: entry.at, label: "Back for review", detail: "You moved this card back into the sweep." }];
@@ -94,7 +97,14 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
     return (
       <section className="block block-editor">
         {block.label && <h3>{block.label}</h3>}
-        <textarea data-block-id={block.id} value={value} onChange={(event) => setValue(event.target.value)} onBlur={() => void save()} rows={Math.max(4, value.split("\n").length + 1)} />
+        <textarea
+          aria-label={block.label ?? "Editable card content"}
+          data-block-id={block.id}
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          onBlur={() => void save()}
+          rows={Math.max(4, value.split("\n").length + 1)}
+        />
       </section>
     );
   }
@@ -210,7 +220,7 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
   return <section className={`block block-${block.type}`}>{block.label && <h3>{block.label}</h3>}<p><FormattedText text={block.text} /></p></section>;
 }
 
-function QueuedNoteEditor({ work, onChanged }: { work: WorkItem; onChanged: () => void }) {
+function QueuedNoteEditor({ work, onChanged }: { work: WorkItemView; onChanged: () => void }) {
   const [value, setValue] = useState(work.instruction);
   const [saving, setSaving] = useState(false);
   useEffect(() => setValue(work.instruction), [work.instruction]);
@@ -228,7 +238,7 @@ function QueuedNoteEditor({ work, onChanged }: { work: WorkItem; onChanged: () =
   return (
     <section className="queued-note">
       <span className="action-label">Queued note</span>
-      <textarea value={value} onChange={(event) => setValue(event.target.value)} onBlur={() => void save()} rows={Math.max(2, value.split("\n").length)} />
+      <textarea aria-label="Queued note" value={value} onChange={(event) => setValue(event.target.value)} onBlur={() => void save()} rows={Math.max(2, value.split("\n").length)} />
       <small>{saving ? "Saving..." : "Edit before Codex claims it."}</small>
     </section>
   );
@@ -264,18 +274,20 @@ export function CardView({
   onChanged,
   onAction,
   onReturnToReview,
+  queuedFor,
 }: {
   card: Card;
-  queuedNote?: WorkItem;
+  queuedNote?: WorkItemView;
   active: boolean;
   onActivate: () => void;
   onChanged: () => void;
   onAction: (action: CardAction) => void;
   onReturnToReview: () => void;
+  queuedFor?: string;
 }) {
   const actions = visibleCardActions(card);
   const nextThing = card.proposedAction?.label === "Decide disposition"
-    ? "Archive, or tell Codex what to do"
+    ? "Dismiss, or tell Codex what to do"
     : card.proposedAction?.label ?? actions.find((action) => action.variant === "primary")?.label ?? actions[0]?.label;
   return (
     <article className={`attention-card ${card.contextInfluence ? "has-context-influence" : ""} ${active ? "is-active" : ""}`} data-card-id={card.id} onClick={onActivate} onMouseEnter={onActivate}>
@@ -313,12 +325,14 @@ export function CardView({
           <div className="action-buttons">
             {actions.map((action) => (
               <button
+                aria-keyshortcuts={action.shortcut}
+                aria-label={action.label}
                 className={`button ${action.variant === "primary" ? "primary" : "ghost"}`}
                 key={action.id}
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={(event) => { event.stopPropagation(); onAction(action); }}
               >
-                {action.label}{action.shortcut && <kbd>{action.shortcut.toUpperCase()}</kbd>}
+                {action.label}{action.shortcut && <kbd aria-hidden="true">{action.shortcut.toUpperCase()}</kbd>}
               </button>
             ))}
           </div>
@@ -327,8 +341,8 @@ export function CardView({
       {(card.status === "queued" || card.status === "done") && (
         <footer className="card-action">
           <div>
-            <span className="action-label">{card.status === "queued" ? "Queued for Codex" : "Done"}</span>
-            <b>{card.status === "queued" ? "Waiting for the feed thread" : "Completed"}</b>
+            <span className="action-label">{card.status === "queued" ? `Queued for ${queuedFor ?? "Codex"}` : "Done"}</span>
+            <b>{card.status === "queued" ? `Waiting for ${queuedFor ?? "the feed thread"}` : card.completionDisposition === "dismissed" ? "Dismissed" : "Completed"}</b>
           </div>
           <div className="action-buttons">
             <button className="button ghost" onClick={(event) => { event.stopPropagation(); onReturnToReview(); }}>

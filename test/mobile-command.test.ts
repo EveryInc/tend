@@ -125,7 +125,7 @@ describe("mobile commands", () => {
 
   test("revalidates external recipients after applying an exact artifact edit", async () => {
     const { store, domain } = await setup();
-    await domain.updateBlock("inbox", "reply", "draft", "Send this to original@example.com.");
+    await domain.updateBlock("inbox", "reply", "draft", "To: original@example.com\n\nExact reply body.");
     const projection = (await projectMobileWorkspace(store)).cards.find((card) => card.cardId === "reply")!;
     const action = projection.actions.find((item) => item.id === "send")!;
 
@@ -134,7 +134,7 @@ describe("mobile commands", () => {
       actionId: "send",
       expectedActionDigest: action.digest,
       instruction: undefined,
-      edits: { draft: "Send this to changed@example.com." },
+      edits: { draft: "To: changed@example.com\n\nExact reply body." },
       riskConfirmation: {
         kind: "external_recipient",
         recipients: ["original@example.com"],
@@ -150,5 +150,99 @@ describe("mobile commands", () => {
     await expect(domain.applyMobileCommand(command(projection, {
       id: "../../outside",
     }))).rejects.toThrow("command id");
+  });
+
+  test("applies a local dismiss command with no work item and marks the card dismissed", async () => {
+    const { store, domain } = await setup();
+    const projection = (await projectMobileWorkspace(store)).cards.find((card) => card.cardId === "reply")!;
+    const dismissAction = projection.actions.find((action) => action.id === "dismiss-card")!;
+    expect(dismissAction.behavior).toBe("dismiss_card");
+
+    const input = command(projection, {
+      id: "10000000-0000-0000-0000-000000000009",
+      clientRequestId: "request-dismiss",
+      kind: "dismiss",
+      actionId: "dismiss-card",
+      expectedActionDigest: dismissAction.digest,
+    });
+
+    const result = await domain.applyMobileCommand(input);
+
+    expect(result.receipt.state).toBe("applied");
+    expect(result.workId).toBeUndefined();
+
+    const card = await store.readCard("inbox", "reply");
+    expect(card.status).toBe("done");
+    expect(card.completionDisposition).toBe("dismissed");
+    expect((await store.readWorkItems("inbox")).filter((item) => item.cardId === "reply")).toHaveLength(0);
+
+    // Idempotent replay returns the same receipt and still creates no work.
+    const replay = await domain.applyMobileCommand(input);
+    expect(replay).toEqual(result);
+    expect((await store.readWorkItems("inbox")).filter((item) => item.cardId === "reply")).toHaveLength(0);
+  });
+
+  test("maps a schema-v1 approve command for the synthetic dismiss action to local dismissal", async () => {
+    const { store, domain } = await setup();
+    const projection = (await projectMobileWorkspace(store)).cards.find((card) => card.cardId === "reply")!;
+    const dismissAction = projection.actions.find((action) => action.id === "dismiss-card")!;
+
+    const result = await domain.applyMobileCommand(command(projection, {
+      id: "10000000-0000-0000-0000-00000000000b",
+      clientRequestId: "legacy-request-dismiss",
+      kind: "approve_action",
+      actionId: "dismiss-card",
+      expectedActionDigest: dismissAction.digest,
+      instruction: undefined,
+    }));
+
+    expect(result.receipt.state).toBe("applied");
+    expect(result.workId).toBeUndefined();
+    expect(await store.readWorkItems("inbox")).toHaveLength(0);
+    expect(await store.readCard("inbox", "reply")).toMatchObject({ status: "done", completionDisposition: "dismissed" });
+  });
+
+  test("rejects a dismiss command whose action digest is stale", async () => {
+    const { store, domain } = await setup();
+    const projection = (await projectMobileWorkspace(store)).cards.find((card) => card.cardId === "reply")!;
+
+    await expect(domain.applyMobileCommand(command(projection, {
+      id: "10000000-0000-0000-0000-00000000000a",
+      clientRequestId: "request-dismiss-stale",
+      kind: "dismiss",
+      actionId: "dismiss-card",
+      expectedActionDigest: "stale-digest",
+    }))).rejects.toThrow("stale");
+  });
+
+  test("rejects stale mobile commands for legacy cards with reserved action ids", async () => {
+    const { store, domain } = await setup();
+    const legacy = await store.readCard("inbox", "reply");
+    legacy.proposedAction = {
+      label: "Send the proposed reply",
+      instruction: "Send the separate proposed reply.",
+      externalMutation: true,
+    };
+    legacy.actions = [{
+      id: "proposed-action",
+      label: "Prepare a harmless note",
+      behavior: "approve_action",
+      instruction: "Prepare a harmless note only.",
+    }];
+    await store.writeCard(legacy);
+
+    const projection = (await projectMobileWorkspace(store)).cards.find((card) => card.cardId === "reply")!;
+    const projected = projection.actions.find((action) => action.id === "proposed-action")!;
+    expect(projected.label).toBe("Send the proposed reply");
+
+    await expect(domain.applyMobileCommand(command(projection, {
+      id: "10000000-0000-0000-0000-00000000000b",
+      clientRequestId: "request-legacy-reserved",
+      kind: "approve_action",
+      actionId: "proposed-action",
+      expectedActionDigest: projected.digest,
+      instruction: undefined,
+    }))).rejects.toThrow("reserved by Tend");
+    expect((await store.readWorkItems("inbox")).filter((work) => work.cardId === "reply")).toHaveLength(0);
   });
 });

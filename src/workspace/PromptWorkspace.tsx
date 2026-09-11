@@ -1,7 +1,19 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, post } from "../app/api";
 import type { Inspector, WorkspaceTab } from "../app/types";
-import type { VoiceTarget, WorkspaceRevision, WorkspaceView } from "../types";
+import type { SourceRecipe, ThreadBinding, VoiceTarget, WorkspaceRevision, WorkspaceView } from "../types";
+
+interface FeedWorkspaceView {
+  policy: string;
+  sources: Array<SourceRecipe & { content: string; checkpoint: string }>;
+  prompts: Array<{ name: string; content: string }>;
+  thread: ThreadBinding;
+}
+
+interface GlobalWorkspaceView {
+  globalPolicy: string;
+  prompts: Array<{ name: string; content: string }>;
+}
 
 function WorkspaceEditor({
   label,
@@ -26,7 +38,7 @@ function WorkspaceEditor({
       <div className="workspace-editor-head">
         <h3>{label}</h3>
         <div className="workspace-editor-actions">
-          {undoRevision && <button className="button text" onClick={() => void (async () => {
+          {undoRevision && <button aria-label={`Undo last save for ${label}`} className="button text" onClick={() => void (async () => {
             setSaving(true);
             try {
               await onUndo(undoRevision);
@@ -37,7 +49,7 @@ function WorkspaceEditor({
               setSaving(false);
             }
           })()}>Undo last save</button>}
-          <button className="button ghost" disabled={!changed || saving} onClick={() => void (async () => {
+          <button aria-label={`Save ${label}`} className="button ghost" disabled={!changed || saving} onClick={() => void (async () => {
             setSaving(true);
             try {
               const revision = await onSave(value);
@@ -50,19 +62,78 @@ function WorkspaceEditor({
           })()}>{saving ? "Saving…" : "Save"}</button>
         </div>
       </div>
-      <textarea value={value} onFocus={onFocus} onClick={onFocus} onChange={(event) => setValue(event.target.value)} rows={Math.max(7, Math.min(20, value.split("\n").length + 2))} />
+      <textarea aria-label={label} value={value} onFocus={onFocus} onClick={onFocus} onChange={(event) => setValue(event.target.value)} rows={Math.max(7, Math.min(20, value.split("\n").length + 2))} />
     </section>
   );
 }
 
-export function PromptWorkspace({ state, tab, onTab, onBack, onInspector, onSaved, onTargetFocus }: { state: WorkspaceView; tab: WorkspaceTab; onTab: (tab: WorkspaceTab) => void; onBack: () => void; onInspector: (value: Inspector) => void; onSaved: (message: string) => void; onTargetFocus: (target: VoiceTarget) => void }) {
-  const [feedWorkspace, setFeedWorkspace] = useState<any>(null);
-  const [globalWorkspace, setGlobalWorkspace] = useState<any>(null);
+function ThreadSetupGuide({
+  feedId,
+  feedName,
+  thread,
+  onCopied,
+}: {
+  feedId: string;
+  feedName: string;
+  thread: ThreadBinding;
+  onCopied: (message: string) => void;
+}) {
+  if (thread.heartbeat.status === "installed") return null;
+  const command = `tend setup codex --feed ${feedId}`;
+  const bound = Boolean(thread.homeThreadId);
+  const copyCommand = async () => {
+    try {
+      await navigator.clipboard.writeText(command);
+      onCopied("Codex setup command copied");
+    } catch {
+      onCopied("Could not copy automatically. Select the command and copy it manually.");
+    }
+  };
+  return (
+    <div className={`thread-onboarding${bound ? " is-partial" : ""}`}>
+      <div className="panel-kicker">{bound ? "Finish Codex setup" : "Codex-native setup"}</div>
+      <h3>{bound ? "Keep setup in this same thread." : `Give ${feedName} its own Codex thread.`}</h3>
+      <p>Tend is intended to stay open in Codex Desktop's in-app browser. You review the feed here; its dedicated Codex thread collects sources and handles queued work.</p>
+      <ol>
+        {!bound && <li>Create a fresh Codex thread for this feed. Do not share it with another feed.</li>}
+        <li>Run the setup command from your Tend install, then paste its output into {bound ? "the bound thread" : "that new thread"}.</li>
+        <li>Let the thread bind itself and install one heartbeat before using the feed actions.</li>
+      </ol>
+      <div className="thread-setup-command">
+        <code>{command}</code>
+        <button type="button" className="button ghost" aria-label={`Copy Codex setup command for ${feedName}`} onClick={() => void copyCommand()}>Copy command</button>
+      </div>
+      <p className="thread-command-note">From an unpacked release, use <code>./tend</code>. From source, use <code>pnpm tend --</code> before <code>setup codex --feed {feedId}</code>.</p>
+      <p className="thread-manual-wake"><strong>Manual activation:</strong> open or wake that same thread and say <code>go deal with the feed</code> for the first run, after a paused heartbeat, or whenever you want an immediate sweep.</p>
+    </div>
+  );
+}
+
+export function PromptWorkspace({ state, refreshVersion, tab, onTab, onBack, onInspector, onSaved, onTargetFocus }: { state: WorkspaceView; refreshVersion: number; tab: WorkspaceTab; onTab: (tab: WorkspaceTab) => void; onBack: () => void; onInspector: (value: Inspector) => void; onSaved: (message: string) => void; onTargetFocus: (target: VoiceTarget) => void }) {
+  const [feedWorkspace, setFeedWorkspace] = useState<FeedWorkspaceView | null>(null);
+  const [globalWorkspace, setGlobalWorkspace] = useState<GlobalWorkspaceView | null>(null);
+  const feedRequest = useRef(0);
+  const globalRequest = useRef(0);
   const feedId = state.active.config.id;
-  const reloadFeed = useCallback(async () => setFeedWorkspace(await api(`/api/feeds/${feedId}/how`)), [feedId]);
-  const reloadGlobal = useCallback(async () => setGlobalWorkspace(await api("/api/global-prompts")), []);
-  useEffect(() => { void reloadFeed(); }, [reloadFeed]);
-  useEffect(() => { if (tab === "global") void reloadGlobal(); }, [reloadGlobal, tab]);
+  const reloadFeed = useCallback(async () => {
+    const request = ++feedRequest.current;
+    const workspace = await api<FeedWorkspaceView>(`/api/feeds/${feedId}/how`);
+    if (request === feedRequest.current) setFeedWorkspace(workspace);
+  }, [feedId]);
+  const reloadGlobal = useCallback(async () => {
+    const request = ++globalRequest.current;
+    const workspace = await api<GlobalWorkspaceView>("/api/global-prompts");
+    if (request === globalRequest.current) setGlobalWorkspace(workspace);
+  }, []);
+  useEffect(() => {
+    setFeedWorkspace(null);
+    return () => { feedRequest.current += 1; };
+  }, [feedId]);
+  useEffect(() => { void reloadFeed(); }, [reloadFeed, refreshVersion]);
+  useEffect(() => {
+    if (tab === "global") void reloadGlobal();
+    return () => { globalRequest.current += 1; };
+  }, [reloadGlobal, tab]);
   const save = async <T,>(callback: () => Promise<T>, message: string, reload: () => Promise<void>): Promise<T> => {
     try {
       const result = await callback();
@@ -101,7 +172,13 @@ export function PromptWorkspace({ state, tab, onTab, onBack, onInspector, onSave
           </section>
           <section className="workspace-section">
             <h2>Home thread</h2>
-            <pre>{JSON.stringify(feedWorkspace.thread, null, 2)}</pre>
+            <ThreadSetupGuide feedId={feedId} feedName={state.active.config.name} thread={feedWorkspace.thread} onCopied={onSaved} />
+            <div className="thread-status">
+              <div><span>Thread</span><strong>{feedWorkspace.thread.homeThreadId ?? "Not bound"}</strong></div>
+              <div><span>Bound</span><strong>{feedWorkspace.thread.boundAt ? new Date(feedWorkspace.thread.boundAt).toLocaleString() : "Not yet"}</strong></div>
+              <div><span>Heartbeat</span><strong>{feedWorkspace.thread.heartbeat.status.replace("_", " ")}</strong></div>
+              <div><span>Cadence</span><strong>{feedWorkspace.thread.heartbeat.cadence ?? "Not configured"}</strong></div>
+            </div>
           </section>
         </div>
       ) : !globalWorkspace ? <p>Loading global prompts…</p> : (

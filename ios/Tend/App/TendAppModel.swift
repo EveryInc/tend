@@ -7,7 +7,7 @@ final class TendAppModel {
     enum AuthState: Equatable {
         case loading
         case signedOut
-        case codeSent
+        case linkSent
         case authenticated
     }
 
@@ -15,6 +15,7 @@ final class TendAppModel {
         let id: UUID
         let card: MobileCard
         let activity: MobileActivity
+        let kind: String
     }
 
     var authState: AuthState = .loading
@@ -22,7 +23,6 @@ final class TendAppModel {
     var selectedTab = 0
     var selectedFeedID: String?
     var email: String
-    var code = ""
     var isRefreshing = false
     var isSubmitting = false
     var errorMessage: String?
@@ -73,11 +73,7 @@ final class TendAppModel {
         }
         let hasSession = repository.usesFixtures ? true : await repository.hasSession()
         if hasSession {
-            authState = .authenticated
-            await refresh()
-            try? await repository.startObserving { [weak self] in
-                await self?.refresh()
-            }
+            await finishAuthentication()
         } else {
             snapshot = .empty
             drafts = [:]
@@ -87,7 +83,7 @@ final class TendAppModel {
         }
     }
 
-    func requestCode() async {
+    func requestSignInLink() async {
         let normalized = email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !normalized.isEmpty else {
             errorMessage = "Enter the email address allowed to use Tend."
@@ -100,32 +96,22 @@ final class TendAppModel {
         isSubmitting = true
         defer { isSubmitting = false }
         do {
-            try await repository.requestEmailCode(email: normalized)
+            try await repository.requestSignInLink(email: normalized)
             email = normalized
-            code = ""
-            authState = .codeSent
+            authState = .linkSent
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    func verifyCode() async {
-        let normalizedCode = code.filter(\.isNumber)
-        guard normalizedCode.count >= 6 else {
-            errorMessage = "Enter the six-digit code from your email."
-            return
-        }
+    func handleAuthCallback(_ url: URL) async {
+        guard !repository.usesFixtures else { return }
         isSubmitting = true
         defer { isSubmitting = false }
         do {
-            try await repository.verifyEmailCode(email: email, code: normalizedCode)
-            authState = .authenticated
-            errorMessage = nil
-            await refresh()
-            try? await repository.startObserving { [weak self] in
-                await self?.refresh()
-            }
+            try await repository.handleAuthCallback(url)
+            await finishAuthentication()
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -198,6 +184,8 @@ final class TendAppModel {
         let kind: String
         if action.behavior == "default_cleanup" {
             kind = "archive"
+        } else if action.behavior == "dismiss_card" {
+            kind = "dismiss"
         } else if card.itemKind == "routine_action_group" {
             kind = "approve_routine_action"
         } else if action.behavior == "queue_instruction" {
@@ -266,7 +254,7 @@ final class TendAppModel {
             guard let cancelled = try await repository.cancel(commandID: undo.activity.id) else {
                 pendingUndo = nil
                 await refresh()
-                errorMessage = "That archive already left the undo window. Its current state is shown in Activity."
+                errorMessage = "That change already left the undo window. Its current state is shown in Activity."
                 return
             }
             restore(card: undo.card)
@@ -324,8 +312,8 @@ final class TendAppModel {
             if removeFromReview {
                 markHandled(card: card)
             }
-            if submission.kind == "archive" {
-                pendingUndo = UndoArchive(id: activity.id, card: card, activity: activity)
+            if submission.kind == "archive" || submission.kind == "dismiss" {
+                pendingUndo = UndoArchive(id: activity.id, card: card, activity: activity, kind: submission.kind)
                 undoTask?.cancel()
                 undoTask = Task {
                     try? await Task.sleep(for: .seconds(5))
@@ -379,5 +367,14 @@ final class TendAppModel {
             }
             .first?
             .id
+    }
+
+    private func finishAuthentication() async {
+        authState = .authenticated
+        errorMessage = nil
+        await refresh()
+        try? await repository.startObserving { [weak self] in
+            await self?.refresh()
+        }
     }
 }

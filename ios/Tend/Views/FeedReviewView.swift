@@ -54,7 +54,7 @@ struct FeedReviewView: View {
                         .font(.headline)
                     Text(cards.isEmpty ? "All clear" : "\(cards.count) left")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TendTheme.secondaryInk)
                 }
                 .accessibilityElement(children: .combine)
             }
@@ -102,43 +102,47 @@ struct FeedReviewView: View {
     }
 
     private func cardDeck(feed: MobileFeed, card: MobileCard) -> some View {
-        ScrollView {
-            VStack(spacing: 14) {
-                reviewProgress(feed: feed)
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(spacing: 14) {
+                    reviewProgress(feed: feed)
 
-                MobileCardView(
-                    card: card,
-                    edits: $edits,
-                    openURL: openURL,
-                    openMind: {
-                        model.selectedTab = 1
-                        dismiss()
-                    }
-                )
-                .offset(x: 0)
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 24)
-                        .onEnded { value in
-                            guard value.translation.width < -90,
-                                  abs(value.translation.width) > abs(value.translation.height) * 1.35,
-                                  card.archiveAction != nil else { return }
-                            archive(card)
+                    MobileCardView(
+                        card: card,
+                        edits: $edits,
+                        openURL: openURL,
+                        openMind: {
+                            model.selectedTab = 1
+                            dismiss()
                         }
-                )
+                    )
+                    .offset(x: 0)
+                    .simultaneousGesture(
+                        DragGesture(minimumDistance: 24)
+                            .onEnded { value in
+                                guard value.translation.width < -90,
+                                      abs(value.translation.width) > abs(value.translation.height) * 1.35,
+                                      card.archiveAction != nil else { return }
+                                archive(card)
+                            }
+                    )
 
-                Text("Swipe left to archive")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.bottom, 4)
+                    if card.archiveAction != nil {
+                        Text("Swipe left to archive")
+                            .font(.caption)
+                            .foregroundStyle(TendTheme.secondaryInk)
+                            .padding(.bottom, 4)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 16)
             }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 124)
-        }
-        .safeAreaInset(edge: .bottom) {
+
             ReviewActionTray(
                 card: card,
                 isSubmitting: model.isSubmitting,
                 archive: { archive(card) },
+                dismiss: { dismissCard(card) },
                 talkOrType: { showComposer = true },
                 selectAction: { action in
                     handle(action: action, card: card)
@@ -153,12 +157,12 @@ struct FeedReviewView: View {
                 .foregroundStyle(TendTheme.cobalt)
             Text(feed.purpose)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(TendTheme.secondaryInk)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer()
             Text("Pass \(feed.currentPass)")
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(TendTheme.secondaryInk)
         }
         .padding(.top, 8)
     }
@@ -193,6 +197,17 @@ struct FeedReviewView: View {
     private func archive(_ card: MobileCard) {
         guard let action = card.archiveAction, !model.isSubmitting else { return }
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        Task {
+            let succeeded = await model.submit(action: action, for: card, edits: [:])
+            if succeeded {
+                finishFeedIfNeeded()
+            }
+        }
+    }
+
+    private func dismissCard(_ card: MobileCard) {
+        guard let action = card.dismissAction, !model.isSubmitting else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         Task {
             let succeeded = await model.submit(action: action, for: card, edits: [:])
             if succeeded {
@@ -246,23 +261,26 @@ private struct ReviewActionTray: View {
     let card: MobileCard
     let isSubmitting: Bool
     let archive: () -> Void
+    let dismiss: () -> Void
     let talkOrType: () -> Void
     let selectAction: (MobileAction) -> Void
 
     private var namedActions: [MobileAction] {
-        card.actions.filter { $0.behavior != "default_cleanup" }
+        card.actions.filter { $0.behavior != "default_cleanup" && $0.behavior != "dismiss_card" }
     }
 
     var body: some View {
         VStack(spacing: 10) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 10) {
-                    archiveButton
+                    if card.archiveAction != nil { archiveButton }
+                    if card.dismissAction != nil { dismissButton }
                     talkButton
                 }
                 VStack(spacing: 8) {
                     talkButton
-                    archiveButton
+                    if card.archiveAction != nil { archiveButton }
+                    if card.dismissAction != nil { dismissButton }
                 }
             }
 
@@ -299,9 +317,6 @@ private struct ReviewActionTray: View {
         .padding(.top, 12)
         .padding(.bottom, 6)
         .background(.ultraThinMaterial)
-        .overlay(alignment: .top) {
-            Divider()
-        }
     }
 
     private var archiveButton: some View {
@@ -311,6 +326,15 @@ private struct ReviewActionTray: View {
         }
         .buttonStyle(TendSecondaryButtonStyle())
         .disabled(isSubmitting || card.archiveAction == nil)
+    }
+
+    private var dismissButton: some View {
+        Button(action: dismiss) {
+            Label("Dismiss card", systemImage: "checkmark.circle")
+                .frame(maxWidth: .infinity, minHeight: 44)
+        }
+        .buttonStyle(TendSecondaryButtonStyle())
+        .disabled(isSubmitting || card.dismissAction == nil)
     }
 
     private var talkButton: some View {
@@ -338,7 +362,7 @@ private struct EmptyFeedView: View {
                 .multilineTextAlignment(.center)
             if let nextFeed {
                 Text("\(nextFeed.name) has \(nextFeed.reviewCount) waiting.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TendTheme.secondaryInk)
                 Button("Back to feeds") {
                     done()
                 }
@@ -346,7 +370,7 @@ private struct EmptyFeedView: View {
                 .controlSize(.large)
             } else {
                 Text("Nothing else needs review right now.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TendTheme.secondaryInk)
                 Button("Back to feeds") {
                     done()
                 }
@@ -382,13 +406,13 @@ private struct InstructionComposer: View {
                         .lineLimit(2)
                     Label("Use the Monologue keyboard or type normally", systemImage: "waveform")
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TendTheme.secondaryInk)
                 }
 
                 ZStack(alignment: .topLeading) {
                     if text.isEmpty {
                         Text("Tell Codex what to notice, change, research, or do…")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(TendTheme.secondaryInk)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 10)
                             .allowsHitTesting(false)
@@ -460,7 +484,7 @@ private struct ActionApprovalSheet: View {
                             .font(.tendSerif(.title))
                         Text(card.title)
                             .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(TendTheme.secondaryInk)
                     }
 
                     if let confirmation = action.confirmation {
@@ -484,7 +508,7 @@ private struct ActionApprovalSheet: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(block.label ?? "Approved text")
                                 .font(.caption.weight(.bold))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(TendTheme.secondaryInk)
                                 .textCase(.uppercase)
                             TextEditor(text: editBinding(for: block))
                                 .font(.body)
@@ -503,7 +527,7 @@ private struct ActionApprovalSheet: View {
 
                     Text("Your tap authorizes this one exact action and the visible text above. If the card, action, recipient, mailbox, or digest changes, Tend rejects it.")
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TendTheme.secondaryInk)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .padding(18)

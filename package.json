@@ -1,6 +1,6 @@
 {
-  "name": "attention",
-  "version": "0.1.0",
+  "name": "tend",
+  "version": "0.2.0",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -8,41 +8,51 @@
     "api": "bun server.ts",
     "web": "bun web.ts",
     "dev": "vite --host 127.0.0.1",
-    "start": "concurrently -k -n api,web -c brown,blue \"bun run api\" \"pnpm dev\"",
+    "start": "bun scripts/dev.ts",
     "build": "tsc && vite build",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint .",
     "check": "pnpm typecheck && pnpm lint && pnpm test",
     "test": "bun test",
-    "live": "./bin/tend-live",
-    "cli": "bun run cli.ts",
-    "seed:demo": "bun run cli.ts demo:seed",
-    "attention": "bun attention.ts",
-    "attention:doctor": "bun attention.ts doctor",
-    "attention:build": "bun build ./attention.ts --compile --outfile dist-bin/attention",
-    "attention:smoke": "bun scripts/smoke-binary.ts",
-    "attention:package": "bun scripts/package-binary.ts"
+    "seed:demo": "bun tend.ts cli demo:seed",
+    "tend": "bun tend.ts",
+    "tend:build": "bun scripts/clean-legacy-cli-artifacts.ts && bun build ./tend.ts --compile --outfile dist-bin/tend",
+    "tend:smoke": "bun scripts/smoke-binary.ts",
+    "tend:package": "bun scripts/clean-legacy-cli-artifacts.ts && bun scripts/package-binary.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.101.0",
     "@tanstack/react-router": "^1.170.11",
-    "@vitejs/plugin-react": "^5.1.1",
-    "concurrently": "^9.2.1",
-    "hono": "^4.10.7",
+    "hono": "^4.13.7",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "typescript": "^5.9.3",
-    "vite": "^7.2.7"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.10.6",
+    "@testing-library/react": "^16.3.2",
     "@types/bun": "^1.3.14",
     "@types/node": "^24.10.2",
     "@types/react": "^18.3.27",
     "@types/react-dom": "^18.3.7",
-    "oxlint": "^1.68.0"
+    "@vitejs/plugin-react": "^5.2.0",
+    "oxlint": "^1.68.0",
+    "supabase": "2.106.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.5"
+  },
+  "engines": {
+    "bun": ">=1.3.11",
+    "node": ">=22",
+    "pnpm": "9.15.4"
   },
   "packageManager": "pnpm@9.15.4",
+  "pnpm": {
+    "overrides": {
+      "esbuild": "0.28.1",
+      "browserslist@<4.28.7": "4.28.7"
+    }
+  },
   "bin": {
-    "attention": "./attention.ts"
+    "tend": "./tend.ts"
   }
 }

@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - "codex/**"
 
 permissions:
   contents: read
@@ -21,7 +20,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -29,7 +28,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
 
@@ -41,6 +40,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high
+
       - name: Run project checks
         run: pnpm check
 
@@ -48,10 +50,101 @@ jobs:
         run: pnpm build
 
       - name: Compile local binary
-        run: pnpm attention:build
+        run: pnpm tend:build
 
       - name: Smoke test local binary
-        run: pnpm attention:smoke
+        run: pnpm tend:smoke
 
       - name: Package local binary
-        run: pnpm attention:package
+        run: pnpm tend:package
+
+  mobile-database:
+    name: Supabase migration and bridge
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.4 --activate
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start local Supabase
+        run: pnpm exec supabase start
+
+      - name: Reset and test database
+        run: |
+          pnpm exec supabase db reset --local
+          pnpm exec supabase test db
+
+      - name: Run mobile bridge integration
+        shell: bash
+        run: |
+          eval "$(pnpm exec supabase status -o env)"
+          TEND_SUPABASE_E2E=1 \
+          TEND_TEST_SUPABASE_URL="$API_URL" \
+          TEND_TEST_SUPABASE_ANON_KEY="$ANON_KEY" \
+          TEND_TEST_SUPABASE_SERVICE_ROLE_KEY="$SERVICE_ROLE_KEY" \
+          TEND_TEST_SUPABASE_JWT_SECRET="$JWT_SECRET" \
+          bun test test/mobile-supabase-e2e.test.ts
+
+      - name: Stop local Supabase
+        if: always()
+        run: pnpm exec supabase stop --no-backup
+
+  ios:
+    name: Native iPhone tests
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app/Contents/Developer
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Run unit and UI tests
+        shell: bash
+        run: |
+          SIMULATOR_ID="$(xcrun simctl list devices available -j | python3 -c 'import json, sys; devices = json.load(sys.stdin)["devices"]; print(next(device["udid"] for runtime in devices.values() for device in runtime if device.get("isAvailable") and device["name"].startswith("iPhone")))')"
+          xcodebuild test \
+            -project ios/Tend.xcodeproj \
+            -scheme Tend \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_ID" \
+            -retry-tests-on-failure \
+            -test-iterations 2 \
+            -test-repetition-relaunch-enabled YES \
+            -resultBundlePath "$RUNNER_TEMP/TendTests.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            DEVELOPMENT_TEAM=
+
+      - name: Upload iOS test results
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: TendTests-xcresult
+          path: ${{ runner.temp }}/TendTests.xcresult

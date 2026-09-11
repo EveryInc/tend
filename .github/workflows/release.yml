@@ -25,7 +25,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -33,7 +33,7 @@ jobs:
           bun-version: 1.3.11
 
       - name: Set up Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
 
@@ -45,6 +45,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Audit dependencies
+        run: pnpm audit --audit-level high
+
       - name: Run project checks
         run: pnpm check
 
@@ -52,18 +55,18 @@ jobs:
         run: pnpm build
 
       - name: Compile local binary
-        run: pnpm attention:build
+        run: pnpm tend:build
 
       - name: Smoke test local binary
-        run: pnpm attention:smoke
+        run: pnpm tend:smoke
 
       - name: Package local binary
-        run: pnpm attention:package
+        run: pnpm tend:package
 
       - name: Upload release archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: attention-${{ matrix.label }}
+          name: tend-${{ matrix.label }}
           path: |
             dist-bin/releases/*.tar.gz
             dist-bin/releases/*.sha256
@@ -76,13 +79,13 @@ jobs:
 
     steps:
       - name: Download release artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-artifacts
           merge-multiple: true
 
       - name: Create draft GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           draft: true
           generate_release_notes: true

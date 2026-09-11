@@ -1,7 +1,7 @@
 import path from "node:path";
 import { CliError } from "./errors";
+import { apiUrl } from "./shared";
 
-const LIVE_STATUS_URL = "http://127.0.0.1:4333/api/status";
 const RUNTIME_INSPECTION_COMMANDS = new Set(["help", "help:internal", "runtime:where"]);
 
 interface LiveStatus {
@@ -24,7 +24,7 @@ export async function assertCliRuntimeMatchesLive(
   if (path.resolve(runtimeRoot) === liveRuntimeRoot) return;
 
   throw new CliError(
-    `Tend CLI runtime mismatch: this checkout resolved ${runtimeRoot}, but the healthy tend-live service uses ${liveRuntimeRoot}.`,
+    `Tend CLI runtime mismatch: this command resolved ${runtimeRoot}, but the running Tend service uses ${liveRuntimeRoot}.`,
     {
       code: "runtime_mismatch",
       hint: "Run the CLI from the canonical checkout or set ATTENTION_HOME explicitly for isolated validation.",
@@ -34,7 +34,7 @@ export async function assertCliRuntimeMatchesLive(
 
 async function fetchLiveStatus(): Promise<LiveStatus | null> {
   try {
-    const response = await fetch(LIVE_STATUS_URL, { signal: AbortSignal.timeout(500) });
+    const response = await fetch(`${apiUrl()}/api/status`, { signal: AbortSignal.timeout(500) });
     if (!response.ok) return null;
     return await response.json() as LiveStatus;
   } catch {

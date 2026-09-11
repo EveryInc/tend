@@ -17,7 +17,7 @@ enum FixtureData {
     )
 
     static let feeds: [MobileFeed] = [
-        feed("inbox", "Inbox", "Email decisions and replies", 0, 3, "Rachel and Adam's agreements are ready"),
+        feed("inbox", "Inbox", "Email decisions and replies", 0, 4, "Rachel and Adam's agreements are ready"),
         feed("company-attention", "Company", "Signals, people, and operating decisions", 1, 1, "The paywall work now has a sharper question"),
         feed("every", "Every", "Editorial, product, and audience opportunities", 2, 1, "A new distribution experiment is worth testing"),
         feed("proof-pulse", "Proof", "Product quality and retention evidence", 3, 1, "Repeat-work improved after the latest release"),
@@ -26,6 +26,7 @@ enum FixtureData {
     static let cards: [MobileCard] = [
         agreementCard,
         replyCard,
+        dismissOnlyCard,
         paywallCard,
         researchCard,
         chartCard,
@@ -156,6 +157,21 @@ enum FixtureData {
             createdAt: timestamp(minutesAgo: 5),
             updatedAt: timestamp(minutesAgo: 2)
         ),
+        MobileActivity(
+            id: UUID(uuidString: "10000000-0000-0000-0000-000000000003")!,
+            feedId: "inbox",
+            cardId: "agreements",
+            kind: "dismiss",
+            payload: MobileActivityPayload(actionId: "dismiss-card", instruction: nil, riskConfirmation: nil),
+            state: "applied",
+            availableAt: timestamp(minutesAgo: 30),
+            resultWorkId: nil,
+            workStatus: nil,
+            response: "Removed from Tend. The email was left untouched.",
+            error: nil,
+            createdAt: timestamp(minutesAgo: 30),
+            updatedAt: timestamp(minutesAgo: 29)
+        ),
     ]
 
     private static let agreementCard = card(
@@ -176,6 +192,7 @@ enum FixtureData {
         ],
         actions: [
             action("default-cleanup", "Archive", "default_cleanup", "cleanup-agreements", variant: "secondary"),
+            action("dismiss-card", "Dismiss card", "dismiss_card", "dismiss-agreements", variant: "secondary"),
             action("review", "Review both agreements", "queue_instruction", "review-agreements", variant: "primary"),
         ]
     )
@@ -196,6 +213,22 @@ enum FixtureData {
         actions: [
             action("default-cleanup", "Archive", "default_cleanup", "cleanup-reply", variant: "secondary"),
             action("send", "Send reply", "approve_action", "send-reply", artifact: "draft", external: true, variant: "primary"),
+        ]
+    )
+
+    private static let dismissOnlyCard = card(
+        key: "inbox:local-only",
+        feed: "inbox",
+        id: "local-only",
+        position: 2,
+        eyebrow: "Inbox · FYI",
+        title: "This FYI can leave Tend without changing its source",
+        why: "The card is no longer useful, but its source should remain untouched.",
+        blocks: [
+            MobileBlock(id: "memo", type: "memo", label: "Disposition", title: nil, text: "Dismiss only. No connector cleanup is authorized.", value: nil, items: nil, before: nil, after: nil, editable: nil, profile: nil, video: nil, chart: nil),
+        ],
+        actions: [
+            action("dismiss-card", "Dismiss card", "dismiss_card", "dismiss-local-only", variant: "secondary"),
         ]
     )
 
@@ -282,7 +315,7 @@ enum FixtureData {
         feed: "inbox",
         id: "routine:cleanup",
         itemKind: "routine_action_group",
-        position: 2,
+        position: 3,
         eyebrow: "Routine review",
         title: "Likely archive",
         why: "Three notices have no reply, decision, or downstream dependency.",

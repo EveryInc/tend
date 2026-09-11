@@ -1,5 +1,7 @@
 import type {
   AppFeedback,
+  AgentPresence,
+  AgentWakeLine,
   Card,
   CardAction,
   CardBlock,
@@ -27,21 +29,80 @@ import type {
   SweepFeedbackTrace,
   ThreadBinding,
   VoiceTarget,
+  WorkAgent,
+  WorkClaimResult,
+  WorkClaimant,
+  WorkClaimedByReport,
   WorkItem,
+  WorkItemView,
   WorkspaceRevision,
 } from "../shared/types";
 import type { MobileActionProjection, MobileCommand, MobileCommandResult, MobileCommandReceipt } from "../shared/mobile";
+import { isReservedCardActionId, safeConfiguredCardActions } from "../shared/cardActions";
 import { containsFullEmail } from "../shared/emailThread";
-import { AttentionStore, FEED_PROMPT_NAMES } from "./store";
+import { agentLabel, effectiveWorkLane } from "../shared/lanes";
+import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, workItemView } from "./store";
 import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
-import { digest, isoNow, makeId, makeToken, slugify } from "./util";
+import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./util";
 import { actionDigest, cleanupDigest, configuredApprovalAction, requiredSourceMailbox, routineActionDigest, verifySourceMailbox } from "./workflow/approvals";
 import { queuedWork } from "./workflow/workItems";
 import { mobileActionConfirmation, projectMobileCard, projectMobileRoutineAction } from "./mobile/projection";
 
 function appendHistory(card: Card, type: string, detail?: string): void {
   card.history.push({ at: isoNow(), type, detail });
+}
+
+type WorkCaller =
+  | { kind: "agent"; agent: WorkAgent; threadId: string; sessionId?: string }
+  | { kind: "guest"; threadId: string; sessionId?: string };
+
+function callerCanSeeWork(caller: WorkCaller, work: Pick<WorkItem, "assignee">, thread: ThreadBinding): boolean {
+  const lane = effectiveWorkLane(work, thread);
+  if (caller.kind === "agent") return lane === caller.agent;
+  return !work.assignee && lane === "codex";
+}
+
+function claimantForWork(caller: WorkCaller, work: Pick<WorkItem, "assignee">, thread: ThreadBinding): WorkClaimant {
+  return {
+    agent: caller.kind === "agent" ? caller.agent : effectiveWorkLane(work, thread),
+    threadId: caller.threadId,
+    ...(caller.sessionId ? { sessionId: caller.sessionId } : {}),
+  };
+}
+
+function sameClaimant(left: WorkClaimant | undefined, right: WorkClaimant): boolean {
+  // Session ids are advisory handoff state; authorization follows the stable lane thread id.
+  if (!left) return false;
+  return left?.agent === right.agent && left.threadId === right.threadId;
+}
+
+function claimedByReport(work: WorkItem, claimedBy: WorkClaimant): WorkClaimedByReport {
+  return {
+    claim: "claimed_by_other",
+    workId: work.id,
+    feedId: work.feedId,
+    cardId: work.cardId,
+    kind: work.kind,
+    status: "working",
+    ...(work.assignee ? { assignee: work.assignee } : {}),
+    ...(work.claimedAt ? { claimedAt: work.claimedAt } : {}),
+    claimedBy,
+    message: `Work ${work.id} is already claimed by ${claimedBy.agent} thread ${claimedBy.threadId}.`,
+  };
+}
+
+function orderedWorkItems(work: WorkItem[]): WorkItem[] {
+  return [...work].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+}
+
+function queuedClaudeWorkCount(work: WorkItem[], thread: ThreadBinding): number {
+  return work.filter((item) => item.status === "queued" && effectiveWorkLane(item, thread) === "claude").length;
+}
+
+export function isClaimedWorkItem(result: WorkClaimResult): result is WorkItem {
+  // Structural guard by protocol: WorkItem must not grow a top-level `claim` field.
+  return Boolean(result && !("claim" in result));
 }
 
 const INBOX_DEMO_REPLAY_SOURCE_IDS: Record<string, string> = {
@@ -88,7 +149,7 @@ function revisionLabel(target: VoiceTarget): string {
   if (target.kind === "source_recipe") return `Source recipe · ${target.sourceId}`;
   if (target.kind === "prompt_layer") return `Feed prompt · ${target.promptId}`;
   if (target.kind === "global_prompt") return `Global prompt · ${target.promptId}`;
-  return "Attention policy";
+  return "Tend policy";
 }
 
 const CARD_BLOCK_TYPES = new Set<CardBlock["type"]>([
@@ -268,6 +329,23 @@ function validateCardBlocks(blocks: unknown): asserts blocks is CardBlock[] {
   }
 }
 
+function validateCardActions(actions: CardAction[] | undefined): void {
+  if (!actions) return;
+  const ids = new Set<string>();
+  for (const action of actions) {
+    if (!action.id?.trim()) throw new Error("Card action ids must be non-empty strings.");
+    if (isReservedCardActionId(action.id)) throw new Error(`Card action id "${action.id}" is reserved by Tend.`);
+    if (ids.has(action.id)) throw new Error(`Card action id "${action.id}" must be unique within a card.`);
+    ids.add(action.id);
+  }
+}
+
+function offersSourceCleanup(card: Card): boolean {
+  const configuredActions = safeConfiguredCardActions(card.actions);
+  if (configuredActions.length) return configuredActions.some((action) => action.behavior === "default_cleanup");
+  return card.proposedAction?.label === "Archive" || card.proposedAction?.label === "Archive this thread";
+}
+
 function validateSourceRunIds(sourceRunIds: unknown): string[] | undefined {
   if (sourceRunIds === undefined) return undefined;
   if (!Array.isArray(sourceRunIds) || sourceRunIds.length === 0 || sourceRunIds.some((runId) => typeof runId !== "string" || !runId.trim())) {
@@ -283,10 +361,23 @@ const MIND_CONTEXT_HISTORY_MS = 7 * 24 * 60 * 60 * 1_000;
 const MIND_CONTEXT_MAX_OBSERVATION_MS = 10 * 60 * 1_000;
 const MIND_CONTEXT_MAX_TOTAL_FULL_TEXT = 200_000;
 const MIND_CONTEXT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const AGENT_LABEL_MAX_LENGTH = 64;
+const AGENT_SESSION_ID_MAX_LENGTH = 64;
 
 function requiredMindText(value: unknown, label: string, maxLength: number): string {
   if (!hasText(value)) throw new Error(`${label} is required.`);
   const normalized = value.replaceAll(String.fromCharCode(0), "").trim();
+  if (normalized.length > maxLength) throw new Error(`${label} must be ${maxLength} characters or fewer.`);
+  return normalized;
+}
+
+function requiredAgentPresenceText(value: unknown, label: string, maxLength: number): string {
+  if (!hasText(value)) throw new Error(`${label} is required.`);
+  const normalized = Array.from(value).filter((character) => {
+    const code = character.charCodeAt(0);
+    return code >= 0x20 && code !== 0x7F;
+  }).join("").trim();
+  if (!normalized) throw new Error(`${label} is required.`);
   if (normalized.length > maxLength) throw new Error(`${label} must be ${maxLength} characters or fewer.`);
   return normalized;
 }
@@ -572,6 +663,129 @@ function verifyMobileRiskConfirmation(
 export class AttentionDomain {
   constructor(readonly store: AttentionStore) {}
 
+  private async maybeEmitClaudeWake(
+    feedId: string,
+    work: WorkItem,
+    thread?: ThreadBinding,
+    options: { includeDropped?: boolean; workItems?: WorkItem[]; queuedCount?: number } = {},
+  ): Promise<AgentWakeLine | null> {
+    if (work.status !== "queued" && !options.includeDropped) return null;
+    const binding = thread ?? await this.store.readThread(feedId);
+    const claude = binding.agents?.claude;
+    if (!claude || effectiveWorkLane(work, binding) !== "claude") return null;
+    const queued = options.queuedCount ?? queuedClaudeWorkCount(options.workItems ?? await this.store.readWorkItems(feedId), binding);
+    try {
+      return await this.store.appendAgentWake("claude", {
+        at: isoNow(),
+        feedId,
+        workId: work.id,
+        kind: work.kind,
+        queued,
+        threadId: claude.threadId,
+      });
+    } catch (error) {
+      console.error("[claude-wake] Failed to append Claude wake line", { feedId, workId: work.id, error });
+      return null;
+    }
+  }
+
+  private async persistQueuedWork(
+    feedId: string,
+    work: WorkItem,
+    options: {
+      afterWrite?: () => Promise<unknown>;
+      thread?: ThreadBinding;
+      wake?: { includeDropped?: boolean; workItems?: WorkItem[]; queuedCount?: number };
+    } = {},
+  ): Promise<void> {
+    if (work.status !== "queued") throw new Error(`Cannot persist non-queued work through queued wake helper: ${work.status}`);
+    await this.store.writeWork(work);
+    await options.afterWrite?.();
+    await this.maybeEmitClaudeWake(feedId, work, options.thread, options.wake);
+  }
+
+  private requeueWorkItem(work: WorkItem): void {
+    work.status = "queued";
+    work.capabilityToken = makeToken();
+    work.claimedAt = undefined;
+    work.claimedBy = undefined;
+    work.error = undefined;
+    work.verifiedAt = undefined;
+    work.verifiedApprovalDigest = undefined;
+    work.verifiedMailbox = undefined;
+  }
+
+  async registerAgentPresence(
+    agent: AgentPresence["agent"],
+    input: { sessionId: string; label?: string },
+  ): Promise<{ presence: AgentPresence; replayed: number; changed: boolean }> {
+    if (agent !== "claude") throw new Error(`Unsupported agent presence: ${agent}`);
+    const sessionId = requiredAgentPresenceText(input.sessionId, "Agent presence sessionId", AGENT_SESSION_ID_MAX_LENGTH);
+    const label = input.label ? requiredAgentPresenceText(input.label, "Agent presence label", AGENT_LABEL_MAX_LENGTH) : undefined;
+    return this.store.serialize(async () => {
+      const previous = await this.store.readAgentPresence(agent);
+      const shouldReplay = !previous || agentPresenceLiveness(previous) !== "live";
+      const sessionChanged = previous?.sessionId !== sessionId;
+      const labelChanged = previous?.label !== label;
+      const presence: AgentPresence = {
+        agent,
+        sessionId,
+        ...(label ? { label } : {}),
+        lastSeenAt: isoNow(),
+      };
+      await this.store.writeAgentPresence(agent, presence);
+
+      let replayed = 0;
+      if (shouldReplay) {
+        for (const feedId of await this.store.listFeedIds()) {
+          const thread = await this.store.readThread(feedId);
+          const workItems = orderedWorkItems(await this.store.readWorkItems(feedId));
+          const queuedCount = queuedClaudeWorkCount(workItems, thread);
+          const parked = workItems
+            .filter((work) => work.status === "queued" && effectiveWorkLane(work, thread) === "claude");
+          for (const work of parked) {
+            if (await this.maybeEmitClaudeWake(feedId, work, thread, { workItems, queuedCount })) replayed += 1;
+          }
+        }
+      }
+      return { presence, replayed, changed: shouldReplay || sessionChanged || labelChanged || replayed > 0 };
+    });
+  }
+
+  async setFeedDrainAgent(feedId: string, agent: WorkAgent): Promise<ThreadBinding> {
+    await this.assertClaudeRoutingAllowed(feedId, agent);
+    return this.store.serialize(async () => {
+      const thread = await this.store.readThread(feedId);
+      const previous = thread.drainAgent ?? "codex";
+      thread.drainAgent = agent;
+      await this.store.writeThread(feedId, thread);
+      await this.store.appendEvent({ feedId, type: "thread.drain_agent_set", detail: { agent } });
+      if (previous !== "claude" && agent === "claude") {
+        const workItems = orderedWorkItems(await this.store.readWorkItems(feedId));
+        const queuedCount = queuedClaudeWorkCount(workItems, thread);
+        const queuedUnassigned = workItems.filter((work) => work.status === "queued" && !work.assignee);
+        for (const work of queuedUnassigned) await this.maybeEmitClaudeWake(feedId, work, thread, { workItems, queuedCount });
+      }
+      return thread;
+    });
+  }
+
+  private async assertClaudeRoutingAllowed(feedId: string, assignee?: WorkAgent): Promise<void> {
+    if (!assignee) return;
+    if (assignee !== "codex" && assignee !== "claude") throw new Error(`Unsupported work assignee: ${assignee}`);
+    if (assignee !== "claude") return;
+    const thread = await this.store.readThread(feedId);
+    if (!thread.agents?.claude) throw new Error(`Feed ${feedId} has no Claude binding. Bind Claude before routing work to Claude.`);
+  }
+
+  private async claudeExternalMutationWarning(feedId: string, work: WorkItem, agent: WorkAgent): Promise<string | undefined> {
+    if (agent !== "claude" || work.kind !== "execute_approved_action") return undefined;
+    const card = await this.store.readCard(feedId, work.cardId);
+    const action = configuredApprovalAction(card, work.cardActionId);
+    if (!action.externalMutation) return undefined;
+    return "This approved action performs an external mutation. Claude can claim it, but Tend has not verified Claude's connector capability; use work:block or work:release if Claude cannot execute it.";
+  }
+
   async bindMindContextPublisher(threadId: string, replace = false): Promise<MindContextBinding> {
     const publisherThreadId = requiredMindText(threadId, "On Your Mind publisher thread", 180);
     return this.store.serialize(async () => {
@@ -847,10 +1061,12 @@ export class AttentionDomain {
     return target;
   }
 
-  async submitVoiceInstruction(anchorFeedId: string, requested: VoiceTarget, instruction: string) {
+  async submitVoiceInstruction(anchorFeedId: string, requested: VoiceTarget, instruction: string, options: { assignee?: WorkAgent } = {}) {
     if (!instruction.trim()) throw new Error("Instruction is required.");
     const target = await this.store.validateVoiceTarget(requested);
-    return this.store.serialize(async () => {
+    const targetFeedId = "feedId" in target ? target.feedId : anchorFeedId;
+    await this.assertClaudeRoutingAllowed(targetFeedId, options.assignee);
+    return this.store.serializeAtomic(async () => {
       if (target.kind === "sweep") {
         const feed = await this.store.readFeed(target.feedId);
         const visibleCardIds = feed.cards
@@ -878,24 +1094,35 @@ export class AttentionDomain {
           feedbackId: trace.id,
           startingBatchId: target.batchId ?? null,
           previousSweepState: feed.sweep,
+          ...(options.assignee ? { assignee: options.assignee } : {}),
         });
+        const thread = await this.store.readThread(target.feedId);
         await this.store.writeSweepFeedback(trace);
-        await this.store.writeWork(work);
-        await this.store.writeSweepState(target.feedId, {
-          ...feed.sweep,
-          lastFeedbackId: trace.id,
-          recollectionOffered: false,
-          statusMessage: "Feedback queued for Codex",
+        await this.persistQueuedWork(target.feedId, work, {
+          thread,
+          afterWrite: async () => {
+            await this.store.writeSweepState(target.feedId, {
+              ...feed.sweep,
+              lastFeedbackId: trace.id,
+              recollectionOffered: false,
+              statusMessage: `Feedback queued for ${agentLabel(effectiveWorkLane(work, thread))}`,
+            });
+            await this.store.appendEvent({ feedId: target.feedId, workId: work.id, type: "sweep.feedback_recorded", detail: { feedbackId: trace.id, batchId: trace.batchId, instruction: trace.instruction } });
+            await this.store.appendEvent({ feedId: target.feedId, workId: work.id, type: "voice.intent_queued", detail: { target, intent: work.intent } });
+            await this.store.appendEvent({ feedId: anchorFeedId, workId: work.id, type: "voice.instruction_submitted", detail: { target, instruction: instruction.trim() } });
+          },
         });
-        await this.store.appendEvent({ feedId: target.feedId, workId: work.id, type: "sweep.feedback_recorded", detail: { feedbackId: trace.id, batchId: trace.batchId, instruction: trace.instruction } });
-        await this.store.appendEvent({ feedId: target.feedId, workId: work.id, type: "voice.intent_queued", detail: { target, intent: work.intent } });
-        await this.store.appendEvent({ feedId: anchorFeedId, workId: work.id, type: "voice.instruction_submitted", detail: { target, instruction: instruction.trim() } });
         return { kind: "scoped_work" as const, target, work, trace };
       }
 
       const feedId = "feedId" in target ? target.feedId : anchorFeedId;
       const cardId = target.kind === "card" ? target.cardId : "__feed__";
-      const work = queuedWork(feedId, cardId, instruction, { kind: "scoped_instruction", target, intent: "voice_instruction" });
+      const work = queuedWork(feedId, cardId, instruction, {
+        kind: "scoped_instruction",
+        target,
+        intent: "voice_instruction",
+        ...(options.assignee ? { assignee: options.assignee } : {}),
+      });
       if (target.kind === "card") {
         const card = await this.store.readCard(feedId, target.cardId);
         if (card.status === "done") throw new Error("Done cards cannot be queued.");
@@ -903,17 +1130,19 @@ export class AttentionDomain {
         appendHistory(card, "user.scoped_instruction", instruction.trim());
         await this.store.writeCard(card);
       }
-      await this.store.writeWork(work);
-      await this.store.appendEvent({ feedId, cardId, workId: work.id, type: "voice.intent_queued", detail: { target, intent: work.intent } });
-      await this.store.appendEvent({ feedId: anchorFeedId, cardId: target.kind === "card" ? target.cardId : undefined, workId: work.id, type: "voice.instruction_submitted", detail: { target, instruction: instruction.trim() } });
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: async () => {
+          await this.store.appendEvent({ feedId, cardId, workId: work.id, type: "voice.intent_queued", detail: { target, intent: work.intent } });
+          await this.store.appendEvent({ feedId: anchorFeedId, cardId: target.kind === "card" ? target.cardId : undefined, workId: work.id, type: "voice.instruction_submitted", detail: { target, instruction: instruction.trim() } });
+        },
+      });
       return { kind: "scoped_work" as const, target, work };
     });
   }
 
   async recordSweepRejudgment(feedId: string, feedbackId: string, orderedCardIds: string[], removedCardIds: string[]): Promise<SweepFeedbackTrace> {
     return this.store.serialize(async () => {
-      const feed = await this.store.readFeed(feedId);
-      const work = feed.work.find((item) => item.intent === "sweep_rejudge" && item.feedbackId === feedbackId);
+      const work = (await this.store.readWorkItems(feedId)).find((item) => item.intent === "sweep_rejudge" && item.feedbackId === feedbackId);
       if (!work || work.status !== "working") throw new Error("Sweep feedback must be claimed before rejudgment write-back.");
       const trace = await this.store.readSweepFeedback(feedId, feedbackId);
       if (trace.rejudgedAt) throw new Error("Sweep feedback has already been rejudged.");
@@ -959,7 +1188,7 @@ export class AttentionDomain {
   async requestSweepRecollection(feedId: string): Promise<WorkItem> {
     return this.store.serialize(async () => {
       const feed = await this.store.readFeed(feedId);
-      const existing = feed.work.find((work) => work.intent === "recollect_sources" && (work.status === "queued" || work.status === "working"));
+      const existing = (await this.store.readWorkItems(feedId)).find((work) => work.intent === "recollect_sources" && (work.status === "queued" || work.status === "working"));
       if (existing) return existing;
       const sweep = feed.sweep;
       if (!sweep.recollectionOffered) throw new Error("Search sources again is not currently offered.");
@@ -971,9 +1200,12 @@ export class AttentionDomain {
         ...(sweep.lastFeedbackId ? { feedbackId: sweep.lastFeedbackId } : {}),
         startingBatchId: sweep.currentBatchId,
       });
-      await this.store.writeWork(work);
-      await this.store.writeSweepState(feedId, { ...sweep, recollectionOffered: false, statusMessage: "Source search queued" });
-      await this.store.appendEvent({ feedId, workId: work.id, type: "sweep.recollection_requested", detail: { feedbackId: sweep.lastFeedbackId } });
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: async () => {
+          await this.store.writeSweepState(feedId, { ...sweep, recollectionOffered: false, statusMessage: "Source search queued" });
+          await this.store.appendEvent({ feedId, workId: work.id, type: "sweep.recollection_requested", detail: { feedbackId: sweep.lastFeedbackId } });
+        },
+      });
       return work;
     });
   }
@@ -1064,6 +1296,26 @@ export class AttentionDomain {
     });
   }
 
+  async bindAgentFeed(feedId: string, agent: AgentPresence["agent"], replace = false): Promise<ThreadBinding> {
+    if (agent !== "claude") throw new Error(`Unsupported feed agent binding: ${agent}`);
+    return this.store.serialize(async () => {
+      const thread = await this.store.readThread(feedId);
+      const current = thread.agents?.claude;
+      if (current && !replace) {
+        throw new Error(`Feed ${feedId} is already bound to Claude lane ${current.threadId} at ${current.boundAt}. Use --replace for a deliberate handoff.`);
+      }
+      const binding = { threadId: makeId("claude-lane"), boundAt: isoNow() };
+      thread.agents = { ...thread.agents, claude: binding };
+      await this.store.writeThread(feedId, thread);
+      await this.store.appendEvent({
+        feedId,
+        type: "thread.bound",
+        detail: { agent, threadId: binding.threadId, boundAt: binding.boundAt },
+      });
+      return thread;
+    });
+  }
+
   async proposeHeartbeat(feedId: string, cadence: string): Promise<ThreadBinding> {
     return this.store.serialize(async () => {
       const thread = await this.store.readThread(feedId);
@@ -1090,23 +1342,28 @@ export class AttentionDomain {
     cardId: string,
     instruction: string,
     sourceMobileCommandId?: string,
+    options: { assignee?: WorkAgent } = {},
   ): Promise<WorkItem> {
     const card = await this.store.readCard(feedId, cardId);
     if (card.status === "done") throw new Error("Done cards cannot be queued.");
     const work = queuedWork(feedId, cardId, instruction, {
       kind: "instruction",
+      ...(options.assignee ? { assignee: options.assignee } : {}),
       ...(sourceMobileCommandId ? { sourceMobileCommandId } : {}),
     });
     card.status = "queued";
     appendHistory(card, "user.instruction", instruction.trim());
-    await this.store.writeWork(work);
-    await this.store.writeCard(card);
-    await this.store.appendEvent({
-      feedId,
-      cardId,
-      workId: work.id,
-      type: "work.queued",
-      detail: { instruction: work.instruction, sourceMobileCommandId },
+    await this.persistQueuedWork(feedId, work, {
+      afterWrite: async () => {
+        await this.store.writeCard(card);
+        await this.store.appendEvent({
+          feedId,
+          cardId,
+          workId: work.id,
+          type: "work.queued",
+          detail: { instruction: work.instruction, sourceMobileCommandId },
+        });
+      },
     });
     return work;
   }
@@ -1124,10 +1381,9 @@ export class AttentionDomain {
     await this.assertCardSourceCurrent(card);
     const action = configuredApprovalAction(card, cardActionId);
     requiredSourceMailbox(feedId, card, action);
-    const now = isoNow();
     const approvalDigest = actionDigest(card, cardActionId);
     const feed = await this.store.readFeed(feedId);
-    const active = feed.work.filter((work) =>
+    const active = (await this.store.readWorkItems(feedId)).filter((work) =>
       work.cardId === cardId
       && work.kind === "execute_approved_action"
       && (work.status === "queued" || work.status === "working")
@@ -1158,44 +1414,39 @@ export class AttentionDomain {
         detail: { reason: work.error },
       });
     }
-    const work: WorkItem = {
-      id: makeId("work"),
-      feedId,
-      cardId,
+    const work = queuedWork(feedId, cardId, action.instruction, {
       kind: "execute_approved_action",
-      instruction: action.instruction,
-      status: "queued",
-      capabilityToken: makeToken(),
       approvalDigest,
       completionCleanup: feed.config.defaultCleanup,
       ...(cardActionId ? { cardActionId } : {}),
       ...(sourceMobileCommandId ? { sourceMobileCommandId } : {}),
-      createdAt: now,
-      updatedAt: now,
-    };
+    });
     card.status = "queued";
     appendHistory(card, "user.approved_action", approvalDigest);
-    await this.store.writeWork(work);
-    await this.store.writeCard(card);
-    await this.store.appendEvent({
-      feedId,
-      cardId,
-      workId: work.id,
-      type: "action.approved",
-      detail: { approvalDigest, sourceMobileCommandId },
+    await this.persistQueuedWork(feedId, work, {
+      afterWrite: async () => {
+        await this.store.writeCard(card);
+        await this.store.appendEvent({
+          feedId,
+          cardId,
+          workId: work.id,
+          type: "action.approved",
+          detail: { approvalDigest, sourceMobileCommandId },
+        });
+      },
     });
     return work;
   }
 
-  private async dismissCardLocked(
+  private async queueSourceCleanupLocked(
     feedId: string,
     cardId: string,
     sourceMobileCommandId?: string,
   ): Promise<WorkItem> {
     const config = await this.store.readConfig(feedId);
     const card = await this.store.readCard(feedId, cardId);
-    const feed = await this.store.readFeed(feedId);
-    const completedCleanup = feed.work.some((work) =>
+    const feedWork = await this.store.readWorkItems(feedId);
+    const completedCleanup = feedWork.some((work) =>
       work.cardId === cardId
       && work.status === "completed"
       && (
@@ -1204,9 +1455,9 @@ export class AttentionDomain {
       )
     );
     if (card.status === "done" && completedCleanup) throw new Error("This card's default cleanup is already complete.");
-    const now = isoNow();
+    if (!offersSourceCleanup(card)) throw new Error("Source cleanup is not available for this card.");
     const approvalDigest = cleanupDigest(card, config.defaultCleanup);
-    const active = feed.work.filter((work) =>
+    const active = feedWork.filter((work) =>
       work.cardId === cardId
       && work.kind === "default_cleanup"
       && (work.status === "queued" || work.status === "working")
@@ -1234,44 +1485,46 @@ export class AttentionDomain {
         detail: { reason: work.error },
       });
     }
-    const work: WorkItem = {
-      id: makeId("work"),
-      feedId,
-      cardId,
+    const work = queuedWork(feedId, cardId, config.defaultCleanup, {
       kind: "default_cleanup",
-      instruction: config.defaultCleanup,
-      status: "queued",
-      capabilityToken: makeToken(),
       approvalDigest,
       ...(sourceMobileCommandId ? { sourceMobileCommandId } : {}),
-      createdAt: now,
-      updatedAt: now,
-    };
+    });
     card.status = "queued";
+    // A card can be cleaned up after a local dismissal; queuing cleanup supersedes the dismissed
+    // done-state, so clear it to avoid a stale disposition if the cleanup is later undone.
+    card.completedAt = undefined;
+    card.completionDisposition = undefined;
     appendHistory(card, "user.default_cleanup_approved", config.defaultCleanup);
-    await this.store.writeWork(work);
-    await this.store.writeCard(card);
-    await this.store.appendEvent({
-      feedId,
-      cardId,
-      workId: work.id,
-      type: "cleanup.queued",
-      detail: { cleanup: config.defaultCleanup, sourceMobileCommandId },
+    await this.persistQueuedWork(feedId, work, {
+      afterWrite: async () => {
+        await this.store.writeCard(card);
+        await this.store.appendEvent({
+          feedId,
+          cardId,
+          workId: work.id,
+          type: "cleanup.queued",
+          detail: { cleanup: config.defaultCleanup, sourceMobileCommandId },
+        });
+      },
     });
     return work;
   }
 
-  async queueInstruction(feedId: string, cardId: string, instruction: string): Promise<WorkItem> {
+  async queueInstruction(feedId: string, cardId: string, instruction: string, options: { assignee?: WorkAgent } = {}): Promise<WorkItem> {
     if (!instruction.trim()) throw new Error("Instruction is required.");
-    return this.store.serialize(() => this.queueInstructionLocked(feedId, cardId, instruction));
+    await this.assertClaudeRoutingAllowed(feedId, options.assignee);
+    return this.store.serialize(() => this.queueInstructionLocked(feedId, cardId, instruction, undefined, options));
   }
 
-  async queueFeedInstruction(feedId: string, instruction: string): Promise<WorkItem> {
+  async queueFeedInstruction(feedId: string, instruction: string, options: { assignee?: WorkAgent } = {}): Promise<WorkItem> {
     if (!instruction.trim()) throw new Error("Instruction is required.");
+    await this.assertClaudeRoutingAllowed(feedId, options.assignee);
     return this.store.serialize(async () => {
-      const work = queuedWork(feedId, "__feed__", instruction, { kind: "instruction" });
-      await this.store.writeWork(work);
-      await this.store.appendEvent({ feedId, workId: work.id, type: "feed.instruction_queued", detail: { instruction: work.instruction } });
+      const work = queuedWork(feedId, "__feed__", instruction, { kind: "instruction", ...(options.assignee ? { assignee: options.assignee } : {}) });
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: () => this.store.appendEvent({ feedId, workId: work.id, type: "feed.instruction_queued", detail: { instruction: work.instruction } }),
+      });
       return work;
     });
   }
@@ -1280,21 +1533,59 @@ export class AttentionDomain {
     return this.store.serialize(() => this.approveActionLocked(feedId, cardId, cardActionId));
   }
 
-  async runCardAction(feedId: string, cardId: string, cardActionId: string): Promise<WorkItem> {
-    if (cardActionId === "default-cleanup") return this.dismissCard(feedId, cardId);
-    if (cardActionId === "proposed-action") return this.approveAction(feedId, cardId);
+  async runCardAction(feedId: string, cardId: string, cardActionId: string): Promise<WorkItem | Card> {
     const card = await this.store.readCard(feedId, cardId);
+    if (card.actions?.some((action) => action.id === cardActionId && isReservedCardActionId(action.id))) {
+      throw new Error(`Card action id "${cardActionId}" is reserved by Tend.`);
+    }
+    if (cardActionId === "default-cleanup") return this.queueSourceCleanup(feedId, cardId);
+    if (cardActionId === "dismiss-card") return this.dismissCard(feedId, cardId);
+    if (cardActionId === "proposed-action") return this.approveAction(feedId, cardId);
     const action = card.actions?.find((item) => item.id === cardActionId);
     if (!action) throw new Error("Card action not found.");
-    if (action.behavior === "default_cleanup") return this.dismissCard(feedId, cardId);
+    if (action.behavior === "default_cleanup") return this.queueSourceCleanup(feedId, cardId);
+    if (action.behavior === "dismiss_card") return this.dismissCard(feedId, cardId);
     await this.assertCardSourceCurrent(card);
     if (!action.instruction?.trim()) throw new Error("Card action instruction is required.");
     if (action.behavior === "queue_instruction") return this.queueInstruction(feedId, cardId, action.instruction);
     return this.approveAction(feedId, cardId, action.id);
   }
 
-  async dismissCard(feedId: string, cardId: string): Promise<WorkItem> {
+  // Queue the feed's configured source cleanup as verified work. This can mutate the source
+  // connector (for example, archiving an email) and is intentionally separate from local dismissal.
+  async queueSourceCleanup(feedId: string, cardId: string): Promise<WorkItem> {
+    return this.store.serialize(() => this.queueSourceCleanupLocked(feedId, cardId));
+  }
+
+  // Local, connector-free dismissal: removes a card from review without creating any WorkItem,
+  // approval digest, or external connector mutation. Reversible via returnCardToReview().
+  async dismissCard(feedId: string, cardId: string): Promise<Card> {
     return this.store.serialize(() => this.dismissCardLocked(feedId, cardId));
+  }
+
+  private async dismissCardLocked(feedId: string, cardId: string, sourceMobileCommandId?: string): Promise<Card> {
+    const config = await this.store.readConfig(feedId);
+    const card = await this.store.readCard(feedId, cardId);
+    if (card.routineActionGroupId) throw new Error("This card belongs to a routine action group. Review the group instead.");
+    if (
+      (card.status !== "to_review_new" && card.status !== "to_review_updated")
+      || card.readyForPass > config.currentPass
+      || card.sweep?.hidden
+    ) {
+      throw new Error("Only a card under review can be dismissed.");
+    }
+    card.status = "done";
+    card.completedAt = isoNow();
+    card.completionDisposition = "dismissed";
+    appendHistory(card, "user.card_dismissed", sourceMobileCommandId);
+    await this.store.writeCard(card);
+    await this.store.appendEvent({
+      feedId,
+      cardId,
+      type: "card.dismissed",
+      ...(sourceMobileCommandId ? { detail: { sourceMobileCommandId } } : {}),
+    });
+    return card;
   }
 
   async upsertRoutineActionGroup(feedId: string, input: Pick<RoutineActionGroup, "id" | "label" | "summary" | "proposedAction" | "items">): Promise<RoutineActionGroup> {
@@ -1362,8 +1653,7 @@ export class AttentionDomain {
   ): Promise<WorkItem> {
     const group = await this.store.readRoutineActionGroup(feedId, groupId);
     const approvalDigest = routineActionDigest(group);
-    const feed = await this.store.readFeed(feedId);
-    const active = feed.work.filter((work) =>
+    const active = (await this.store.readWorkItems(feedId)).filter((work) =>
       work.kind === "routine_action_batch"
       && work.routineActionGroupId === groupId
       && (work.status === "queued" || work.status === "working")
@@ -1393,26 +1683,31 @@ export class AttentionDomain {
     });
     group.status = "queued";
     group.workId = work.id;
-    await this.store.writeWork(work);
-    await this.store.writeRoutineActionGroup(group);
-    await this.store.appendEvent({
-      feedId,
-      workId: work.id,
-      type: "routine_action.approved",
-      detail: { groupId: group.id, approvalDigest, items: group.items.length, sourceMobileCommandId },
+    await this.persistQueuedWork(feedId, work, {
+      afterWrite: async () => {
+        await this.store.writeRoutineActionGroup(group);
+        await this.store.appendEvent({
+          feedId,
+          workId: work.id,
+          type: "routine_action.approved",
+          detail: { groupId: group.id, approvalDigest, items: group.items.length, sourceMobileCommandId },
+        });
+      },
     });
     return work;
   }
 
-  async undoDismiss(feedId: string, cardId: string): Promise<Card> {
+  async undoSourceCleanup(feedId: string, cardId: string): Promise<Card> {
     return this.store.serialize(async () => {
       const feed = await this.store.readFeed(feedId);
-      const work = [...feed.work].reverse().find((item) => item.cardId === cardId && item.kind === "default_cleanup" && item.status === "queued");
+      const work = [...(await this.store.readWorkItems(feedId))].reverse().find((item) => item.cardId === cardId && item.kind === "default_cleanup" && item.status === "queued");
       if (!work) throw new Error("Queued cleanup is no longer available to undo.");
       work.status = "cancelled";
       const card = await this.store.readCard(feedId, cardId);
       card.status = "to_review_updated";
       card.readyForPass = feed.config.currentPass;
+      card.completedAt = undefined;
+      card.completionDisposition = undefined;
       appendHistory(card, "user.default_cleanup_undone", work.id);
       await this.store.writeWork(work);
       await this.store.writeCard(card);
@@ -1426,7 +1721,7 @@ export class AttentionDomain {
       const feed = await this.store.readFeed(feedId);
       const card = await this.store.readCard(feedId, cardId);
       if (card.routineActionGroupId) throw new Error("This card belongs to a routine action group. Review the group instead.");
-      const activeWork = feed.work.filter((work) =>
+      const activeWork = (await this.store.readWorkItems(feedId)).filter((work) =>
         work.cardId === cardId &&
         (work.status === "queued" || work.status === "working" || work.status === "approved_blocked")
       );
@@ -1442,6 +1737,7 @@ export class AttentionDomain {
       card.status = "to_review_updated";
       card.readyForPass = feed.config.currentPass;
       card.completedAt = undefined;
+      card.completionDisposition = undefined;
       appendHistory(card, "user.returned_to_review");
       await this.store.writeCard(card);
       await this.store.appendEvent({ feedId, cardId, type: "card.returned_to_review", detail: { cancelledWorkIds: activeWork.map((work) => work.id) } });
@@ -1486,11 +1782,29 @@ export class AttentionDomain {
     });
   }
 
+  async reassignQueuedWork(feedId: string, workId: string, agent: WorkAgent): Promise<WorkItemView & { warning?: string }> {
+    await this.assertClaudeRoutingAllowed(feedId, agent);
+    return this.store.serialize(async () => {
+      const work = await this.store.readWork(feedId, workId);
+      if (work.status !== "queued") throw new Error("Only queued work can be reassigned.");
+      if (agent === "codex") {
+        work.assignee = undefined;
+      } else {
+        work.assignee = agent;
+      }
+      const warning = await this.claudeExternalMutationWarning(feedId, work, agent);
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: () => this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.assignee_set", detail: { agent } }),
+      });
+      return { ...workItemView(work), ...(warning ? { warning } : {}) };
+    });
+  }
+
   async applyMobileCommand(command: MobileCommand): Promise<MobileCommandResult> {
     if (!MOBILE_COMMAND_ID_PATTERN.test(command.id) || !command.feedId.trim() || !command.cardId.trim()) {
       throw new Error("Mobile command id, feedId, and cardId are required.");
     }
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       if (await this.store.hasMobileCommandReceipt(command.id)) {
         const receipt = await this.store.readMobileCommandReceipt(command.id);
         if (
@@ -1538,15 +1852,30 @@ export class AttentionDomain {
         case "archive": {
           const action = requireMobileAction(projection.actions, command.actionId ?? "default-cleanup", command.expectedActionDigest);
           if (action.behavior !== "default_cleanup") throw new Error("Mobile archive action is no longer available.");
-          work = await this.dismissCardLocked(command.feedId, command.cardId, command.id);
+          work = await this.queueSourceCleanupLocked(command.feedId, command.cardId, command.id);
+          break;
+        }
+        case "dismiss": {
+          const action = requireMobileAction(projection.actions, command.actionId ?? "dismiss-card", command.expectedActionDigest);
+          if (action.behavior !== "dismiss_card") throw new Error("Mobile dismiss action is no longer available.");
+          await this.dismissCardLocked(command.feedId, command.cardId, command.id);
           break;
         }
         case "approve_action": {
           if (!command.actionId) throw new Error("Mobile approval needs an action id.");
           const action = requireMobileAction(projection.actions, command.actionId, command.expectedActionDigest);
+          // Mobile schema v1 mapped every non-cleanup action to approve_action. Treat its synthetic
+          // dismiss control as the local disposition while installed v1 clients age out.
+          if (action.behavior === "dismiss_card") {
+            await this.dismissCardLocked(command.feedId, command.cardId, command.id);
+            break;
+          }
           if (action.behavior !== "approve_action") throw new Error("Mobile approval action is no longer available.");
-          const cardActionId = command.actionId === "proposed-action" ? undefined : command.actionId;
           const card = structuredClone(await this.store.readCard(command.feedId, command.cardId));
+          if (card.actions?.some((item) => item.id === command.actionId && isReservedCardActionId(item.id))) {
+            throw new Error(`Card action id "${command.actionId}" is reserved by Tend.`);
+          }
+          const cardActionId = command.actionId === "proposed-action" ? undefined : command.actionId;
           const configured = configuredApprovalAction(card, cardActionId);
           const edits = command.edits ?? {};
           if (Object.keys(edits).length && !configured.artifactBlockId) {
@@ -1607,7 +1936,7 @@ export class AttentionDomain {
           const feed = await this.store.readFeed(command.feedId);
           const card = await this.store.readCard(command.feedId, command.cardId);
           if (card.routineActionGroupId) throw new Error("Routine-group cards must be reviewed through their group.");
-          const activeWork = feed.work.filter((item) =>
+          const activeWork = (await this.store.readWorkItems(command.feedId)).filter((item) =>
             item.cardId === command.cardId
             && (item.status === "queued" || item.status === "working" || item.status === "approved_blocked")
           );
@@ -1623,6 +1952,7 @@ export class AttentionDomain {
           card.status = "to_review_updated";
           card.readyForPass = feed.config.currentPass;
           card.completedAt = undefined;
+          card.completionDisposition = undefined;
           appendHistory(card, "user.returned_to_review", command.id);
           await this.store.writeCard(card);
           await this.store.appendEvent({
@@ -1670,45 +2000,60 @@ export class AttentionDomain {
 
   async queueCompound(feedId: string): Promise<WorkItem> {
     return this.store.serialize(async () => {
-      const feed = await this.store.readFeed(feedId);
-      const existing = feed.work.find((work) => work.kind === "compound_learnings" && (work.status === "queued" || work.status === "working"));
+      const existing = (await this.store.readWorkItems(feedId)).find((work) => work.kind === "compound_learnings" && (work.status === "queued" || work.status === "working"));
       if (existing) return existing;
-      const now = isoNow();
-      const work: WorkItem = {
-        id: makeId("work"),
-        feedId,
-        cardId: "__feed__",
+      const work = queuedWork(feedId, "__feed__", "The user approved a learning pass. Review raw snapshots, runs, events, outcomes, and policy history. Distill a compact feed-policy improvement, then create an editable revision proposal with revision:propose --source compound. Do not apply it. The browser will bring the proposal back to the user for review.", {
         kind: "compound_learnings",
-        instruction: "The user approved a learning pass. Review raw snapshots, runs, events, outcomes, and policy history. Distill a compact feed-policy improvement, then create an editable revision proposal with revision:propose --source compound. Do not apply it. The browser will bring the proposal back to the user for review.",
-        status: "queued",
-        capabilityToken: makeToken(),
-        createdAt: now,
-        updatedAt: now,
-      };
-      await this.store.writeWork(work);
-      await this.store.appendEvent({ feedId, workId: work.id, type: "learning.compound_queued" });
+      });
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: () => this.store.appendEvent({ feedId, workId: work.id, type: "learning.compound_queued" }),
+      });
       return work;
     });
   }
 
-  async listPendingWork(feedId: string, threadId: string, explicitCrossFeed = false): Promise<WorkItem[]> {
-    await this.assertThread(feedId, threadId, explicitCrossFeed);
-    const feed = await this.store.readFeed(feedId);
-    return feed.work.filter((work) => work.status === "queued" || work.status === "working");
+  async listPendingWork(feedId: string, threadId: string, explicitCrossFeed = false): Promise<WorkItemView[]> {
+    const caller = await this.assertThread(feedId, threadId, explicitCrossFeed);
+    const thread = await this.store.readThread(feedId);
+    const work = orderedWorkItems(await this.store.readWorkItems(feedId));
+    return work
+      .filter((item) => (item.status === "queued" || item.status === "working") && callerCanSeeWork(caller, item, thread))
+      .map(workItemView);
   }
 
-  async claimWork(feedId: string, threadId: string, explicitCrossFeed = false): Promise<WorkItem | null> {
-    await this.assertThread(feedId, threadId, explicitCrossFeed);
+  async claimWork(feedId: string, threadId: string, explicitCrossFeed = false, sessionId?: string): Promise<WorkClaimResult> {
+    const caller = await this.assertThread(feedId, threadId, explicitCrossFeed, sessionId);
     return this.store.serialize(async () => {
-      const feed = await this.store.readFeed(feedId);
-      const existing = feed.work.find((work) => work.status === "working");
-      if (existing && !(await this.quarantineLegacyMutationWork(feed, existing))) return existing;
-      let work = feed.work.find((item) => item.status === "queued");
+      const [feed, thread] = await Promise.all([
+        this.store.readFeed(feedId),
+        this.store.readThread(feedId),
+      ]);
+      const workItems = orderedWorkItems(await this.store.readWorkItems(feedId));
+      const existing = workItems.find((work) => work.status === "working" && callerCanSeeWork(caller, work, thread));
+      if (existing && !(await this.quarantineLegacyMutationWork(feed, existing))) {
+        const claimant = claimantForWork(caller, existing, thread);
+        if (!existing.claimedBy) {
+          existing.claimedBy = claimant;
+          await this.store.writeWork(existing);
+        }
+        if (sameClaimant(existing.claimedBy, claimant)) {
+          if (existing.claimedBy.sessionId !== claimant.sessionId) {
+            existing.claimedBy = claimant;
+            await this.store.writeWork(existing);
+          }
+          return existing;
+        }
+        return claimedByReport(existing, existing.claimedBy);
+      }
+      let work = workItems.find((item) => item.status === "queued" && callerCanSeeWork(caller, item, thread));
       while (work && await this.quarantineLegacyMutationWork(feed, work)) {
-        work = feed.work.find((item) => item.status === "queued");
+        const nextItems = orderedWorkItems(await this.store.readWorkItems(feedId));
+        work = nextItems.find((item) => item.status === "queued" && callerCanSeeWork(caller, item, thread));
       }
       if (!work) return null;
       work.status = "working";
+      work.capabilityToken = makeToken();
+      work.claimedBy = claimantForWork(caller, work, thread);
       work.claimedAt = isoNow();
       await this.store.writeWork(work);
       if (work.kind === "routine_action_batch" && work.routineActionGroupId) {
@@ -1722,8 +2067,35 @@ export class AttentionDomain {
         appendHistory(card, "codex.claimed", work.id);
         await this.store.writeCard(card);
       }
-      await this.store.appendEvent({ feedId, cardId: work.cardId, workId: work.id, type: "work.claimed", detail: { threadId } });
+      await this.store.appendEvent({
+        feedId,
+        cardId: work.cardId,
+        workId: work.id,
+        type: "work.claimed",
+        detail: { threadId: work.claimedBy.threadId, agent: work.claimedBy.agent, ...(work.claimedBy.sessionId ? { sessionId: work.claimedBy.sessionId } : {}) },
+      });
       return work;
+    });
+  }
+
+  async releaseWork(feedId: string, workId: string, token: string, sessionId?: string): Promise<WorkItemView> {
+    return this.store.serialize(async () => {
+      const work = await this.store.readWork(feedId, workId);
+      if (work.status !== "working") throw new Error("Only working work can be released.");
+      if (work.capabilityToken !== token) throw new Error("Invalid scoped work capability token.");
+      if (!work.claimedBy) throw new Error("Working work has no recorded claimant.");
+      const releasedBy = work.claimedBy;
+      this.requeueWorkItem(work);
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: () => this.store.appendEvent({
+          feedId,
+          cardId: work.cardId,
+          workId,
+          type: "work.released",
+          detail: { threadId: releasedBy.threadId, agent: releasedBy.agent, ...(sessionId ? { sessionId } : {}) },
+        }),
+      });
+      return workItemView(work);
     });
   }
 
@@ -1747,6 +2119,8 @@ export class AttentionDomain {
         if (!hasActiveWork) {
           card.status = "to_review_updated";
           card.readyForPass = feed.config.currentPass;
+          card.completedAt = undefined;
+          card.completionDisposition = undefined;
           appendHistory(card, "user.cancelled_queued_work", work.id);
           await this.store.writeCard(card);
         }
@@ -1764,6 +2138,7 @@ export class AttentionDomain {
 
   async completeWork(feedId: string, workId: string, token: string, result: { response: string; blocks?: CardBlock[]; proposedAction?: ProposedAction; actions?: CardAction[]; done?: boolean; postAction?: PostActionCompletion }): Promise<WorkItem> {
     if (result.blocks) validateCardBlocks(result.blocks);
+    validateCardActions(result.actions);
     return this.store.serialize(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "working") throw new Error("Work item is not currently claimed.");
@@ -1806,6 +2181,7 @@ export class AttentionDomain {
           const card = await this.store.readCard(feedId, item.cardId);
           card.status = "done";
           card.completedAt = isoNow();
+          card.completionDisposition = "completed";
           appendHistory(card, "routine_action.completed", work.id);
           await this.store.writeCard(card);
         }
@@ -1874,6 +2250,7 @@ export class AttentionDomain {
             type: "work.post_action_cleanup_blocked",
             detail: { response: work.response, postAction: result.postAction },
           });
+          if (work.claimedBy?.agent !== "claude") await this.maybeEmitClaudeWake(feedId, work, undefined, { includeDropped: true });
           return work;
         }
         const config = await this.store.readConfig(feedId);
@@ -1882,6 +2259,7 @@ export class AttentionDomain {
           : Boolean(result.done || work.kind === "default_cleanup");
         card.status = done ? "done" : "to_review_updated";
         card.completedAt = done ? isoNow() : undefined;
+        card.completionDisposition = done ? "completed" : undefined;
         card.readyForPass = work.kind === "execute_approved_action" && !done
           ? config.currentPass
           : config.currentPass + 1;
@@ -1979,6 +2357,7 @@ export class AttentionDomain {
         }
       }
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.failed", detail: { error: work.error } });
+      if (work.claimedBy?.agent !== "claude") await this.maybeEmitClaudeWake(feedId, work, undefined, { includeDropped: true });
       return work;
     });
   }
@@ -2009,6 +2388,7 @@ export class AttentionDomain {
       await this.store.writeWork(work);
       await this.store.writeCard(card);
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.approved_action_blocked", detail: { error: work.error } });
+      if (work.claimedBy?.agent !== "claude") await this.maybeEmitClaudeWake(feedId, work, undefined, { includeDropped: true });
       return work;
     });
   }
@@ -2036,6 +2416,7 @@ export class AttentionDomain {
       const done = work.completionCleanup ? result.postAction!.disposition === "done" : Boolean(result.done);
       card.status = done ? "done" : "to_review_updated";
       card.completedAt = done ? completedAt : undefined;
+      card.completionDisposition = done ? "completed" : undefined;
       card.readyForPass = done ? config.currentPass + 1 : config.currentPass;
       appendHistory(card, "codex.approved_action_reconciled", result.response.trim());
       work.status = "completed";
@@ -2066,7 +2447,7 @@ export class AttentionDomain {
     }
   }
 
-  async retryApprovedWork(feedId: string, workId: string): Promise<WorkItem> {
+  async retryApprovedWork(feedId: string, workId: string): Promise<WorkItemView> {
     return this.store.serialize(async () => {
       const work = await this.store.readWork(feedId, workId);
       if ((work.status !== "approved_blocked" && work.status !== "failed") || work.kind !== "execute_approved_action" || !work.approvalDigest) {
@@ -2088,20 +2469,16 @@ export class AttentionDomain {
         await this.store.appendEvent({ feedId, cardId: card.id, workId, type: "action.stale" });
         throw new Error(work.error);
       }
-      work.status = "queued";
-      work.capabilityToken = makeToken();
-      work.updatedAt = isoNow();
-      work.claimedAt = undefined;
-      work.error = undefined;
-      work.verifiedAt = undefined;
-      work.verifiedApprovalDigest = undefined;
-      work.verifiedMailbox = undefined;
+      this.requeueWorkItem(work);
       card.status = "queued";
       appendHistory(card, "codex.approved_action_retry_queued", work.id);
-      await this.store.writeWork(work);
-      await this.store.writeCard(card);
-      await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.approved_action_retry_queued" });
-      return work;
+      await this.persistQueuedWork(feedId, work, {
+        afterWrite: async () => {
+          await this.store.writeCard(card);
+          await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.approved_action_retry_queued" });
+        },
+      });
+      return workItemView(work);
     });
   }
 
@@ -2119,11 +2496,12 @@ export class AttentionDomain {
       kind: "feed_improvement",
       status: "to_review_new",
       eyebrow: "Feed setup",
-      title: `Teach ${config.name} where to look.`,
-      why: "The feed exists. Codex should now propose the smallest useful source recipe and a heartbeat cadence for review.",
+      title: `Connect ${config.name} to Codex.`,
+      why: "Tend created the feed locally. Give it one dedicated Codex thread before asking that thread to propose sources or collect anything.",
       blocks: [
         { id: "brief", type: "memo", label: "Your brief", text: normalizedBrief },
-        { id: "clarify", type: "clarification", label: "Next step", text: "Wake this feed's Codex thread or use the dock. Codex will propose sources in plain English before collecting." },
+        { id: "connect", type: "checklist", label: "Connect the operator", items: [`Keep Tend open in Codex Desktop's in-app browser`, `Create one fresh Codex thread just for ${config.name}`, `Run tend setup codex --feed ${config.id} and paste the prompt into that thread`, "Open or wake that thread and say “go deal with the feed” for the first run"] },
+        { id: "clarify", type: "clarification", label: "Then teach it where to look", text: "Once connected, the feed thread will propose the smallest useful source recipe and heartbeat cadence in plain English before collecting." },
       ],
       proposedAction: { label: "Propose source recipe", instruction: "Based on this feed brief, propose the smallest useful real source recipe and a heartbeat cadence. Return the proposal for review before collecting." },
       actions: [{ id: "propose-source-recipe", label: "Propose source recipe", behavior: "queue_instruction", instruction: "Based on this feed brief, propose the smallest useful real source recipe and a heartbeat cadence. Return the proposal for review before collecting.", variant: "primary", shortcut: "p" }],
@@ -2152,7 +2530,10 @@ export class AttentionDomain {
   }
 
   async upsertCard(feedId: string, input: Partial<Card> & Pick<Card, "id" | "title" | "why" | "blocks">): Promise<Card> {
+    safeIdentifier(feedId, "Feed id");
+    safeIdentifier(input.id, "Card id");
     validateCardBlocks(input.blocks);
+    validateCardActions(input.actions);
     const sourceRunIds = validateSourceRunIds(input.sourceRunIds);
     return this.store.serialize(async () => {
       const config = await this.store.readConfig(feedId);
@@ -2178,7 +2559,8 @@ export class AttentionDomain {
         readyForPass: input.readyForPass ?? existing?.readyForPass ?? config.currentPass,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
-        completedAt: input.completedAt,
+        completedAt: resurfaced ? undefined : input.completedAt ?? existing?.completedAt,
+        completionDisposition: resurfaced ? undefined : input.completionDisposition ?? existing?.completionDisposition,
         routineActionGroupId: input.routineActionGroupId ?? (resurfaced ? undefined : existing?.routineActionGroupId),
         history: existing?.history ?? [],
       };
@@ -2413,10 +2795,19 @@ export class AttentionDomain {
     await this.store.serialize(() => this.store.writeGlobalPrompt(name, content.replace(/\\n/g, "\n").trim()));
   }
 
-  private async assertThread(feedId: string, threadId: string, explicitCrossFeed: boolean): Promise<void> {
-    if (!threadId.trim()) throw new Error("A Codex thread ID is required.");
+  private async assertThread(feedId: string, threadId: string, explicitCrossFeed: boolean, sessionId?: string): Promise<WorkCaller> {
+    const normalized = threadId.trim();
+    if (!normalized) throw new Error("A thread ID is required.");
     const thread = await this.store.readThread(feedId);
-    if (!thread.homeThreadId) throw new Error("Feed has no bound home thread.");
-    if (thread.homeThreadId !== threadId.trim() && !explicitCrossFeed) throw new Error("This Codex thread does not own the feed. Use explicit cross-feed mode to proceed.");
+    const claudeThreadId = thread.agents?.claude?.threadId ?? null;
+    const boundAgents = [
+      thread.homeThreadId ? `codex:${thread.homeThreadId}` : null,
+      claudeThreadId ? `claude:${claudeThreadId}` : null,
+    ].filter((value): value is string => Boolean(value));
+    if (boundAgents.length === 0) throw new Error("Feed has no bound agent thread.");
+    if (explicitCrossFeed) return { kind: "guest", threadId: normalized, ...(sessionId ? { sessionId } : {}) };
+    if (thread.homeThreadId === normalized) return { kind: "agent", agent: "codex", threadId: normalized, ...(sessionId ? { sessionId } : {}) };
+    if (claudeThreadId === normalized) return { kind: "agent", agent: "claude", threadId: normalized, ...(sessionId ? { sessionId } : {}) };
+    throw new Error(`This thread does not own the feed. Bound agents: ${boundAgents.join(", ")}. Use explicit cross-feed mode to proceed as a guest.`);
   }
 }

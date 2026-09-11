@@ -3,6 +3,7 @@ import { readdir } from "node:fs/promises";
 import path from "node:path";
 import type { RoutineActionGroup } from "../../shared/types";
 import { readJson, writeJson } from "../util";
+import type { MirrorWriteCoordinator } from "./mirrorWrites";
 
 export interface RoutineActionGroupRepository {
   init(feedIds: string[]): Promise<void>;
@@ -46,7 +47,11 @@ export class FileRoutineActionGroupRepository implements RoutineActionGroupRepos
 }
 
 export class MirroredRoutineActionGroupRepository implements RoutineActionGroupRepository {
-  constructor(private readonly primary: RoutineActionGroupRepository, private readonly mirror: RoutineActionGroupRepository) {}
+  constructor(
+    private readonly primary: RoutineActionGroupRepository,
+    private readonly mirror: RoutineActionGroupRepository,
+    private readonly mirrorWrites?: MirrorWriteCoordinator,
+  ) {}
 
   async init(feedIds: string[]): Promise<void> {
     await this.mirror.init(feedIds);
@@ -68,18 +73,18 @@ export class MirroredRoutineActionGroupRepository implements RoutineActionGroupR
 
   async write(group: RoutineActionGroup): Promise<void> {
     await this.primary.write(group);
-    await this.mirror.write(group);
+    if (this.mirrorWrites) await this.mirrorWrites.write(() => this.mirror.write(group));
+    else await this.mirror.write(group);
   }
 
   private async syncFeed(feedId: string): Promise<void> {
     const primary = await this.primary.list(feedId);
     const mirror = await this.mirror.list(feedId);
     const primaryIds = new Set(primary.map((group) => group.id));
-    const mirrorIds = new Set(mirror.map((group) => group.id));
     for (const group of mirror.filter((item) => !primaryIds.has(item.id))) {
       await this.primary.write(group);
     }
-    for (const group of primary.filter((item) => !mirrorIds.has(item.id))) {
+    for (const group of primary) {
       await this.mirror.write(group);
     }
   }

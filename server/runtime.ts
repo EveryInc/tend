@@ -1,4 +1,3 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDataDir, attentionDbPath, attentionHome } from "./paths";
@@ -6,6 +5,7 @@ import { FileCardRepository, MirroredCardRepository } from "./repositories/cards
 import { FileFeedEventRepository, MirroredFeedEventRepository } from "./repositories/feedEvents";
 import { FileMindContextRepository, MirroredMindContextRepository } from "./repositories/mindContext";
 import { FileMobileCommandReceiptRepository, MirroredMobileCommandReceiptRepository } from "./repositories/mobileCommandReceipts";
+import { MirrorWriteCoordinator } from "./repositories/mirrorWrites";
 import { FileRevisionRepository, MirroredRevisionRepository } from "./repositories/revisions";
 import { FileRoutineActionGroupRepository, MirroredRoutineActionGroupRepository } from "./repositories/routineActionGroups";
 import { FileSourceRunRepository, MirroredSourceRunRepository } from "./repositories/sourceRuns";
@@ -17,9 +17,7 @@ import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "./
 import { LocalSqliteStore } from "./sqlite";
 import { AttentionStore } from "./store";
 
-export function resolveRuntimeRoot(appRoot?: string): string {
-  if (process.env.ATTENTION_HOME) return attentionHome();
-  if (appRoot && isCanonicalSourceCheckout(appRoot)) return path.resolve(appRoot, "..", ".attention-workbench");
+export function resolveRuntimeRoot(_appRoot?: string): string {
   return attentionHome();
 }
 
@@ -42,6 +40,7 @@ export async function createLocalRuntime(
   await mkdir(dataDir, { recursive: true });
   const sqlite = new LocalSqliteStore(dbPath);
   await sqlite.init();
+  const mirrorWrites = new MirrorWriteCoordinator();
   const workspaceFeeds = new MirroredWorkspaceFeedRepository(
     sqlite.workspaceFeeds(),
     new FileWorkspaceFeedRepository(path.join(dataDir, "workspace.json")),
@@ -49,6 +48,7 @@ export async function createLocalRuntime(
   const events = new MirroredFeedEventRepository(
     sqlite.feedEvents(),
     new FileFeedEventRepository(dataDir),
+    mirrorWrites,
   );
   const mindContext = new MirroredMindContextRepository(
     sqlite.mindContext(),
@@ -57,6 +57,7 @@ export async function createLocalRuntime(
   const mobileCommandReceipts = new MirroredMobileCommandReceiptRepository(
     sqlite.mobileCommandReceipts(),
     new FileMobileCommandReceiptRepository(dataDir),
+    mirrorWrites,
   );
   const revisions = new MirroredRevisionRepository(
     sqlite.revisions(),
@@ -65,14 +66,17 @@ export async function createLocalRuntime(
   const workItems = new MirroredWorkItemRepository(
     sqlite.workItems(),
     new FileWorkItemRepository(dataDir),
+    mirrorWrites,
   );
   const cards = new MirroredCardRepository(
     sqlite.cards(),
     new FileCardRepository(dataDir),
+    mirrorWrites,
   );
   const routineActionGroups = new MirroredRoutineActionGroupRepository(
     sqlite.routineActionGroups(),
     new FileRoutineActionGroupRepository(dataDir),
+    mirrorWrites,
   );
   const sourceRuns = new MirroredSourceRunRepository(
     sqlite.sourceRuns(),
@@ -85,24 +89,27 @@ export async function createLocalRuntime(
   const sweeps = new MirroredSweepRepository(
     sqlite.sweeps(),
     new FileSweepRepository(dataDir),
+    mirrorWrites,
   );
   const textDocuments = new MirroredTextDocumentRepository(
     sqlite.textDocuments(),
     new FileTextDocumentRepository(dataDir),
   );
-  const store = new AttentionStore(dataDir, { cards, events, mindContext, mobileCommandReceipts, revisions, routineActionGroups, sourceRuns, sources, sweeps, textDocuments, workItems, workspaceFeeds });
+  const store = new AttentionStore(dataDir, {
+    cards,
+    events,
+    mindContext,
+    mobileCommandReceipts,
+    revisions,
+    routineActionGroups,
+    runAtomic: (callback) => mirrorWrites.transaction(() => sqlite.transaction(callback)),
+    sourceRuns,
+    sources,
+    sweeps,
+    textDocuments,
+    workItems,
+    workspaceFeeds,
+  });
   await store.init();
   return { dataDir, sqlite, store };
-}
-
-function isCanonicalSourceCheckout(appRoot: string): boolean {
-  try {
-    const gitDir = path.join(appRoot, ".git");
-    return path.basename(appRoot) === "attention"
-      && existsSync(path.join(appRoot, "bin", "tend-live"))
-      && statSync(gitDir).isDirectory()
-      && readFileSync(path.join(gitDir, "HEAD"), "utf8").trim() === "ref: refs/heads/main";
-  } catch {
-    return false;
-  }
 }

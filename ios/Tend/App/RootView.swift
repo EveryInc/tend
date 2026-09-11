@@ -11,7 +11,7 @@ struct RootView: View {
                 ProgressView("Opening Tend")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(TendTheme.paper)
-            case .signedOut, .codeSent:
+            case .signedOut, .linkSent:
                 SignInView(model: model)
             case .authenticated:
                 TendTabView(model: model)
@@ -47,6 +47,9 @@ struct RootView: View {
             guard phase == .active, model.authState == .authenticated else { return }
             Task { await model.refresh() }
         }
+        .onOpenURL { url in
+            Task { await model.handleAuthCallback(url) }
+        }
     }
 }
 
@@ -81,9 +84,9 @@ private struct UndoArchiveToast: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "archivebox.fill")
+            Image(systemName: model.pendingUndo?.kind == "dismiss" ? "checkmark.circle.fill" : "archivebox.fill")
                 .foregroundStyle(.white.opacity(0.85))
-            Text("Archived")
+            Text(model.pendingUndo?.kind == "dismiss" ? "Dismissed" : "Archived")
                 .font(.headline)
                 .foregroundStyle(.white)
             Spacer()

@@ -15,7 +15,7 @@ struct TendWordmark: View {
             if let subtitle {
                 Text(subtitle)
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TendTheme.secondaryInk)
             }
         }
     }
@@ -33,7 +33,7 @@ struct CountPill: View {
                 .foregroundStyle(emphasis ? TendTheme.cobalt : TendTheme.ink)
             Text(label)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(TendTheme.secondaryInk)
         }
         .accessibilityElement(children: .combine)
     }
@@ -50,7 +50,7 @@ struct SyncBadge: View {
             Text(label)
                 .font(.caption.weight(.semibold))
         }
-        .foregroundStyle(.secondary)
+        .foregroundStyle(TendTheme.secondaryInk)
         .accessibilityLabel("Sync status: \(label)")
     }
 

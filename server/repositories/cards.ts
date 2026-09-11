@@ -2,7 +2,8 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Card } from "../../shared/types";
-import { readJson, writeJson } from "../util";
+import { readJson, safeIdentifier, writeJson } from "../util";
+import type { MirrorWriteCoordinator } from "./mirrorWrites";
 
 export interface CardRepository {
   init(feedIds: string[]): Promise<void>;
@@ -43,16 +44,20 @@ export class FileCardRepository implements CardRepository {
   }
 
   private cardPath(feedId: string): string {
-    return path.join(this.dataDir, "feeds", feedId, "cards");
+    return path.join(this.dataDir, "feeds", safeIdentifier(feedId, "Feed id"), "cards");
   }
 
   private cardFile(feedId: string, cardId: string): string {
-    return path.join(this.cardPath(feedId), `${cardId}.json`);
+    return path.join(this.cardPath(feedId), `${safeIdentifier(cardId, "Card id")}.json`);
   }
 }
 
 export class MirroredCardRepository implements CardRepository {
-  constructor(private readonly primary: CardRepository, private readonly mirror: CardRepository) {}
+  constructor(
+    private readonly primary: CardRepository,
+    private readonly mirror: CardRepository,
+    private readonly mirrorWrites?: MirrorWriteCoordinator,
+  ) {}
 
   async init(feedIds: string[]): Promise<void> {
     await this.mirror.init(feedIds);
@@ -74,24 +79,28 @@ export class MirroredCardRepository implements CardRepository {
 
   async write(card: Card): Promise<void> {
     await this.primary.write(card);
-    await this.mirror.write(card);
+    await this.writeMirror(() => this.mirror.write(card));
   }
 
   async remove(feedId: string, cardId: string): Promise<void> {
     await this.primary.remove(feedId, cardId);
-    await this.mirror.remove(feedId, cardId);
+    await this.writeMirror(() => this.mirror.remove(feedId, cardId));
   }
 
   private async syncFeed(feedId: string): Promise<void> {
     const primary = await this.primary.list(feedId);
     const mirror = await this.mirror.list(feedId);
     const primaryIds = new Set(primary.map((card) => card.id));
-    const mirrorIds = new Set(mirror.map((card) => card.id));
     for (const card of mirror.filter((item) => !primaryIds.has(item.id))) {
       await this.primary.write(card);
     }
-    for (const card of primary.filter((item) => !mirrorIds.has(item.id))) {
+    for (const card of primary) {
       await this.mirror.write(card);
     }
+  }
+
+  private async writeMirror(callback: () => Promise<void>): Promise<void> {
+    if (this.mirrorWrites) await this.mirrorWrites.write(callback);
+    else await callback();
   }
 }

@@ -120,7 +120,7 @@ struct FeedsView: View {
                         .foregroundStyle(TendTheme.cobalt)
                     Text("Cloud credentials are not configured.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TendTheme.secondaryInk)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             } else {
@@ -132,7 +132,7 @@ struct FeedsView: View {
                         .font(.subheadline.weight(.semibold))
                     Text("Cloud credentials are not configured.")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TendTheme.secondaryInk)
                     Spacer(minLength: 0)
                 }
             }
@@ -164,13 +164,13 @@ private struct FeedRow: View {
                     }
                     Text(feed.purpose)
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(TendTheme.secondaryInk)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 12)
                 Image(systemName: "chevron.right")
                     .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TendTheme.secondaryInk)
             }
 
             if let latest = feed.latestCardTitle {
@@ -185,10 +185,10 @@ private struct FeedRow: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(feed.reviewCount > 0 ? TendTheme.ink : TendTheme.secondaryInk)
                 Text("\(feed.workingCount) working")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TendTheme.secondaryInk)
                 Spacer()
                 Text(feed.relativeFreshness)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(TendTheme.secondaryInk)
             }
             .font(.caption.weight(.semibold))
         }

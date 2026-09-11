@@ -1,10 +1,38 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 export const isoNow = () => new Date().toISOString();
 export const makeId = (prefix: string) => `${prefix}_${randomUUID()}`;
 export const makeToken = () => randomBytes(24).toString("hex");
+const SAFE_IDENTIFIER_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export function safeIdentifier(value: string, label: string): string {
+  if (!SAFE_IDENTIFIER_PATTERN.test(value) || value === "." || value === "..") {
+    throw new Error(`${label} must use only letters, numbers, dots, underscores, and hyphens.`);
+  }
+  return value;
+}
+
+export async function withMutationLock<T>(dataDir: string, callback: () => Promise<T>): Promise<T> {
+  await mkdir(dataDir, { recursive: true });
+  const lockPath = join(dataDir, ".mutation-lock");
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    try {
+      await mkdir(lockPath);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (attempt === 399) throw new Error("Timed out waiting for the filesystem mutation lock.");
+      await new Promise((resolve) => setTimeout(resolve, 15));
+    }
+  }
+  try {
+    return await callback();
+  } finally {
+    await rm(lockPath, { recursive: true, force: true });
+  }
+}
 
 export async function readJson<T>(path: string): Promise<T> {
   return JSON.parse(await readFile(path, "utf8")) as T;

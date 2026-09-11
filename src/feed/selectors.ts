@@ -1,5 +1,6 @@
 import type { Tab } from "../app/types";
-import type { Card, CardAction, FeedView, RoutineActionGroup } from "../types";
+import type { Card, CardAction, FeedView, RoutineActionGroup, WorkItemView } from "../types";
+import { safeConfiguredCardActions } from "../../shared/cardActions";
 
 export function visibleCards(feed: FeedView, tab: Tab): Card[] {
   const pass = feed.config.currentPass;
@@ -22,26 +23,31 @@ export function visibleRoutineActions(feed: FeedView, tab: Tab): RoutineActionGr
   return feed.routineActions.filter((group) => group.status === status);
 }
 
+export function visibleFeedWork(feed: FeedView, tab: Tab): WorkItemView[] {
+  if (tab === "review") return [];
+  const status = tab === "done" ? "completed" : tab;
+  return feed.work.filter((work) => work.cardId === "__feed__" && work.status === status);
+}
+
 export function countFor(feed: FeedView, tab: Tab): number {
-  const feedWork = tab === "queued" || tab === "working"
-    ? feed.work.filter((work) => work.cardId === "__feed__" && work.status === tab).length
-    : 0;
-  return visibleCards(feed, tab).length + visibleRoutineActions(feed, tab).length + feedWork;
+  return visibleCards(feed, tab).length + visibleRoutineActions(feed, tab).length + visibleFeedWork(feed, tab).length;
 }
 
 export function visibleCardActions(card: Card): CardAction[] {
-  const archive: CardAction = { id: "default-cleanup", label: "Archive", behavior: "default_cleanup", variant: "secondary", shortcut: "x" };
-  if (card.actions?.length) {
-    return card.actions.some((action) => action.behavior === "default_cleanup")
-      ? card.actions
-      : [archive, ...card.actions];
+  const dismiss: CardAction = { id: "dismiss-card", label: "Dismiss card", behavior: "dismiss_card", variant: "secondary", shortcut: "d" };
+  const configuredActions = safeConfiguredCardActions(card.actions);
+  if (configuredActions.length) {
+    // Local dismissal is always available unless the card author supplied a custom local-dismiss
+    // control. Source cleanup remains a separate, explicitly configured action.
+    return configuredActions.some((action) => action.behavior === "dismiss_card") ? configuredActions : [dismiss, ...configuredActions];
   }
-  if (!card.proposedAction || card.proposedAction.label === "Decide disposition") return [archive];
+  if (!card.proposedAction || card.proposedAction.label === "Decide disposition") return [dismiss];
   if (card.proposedAction.label === "Archive" || card.proposedAction.label === "Archive this thread") {
-    return [{ ...archive, variant: "primary" }];
+    // The card explicitly proposes archiving the source, so surface the connector cleanup.
+    return [dismiss, { id: "default-cleanup", label: "Archive", behavior: "default_cleanup", variant: "primary", shortcut: "x" }];
   }
   return [
-    archive,
+    dismiss,
     {
       id: "proposed-action",
       label: card.proposedAction.label,

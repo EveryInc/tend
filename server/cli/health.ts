@@ -41,7 +41,7 @@ async function checkApiStatus(): Promise<DoctorCheck> {
     return { name: "local api", ok, detail: ok ? `${url} reachable` : `${url} returned an unexpected status payload` };
   } catch (error) {
     const reason = error instanceof Error && error.name === "AbortError" ? "timed out" : "not reachable";
-    return { name: "local api", ok: false, detail: `${url} ${reason}. Run attention start, then rerun doctor.` };
+    return { name: "local api", ok: false, detail: `${url} ${reason}. Run tend start, then rerun doctor.` };
   } finally {
     clearTimeout(timeout);
   }

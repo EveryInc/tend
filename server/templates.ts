@@ -40,9 +40,14 @@ Choose concrete card actions that match the actual decision. The browser can ren
 button and each button should say what it does: \`Send reply\`, \`Draft reply\`, \`Research\`,
 \`Archive\`, \`Delegate\`, or another specific next step. Use \`queue_instruction\` for preparation
 work, \`approve_action\` for an exact visible action snapshot, and \`default_cleanup\` for the feed's
-default dismissal behavior. Do not use vague \`Approve\` or \`Decide disposition\` labels when the
-source evidence supports a more useful choice. For Gmail reply actions, record the source message's
+explicit source cleanup, such as archiving the source email. Use \`dismiss_card\` to remove a card
+from Tend review without creating work or mutating its source. Never use \`default_cleanup\` for a
+routine “clear this card” control. Do not use vague \`Approve\` or \`Decide disposition\` labels when
+the source evidence supports a more useful choice. For Gmail reply actions, record the source message's
 received-at mailbox on the card and use \`mailboxPolicy: "reply_from_source"\`.
+Name the actual outbound To/Cc/Bcc destinations in the action instruction or the leading header
+block of its editable draft. Keep historical recipients in source-email blocks or quoted content;
+an email address mentioned in the body is not an outbound destination.
 Default every reply draft to the owner of \`sourceMailbox\`: preserve that person's voice and
 signature unless the user's instruction explicitly changes sender. Never sign as an assistant,
 delegate, incoming sender, or researcher by default.
@@ -58,9 +63,15 @@ instruction. External mutations are allowed only for claimed \`execute_approved_
 current approved snapshot immediately before the connector call. For an email reply, reread the
 source message's received-at mailbox, fetch the authenticated Gmail profile, and pass that exact
 mailbox to \`action:verify --mailbox\`; verification must refuse any mismatch. When \`work:claim\`
-returns \`operatorGuidance.userAuthorization.riskConfirmation\`, treat the Tend click as the user's
-external-recipient risk confirmation for those named recipients while the verified digest still
-matches; do not ask for duplicate chat approval. When drafting or revising an email reply, write as the owner of \`sourceMailbox\` and preserve that sender's voice and signature unless the user's instruction explicitly changes sender. For routine actions, reread
+returns \`operatorGuidance.userAuthorization.riskConfirmation\`, it records the named recipients
+approved within Tend while the verified digest still matches. The receipt's \`scope\` is
+\`tend_workflow\` and \`connectorAuthorization\` is \`not_attested\`; do not repeat the Tend approval,
+but honor the connector's own authorization boundary. If a connector rejects the approval source,
+stop retrying that mutation, record \`work:block\` with its precise reason, and present the required
+confirmation through the connector or host's trusted user interface. Do not rephrase a receipt,
+change approval settings, or switch execution paths to override the denial. After a later trusted
+confirmation, repeat the fresh source/dedup check and \`action:verify\` before execution.
+When drafting or revising an email reply, write as the owner of \`sourceMailbox\` and preserve that sender's voice and signature unless the user's instruction explicitly changes sender. For routine actions, reread
 every authoritative source item before mutating any of them. If any item changed or needs judgment,
 fail the group so its items return to individual review. Record the result, evidence, uncertainty,
 and any proposed policy learning. An approved action may include the feed's configured completion
@@ -175,11 +186,11 @@ export function setupCard(feedId: string, kind: "inbox" | "company"): Card {
       kind: "feed_improvement",
       status: "to_review_new",
       eyebrow: "Feed setup",
-      title: "Your Inbox feed is ready for its first collection.",
-      why: "The Gmail recipe is configured. Wake this feed's Codex thread to collect, judge, and replace this setup card with real email attention cards.",
+      title: "Connect Inbox to Codex, then collect its first sweep.",
+      why: "Tend is built for Codex Desktop's in-app browser. Inbox needs one dedicated Codex thread before it can operate the configured Gmail recipe.",
       blocks: [
         { id: "brief", type: "rich_text", label: "How it works", text: "Codex inspects new Gmail threads, decides disposition before drafting, and preserves an exact approval gate before any send." },
-        { id: "checklist", type: "checklist", label: "First run", items: ["Bind this feed to its Codex thread", "Wake the thread with “go deal with the feed”", "Review the first real cards and correct the framing"] },
+        { id: "checklist", type: "checklist", label: "First run", items: ["Keep this feed open in Codex Desktop's in-app browser", "Create one fresh Codex thread just for Inbox", "Run tend setup codex --feed inbox and paste the prompt into that thread", "Open or wake that thread and say “go deal with the feed”", "Review the first real cards and correct the framing"] },
       ],
       proposedAction: { label: "Collect the first Inbox sweep", instruction: "Collect the first Inbox sweep from the configured Gmail recipe, judge the candidates, and replace this setup card with real cards." },
       actions: [{ id: "collect-inbox-sweep", label: "Collect Inbox sweep", behavior: "queue_instruction", instruction: "Collect the first Inbox sweep from the configured Gmail recipe, judge the candidates, and replace this setup card with real cards.", variant: "primary", shortcut: "c" }],

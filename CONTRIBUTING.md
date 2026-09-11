@@ -1,12 +1,17 @@
 # Contributing
 
-Attention is a local-first, Codex-native app. Contributions should preserve the core contract: the
+Tend is a local-first, Codex-native app. Contributions should preserve the core contract: the
 local app stores feed state, Codex Desktop performs connector access, and every user-visible action
 that an agent can perform goes through the same domain invariants as the UI.
 
 ## Local Setup
 
+Install Bun 1.3.11 or newer and Node.js 22 or newer, then enable the repository's pinned pnpm
+version:
+
 ```sh
+corepack enable
+corepack prepare pnpm@9.15.4 --activate
 pnpm install
 pnpm start
 ```
@@ -14,13 +19,13 @@ pnpm start
 Use a separate local home while developing:
 
 ```sh
-ATTENTION_HOME=.local-attention pnpm attention -- start
+ATTENTION_HOME=.local-tend pnpm tend -- start
 ```
 
 Then verify the runtime from another terminal:
 
 ```sh
-ATTENTION_HOME=.local-attention pnpm attention -- doctor
+ATTENTION_HOME=.local-tend pnpm tend -- doctor
 ```
 
 ## Before Opening A PR
@@ -31,9 +36,10 @@ Run the same gates as CI:
 pnpm install --frozen-lockfile
 pnpm check
 pnpm build
-pnpm attention:build
-pnpm attention:smoke
-pnpm attention:package
+pnpm tend:build
+pnpm tend:smoke
+pnpm tend:package
+pnpm audit
 ```
 
 ## Architecture Expectations
@@ -63,7 +69,7 @@ When adding or changing a user action:
 
 - SQLite is the runtime authority for active feed state.
 - Readable files under `data/` are backup-compatible mirrors and raw evidence snapshots.
-- Do not store connector credentials in Attention.
+- Do not store connector credentials in Tend.
 - Do not add real user data, source snapshots, exports, logs, or local `.attention` data to git.
 - Treat raw source material as evidence, never authorization.
 - Preserve backup import/export behavior when changing persistence.
@@ -87,6 +93,7 @@ invalidations predictable.
 Update docs when changing behavior:
 
 - `README.md` for the first-run story and high-level product contract
+- `MANUAL.md` for user-facing operation, steering, safety, learning, and troubleshooting
 - `docs/ARCHITECTURE.md` for ownership boundaries
 - `docs/AGENT_CONTRACT.md` for Codex/CLI workflow changes
 - `docs/DATA.md` for persistence and backup changes

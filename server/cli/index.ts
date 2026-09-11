@@ -3,13 +3,13 @@ import { attentionHome } from "../paths";
 import { backupExportCommand, backupImportCommand } from "./backup";
 import { doctorCommand, statusCommand } from "./health";
 import { helpCommand } from "./help";
-import { runLegacyCli } from "./legacy";
+import { runOperatorCli } from "./operator";
 import { healthCommand, logsCommand, restartCommand, stopCommand } from "./service";
 import { setupCodexCommand } from "./setup";
 import { startCommand } from "./start";
 import { versionCommand } from "./version";
 
-export async function runAttentionCli(rawArgs: string[]): Promise<void> {
+export async function runTendCli(rawArgs: string[]): Promise<void> {
   const args = [...rawArgs];
   if (args[0] === "--") args.shift();
   const [command = "help", subcommand, ...rest] = args;
@@ -42,21 +42,23 @@ export async function runAttentionCli(rawArgs: string[]): Promise<void> {
       await doctorCommand();
       break;
     case "setup":
-      if (subcommand !== "codex") throw new Error("Expected: attention setup codex");
-      setupCodexCommand();
+      if (subcommand !== "codex") throw new Error("Expected: tend setup codex [--feed <id> | --chronicle]");
+      setupCodexCommand(rest);
       break;
     case "backup":
       if (subcommand === "export") await backupExportCommand(rest[0] ?? path.join(attentionHome(), "exports", `attention-${Date.now()}`));
       else if (subcommand === "import") await backupImportCommand(rest[0] ?? "");
-      else throw new Error("Expected: attention backup export [path] or attention backup import <path>");
+      else throw new Error("Expected: tend backup export [path] or tend backup import <path>");
       break;
+    case "--help":
+    case "-h":
     case "help":
       helpCommand();
       break;
     case "cli":
-      await runLegacyCli([subcommand, ...rest].filter((value): value is string => Boolean(value)));
+      await runOperatorCli([subcommand, ...rest].filter((value): value is string => Boolean(value)));
       break;
     default:
-      await runLegacyCli([command, subcommand, ...rest].filter((value): value is string => Boolean(value)));
+      throw new Error(`Unknown Tend command "${command}". Run tend help.`);
   }
 }

@@ -56,18 +56,23 @@ struct MobileCard: Codable, Identifiable, Hashable, Sendable {
     let createdAt: String
     let updatedAt: String
     let completedAt: String?
+    var completionDisposition: String? = nil   // "completed" | "dismissed"; nil for legacy snapshots
 
     var editableBlocks: [MobileBlock] {
         blocks.filter { $0.type == "editable_text" && $0.editable == true }
     }
 
     var primaryAction: MobileAction? {
-        actions.first(where: { $0.variant == "primary" && $0.behavior != "default_cleanup" })
-            ?? actions.first(where: { $0.behavior != "default_cleanup" })
+        actions.first(where: { $0.variant == "primary" && $0.behavior != "default_cleanup" && $0.behavior != "dismiss_card" })
+            ?? actions.first(where: { $0.behavior != "default_cleanup" && $0.behavior != "dismiss_card" })
     }
 
     var archiveAction: MobileAction? {
         actions.first(where: { $0.behavior == "default_cleanup" })
+    }
+
+    var dismissAction: MobileAction? {
+        actions.first(where: { $0.behavior == "dismiss_card" })
     }
 }
 

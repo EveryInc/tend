@@ -8,14 +8,17 @@ import { createRealtimeHub } from "./server/routes/realtime";
 import { createFeedEventBridge } from "./server/realtime/feedEventBridge";
 import { createLocalRuntime, resolveArtifactsDir, resolveDataDir, resolveDbPath, resolveRuntimeRoot } from "./server/runtime";
 import { DrainDispatcher } from "./server/dispatcher";
-import { mobileCloudConfigFromEnv, SupabaseMobileCloudClient } from "./server/mobile/client";
+import { loadMobileCloudEnvFile, mobileCloudConfigFromEnv, SupabaseMobileCloudClient } from "./server/mobile/client";
 import { MobileSyncWorker } from "./server/mobile/sync";
+import { makeToken } from "./server/util";
+import { NativeApprovalBroker } from "./server/nativeApprovals";
 
 declare const Bun: {
   serve(options: { port: number; hostname: string; idleTimeout: number; fetch: (...args: any[]) => any }): { stop(force?: boolean): void };
 };
 
 const root = path.dirname(fileURLToPath(import.meta.url));
+loadMobileCloudEnvFile();
 const port = Number(process.env.ATTENTION_API_PORT ?? 4332);
 const clientDir = process.env.ATTENTION_CLIENT_DIR ?? path.join(root, "dist");
 const runtimeRoot = resolveRuntimeRoot(root);
@@ -23,10 +26,12 @@ const artifactsDir = resolveArtifactsDir(root);
 const dataDir = resolveDataDir(root);
 const { sqlite, store } = await createLocalRuntime(dataDir, resolveDbPath(root));
 const domain = new AttentionDomain(store);
+const mutationToken = process.env.ATTENTION_MUTATION_TOKEN ?? makeToken();
 const realtime = createRealtimeHub();
 const feedEventBridge = createFeedEventBridge(store, realtime.notify);
 await feedEventBridge.start();
-const drainDispatcher = new DrainDispatcher(store, { appRoot: root, runtimeRoot });
+const nativeApprovals = new NativeApprovalBroker(store, () => realtime.notify({ changedAt: new Date().toISOString() }));
+const drainDispatcher = new DrainDispatcher(store, { appRoot: root, runtimeRoot, nativeApprovals });
 if (process.env.ATTENTION_AUTODRAIN === "1") drainDispatcher.start();
 const mobileConfig = mobileCloudConfigFromEnv();
 const mobileSync = mobileConfig
@@ -40,6 +45,8 @@ app.route("/", apiRoutes({
   dataDir,
   domain,
   mobileStatus: () => mobileSync?.currentStatus() ?? { enabled: false },
+  mutationToken,
+  nativeApprovals,
   notify: realtime.notify,
   port,
   root,
@@ -56,11 +63,12 @@ const server = Bun.serve({
   fetch: app.fetch,
 });
 
-console.log(`attention api listening on http://127.0.0.1:${port}`);
+console.log(`Tend API listening on http://127.0.0.1:${port}`);
 
 export function closeServer() {
   mobileSync?.stop();
   drainDispatcher.stop();
+  nativeApprovals.close();
   feedEventBridge.stop();
   server.stop(true);
 }

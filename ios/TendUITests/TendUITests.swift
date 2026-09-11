@@ -30,6 +30,28 @@ final class TendUITests: XCTestCase {
     }
 
     @MainActor
+    func testDismissOnlyCardNeverOffersSourceCleanupAndUndoRestoresIt() {
+        let app = launchApp()
+        app.buttons["feed-inbox"].tap()
+        XCTAssertTrue(app.otherElements["review-card-inbox-agreements"].waitForExistence(timeout: 5))
+        app.buttons["Archive"].tap()
+        XCTAssertTrue(app.otherElements["review-card-inbox-cursor-reply"].waitForExistence(timeout: 5))
+        app.buttons["Archive"].tap()
+
+        let card = app.otherElements["review-card-inbox-local-only"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Dismiss card"].exists)
+        XCTAssertFalse(app.buttons["Archive"].exists)
+        app.buttons["Dismiss card"].tap()
+
+        XCTAssertTrue(app.staticTexts["Dismissed"].waitForExistence(timeout: 3))
+        let undo = app.buttons["Undo"]
+        XCTAssertTrue(undo.exists)
+        undo.tap()
+        XCTAssertTrue(card.waitForExistence(timeout: 3))
+    }
+
+    @MainActor
     func testEditableExternalActionShowsExactConfirmation() {
         let app = launchApp()
         app.buttons["feed-inbox"].tap()
@@ -95,11 +117,27 @@ final class TendUITests: XCTestCase {
             .textClipped,
             .trait,
         ]
-        try app.performAccessibilityAudit(for: auditTypes)
+        try performAccessibilityAuditWithTimeoutRetry(in: app, for: auditTypes)
 
         app.buttons["feed-inbox"].tap()
         XCTAssertTrue(app.buttons["Talk or type"].waitForExistence(timeout: 5))
-        try app.performAccessibilityAudit(for: auditTypes)
+        try performAccessibilityAuditWithTimeoutRetry(in: app, for: auditTypes)
+    }
+
+    @MainActor
+    private func performAccessibilityAuditWithTimeoutRetry(
+        in app: XCUIApplication,
+        for auditTypes: XCUIAccessibilityAuditType
+    ) throws {
+        do {
+            try app.performAccessibilityAudit(for: auditTypes)
+        } catch let error as NSError
+            where error.domain == "com.apple.xcode.xctest.accessibilityAudit" && error.code == -56 {
+            // Retry only XCTest's infrastructure timeout; audit findings still fail normally.
+            app.activate()
+            XCTAssertTrue(app.wait(for: .runningForeground, timeout: 5))
+            try app.performAccessibilityAudit(for: auditTypes)
+        }
     }
 
     @MainActor

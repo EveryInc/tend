@@ -1,6 +1,6 @@
 # Data
 
-Attention is local-first. By default, user data lives under:
+Tend is local-first. By default, user data lives under:
 
 ```text
 ~/.attention/
@@ -13,7 +13,7 @@ Attention is local-first. By default, user data lives under:
 Override the runtime root with:
 
 ```sh
-ATTENTION_HOME=/path/to/attention attention start
+ATTENTION_HOME=/path/to/attention tend start
 ```
 
 ## Current Storage
@@ -30,6 +30,7 @@ ATTENTION_HOME=/path/to/attention attention start
 - `data/feeds/*/events.jsonl` mirrors feed audit events for backup compatibility and readable local debugging.
 - `data/feeds/*/work/*.json` mirrors work items for backup compatibility and readable local debugging.
 - `data/feeds/*/feed.md` stores a readable feed description. `data/feeds/*/raw/**` stores immutable raw evidence snapshots.
+- `data/agents/claude/presence.json`, `data/agents/claude/wake-state.json`, and `data/agents/claude/wake.jsonl` store Claude-lane operational state. Wake lines contain only server-controlled ids/counts and never source text, instructions, or capability tokens.
 - `data/mind-context/binding.json` mirrors the one bound Chronicle publisher.
 - `data/mind-context/updates/*.json` mirrors recent privacy-filtered On Your Mind publications and
   retains older records while a card references them for provenance.
@@ -38,25 +39,31 @@ ATTENTION_HOME=/path/to/attention attention start
 
 ## Connector Credentials
 
-Attention does not store Gmail, GitHub, Slack, browser, or other connector credentials. Those live in the local Codex Desktop runtime.
+Tend does not store Gmail, GitHub, Slack, browser, or other connector credentials. Those live in the local Codex Desktop runtime.
 
 ## Backup
 
 ```sh
-attention backup export
-attention backup export ./attention-backup
-attention backup import ./attention-backup
+tend backup export
+tend backup export ./tend-backup
+tend stop
+tend backup import ./tend-backup
 ```
 
 The export command writes a backup directory with:
 
 ```text
-attention-backup/
+tend-backup/
   attention.db
   data/
   manifest.json
 ```
 
-`attention.db` is the SQLite runtime authority. `data/` contains readable file mirrors and immutable raw evidence snapshots. Importing this backup restores both.
+`attention.db` is a consistent SQLite snapshot of the runtime authority. `data/` contains readable
+file mirrors and immutable raw evidence snapshots. Export writes through a temporary staging
+directory and refuses to overwrite or delete an existing destination.
 
-Older data-directory-only backups are still accepted. When importing a legacy data-only backup, Attention replaces `data/` and removes the existing SQLite files so the next local runtime start rehydrates `attention.db` from the imported file mirrors.
+Import first copies the backup into a temporary staging directory. Tend refuses to import while
+the same runtime home is active, then swaps the staged database and data into place with rollback if
+the swap fails. Older data-directory-only backups are still accepted; the next local runtime start
+rehydrates `attention.db` from those imported file mirrors.

@@ -4,8 +4,8 @@ protocol TendRepository: Sendable {
     var usesFixtures: Bool { get }
 
     func hasSession() async -> Bool
-    func requestEmailCode(email: String) async throws
-    func verifyEmailCode(email: String, code: String) async throws
+    func requestSignInLink(email: String) async throws
+    func handleAuthCallback(_ url: URL) async throws
     func signOut() async throws
     func loadSnapshot() async throws -> MobileSnapshot
     func submit(_ command: MobileCommandSubmission) async throws -> MobileActivity
@@ -16,14 +16,14 @@ protocol TendRepository: Sendable {
 
 enum TendRepositoryError: LocalizedError {
     case invalidConfiguration
+    case invalidAuthCallback
     case missingResult
-    case signInFailed
 
     var errorDescription: String? {
         switch self {
         case .invalidConfiguration: "Tend's Supabase configuration is missing."
+        case .invalidAuthCallback: "Tend received an invalid sign-in link."
         case .missingResult: "Tend did not receive the expected cloud result."
-        case .signInFailed: "The email code could not be verified."
         }
     }
 }
