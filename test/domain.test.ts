@@ -155,6 +155,8 @@ describe("feed thread operator handshake", () => {
     expect(output.id).toBe(approved.id);
     expect(output.operatorGuidance.userAuthorization).toMatchObject({
       kind: "tend_action_click",
+      scope: "tend_workflow",
+      connectorAuthorization: "not_attested",
       noSecondChatConfirmationNeeded: true,
       actionLabel: "Send reply",
       approvedAt: approved.createdAt,
@@ -169,7 +171,8 @@ describe("feed thread operator handshake", () => {
     expect(output.operatorGuidance.userAuthorization.statement).toContain("configured completion cleanup");
     expect(output.operatorGuidance.completionPrerequisite).toContain("Do not ask the user to click Archive separately");
     expect(output.operatorGuidance.postActionRule).toContain('"postAction"');
-    expect(output.operatorGuidance.userAuthorization.statement).toContain("do not ask for a second chat confirmation");
+    expect(output.operatorGuidance.userAuthorization.statement).toContain("final approval within Tend");
+    expect(output.operatorGuidance.userAuthorization.statement).toContain("does not attest connector authorization or override a connector denial");
     expect(output.operatorGuidance.userAuthorization.invalidatesIf).toContain("the approved artifact changes");
   });
 
@@ -208,9 +211,10 @@ describe("feed thread operator handshake", () => {
         recipients: ["sydney@smoothmedia.co"],
       },
     });
-    expect(output.operatorGuidance.userAuthorization.riskConfirmation.statement).toContain("private inbound email");
+    expect(output.operatorGuidance.userAuthorization.riskConfirmation.statement).toContain("forwarding the exact content");
+    expect(output.operatorGuidance.userAuthorization.riskConfirmation.statement).toContain("does not establish a connector-native risk confirmation");
     expect(output.operatorGuidance.userAuthorization.statement).toContain("sydney@smoothmedia.co");
-    expect(output.operatorGuidance.userAuthorization.statement).toContain("do not ask for a second chat confirmation");
+    expect(output.operatorGuidance.userAuthorization.statement).toContain("final approval within Tend");
   });
 
   test("omits the click authorization receipt when the approval snapshot is stale", async () => {
@@ -313,7 +317,11 @@ describe("auto-drain prompt", () => {
     const prompt = drainPrompt("inbox", "thread-inbox");
     expect(prompt).toContain("operatorGuidance.userAuthorization");
     expect(prompt).toContain("user's explicit authorization");
-    expect(prompt).toContain("do not ask for a second chat confirmation");
+    expect(prompt).toContain("do not repeat the Tend approval");
+    expect(prompt).toContain("connectorAuthorization is not_attested");
+    expect(prompt).toContain("stop retrying that mutation");
+    expect(prompt).toContain("record work:block");
+    expect(prompt).toContain("Do not rephrase a receipt, change approval settings, or switch execution paths to override the denial");
     expect(prompt).toContain("bundled completion cleanup");
     expect(prompt).toContain("Do not send the card back to the user for a separate Archive click");
     expect(prompt).toContain("Always run `work:claim` at least once after `work:list`");

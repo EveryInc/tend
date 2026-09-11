@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseOptionalWorkAgent } from "../../shared/lanes";
 import type { PostActionCompletion, VoiceTarget } from "../../shared/types";
+import type { NativeApprovalSubmission } from "../../shared/nativeApproval";
 import { mindContextPublicationReceipt } from "../domain";
 import { versionInfo } from "../version";
 import { body, mutation, mutationAccessError, type LocalRouteContext } from "./shared";
@@ -55,6 +56,14 @@ export function apiRoutes(context: LocalRouteContext): Hono {
     }
   });
   app.get("/api/feeds/:feed/how", async (c) => c.json(await domain.inspectHowFeedWorks(c.req.param("feed"))));
+  app.get("/api/feeds/:feed/native-approvals", async (c) => {
+    c.header("cache-control", "no-store");
+    return c.json(await context.nativeApprovals?.list(c.req.param("feed")) ?? []);
+  });
+  app.post("/api/feeds/:feed/native-approvals/:id/respond", async (c) => mutation(c, notify, async () => {
+    if (!context.nativeApprovals) throw new Error("Native confirmations are unavailable.");
+    return context.nativeApprovals.respond(c.req.param("feed"), c.req.param("id"), await body(c) as unknown as NativeApprovalSubmission);
+  }));
   app.get("/api/global-prompts", async (c) => c.json(await domain.inspectGlobalPromptWorkspace()));
 
   app.post("/api/feeds", async (c) => mutation(c, notify, async () => {
