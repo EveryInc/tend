@@ -34,12 +34,15 @@ export function RealtimeProvider({
     }
 
     let disposed = false;
+    let refreshOnReady = false;
     const events = new EventSource("/api/events");
     setState((current) => current === "offline" ? "connecting" : "reconnecting");
 
     events.addEventListener("ready", () => {
       if (disposed) return;
       setState("live");
+      if (refreshOnReady) onChangeRef.current();
+      refreshOnReady = true;
     });
     events.addEventListener("change", () => {
       if (disposed) return;
@@ -48,6 +51,7 @@ export function RealtimeProvider({
     });
     events.onerror = () => {
       if (disposed) return;
+      refreshOnReady = true;
       setState("reconnecting");
       setReconnects((current) => current + 1);
     };

@@ -3,6 +3,7 @@ import type { FeedEvent } from "../../shared/types";
 type FeedEventReader = {
   listFeedIds(): Promise<string[]>;
   readEvents(feedId: string): Promise<FeedEvent[]>;
+  readEventCursor?(feedId: string): Promise<string>;
   readMindContextCursor?(): Promise<string>;
 };
 
@@ -22,9 +23,15 @@ export function createFeedEventBridge(store: FeedEventReader, notify: Notify, op
     try {
       const feedIds = await store.listFeedIds();
       let changed = false;
+      for (const feedId of cursors.keys()) {
+        if (!feedIds.includes(feedId)) {
+          cursors.delete(feedId);
+          changed = true;
+        }
+      }
 
       for (const feedId of feedIds) {
-        const cursor = eventCursor(await store.readEvents(feedId));
+        const cursor = store.readEventCursor ? await store.readEventCursor(feedId) : eventCursor(await store.readEvents(feedId));
         const previous = cursors.get(feedId);
         cursors.set(feedId, cursor);
         if (seeded && previous !== undefined && previous !== cursor) changed = true;
