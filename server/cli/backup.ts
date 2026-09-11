@@ -1,9 +1,9 @@
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { cp, mkdir, mkdtemp, rename, rm, stat, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { cp, mkdir, mkdtemp, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { attentionDataDir, attentionDbPath, attentionHome } from "../paths";
+import { createLocalRuntime } from "../runtime";
 import { SQLITE_SCHEMA_VERSION } from "../sqlite";
 import { withMutationLock } from "../util";
 import { apiUrl, initRuntime, print } from "./shared";
@@ -46,29 +46,44 @@ export async function backupExportCommand(targetPath: string): Promise<void> {
 }
 
 export async function backupImportCommand(sourcePath: string): Promise<void> {
-  const source = path.resolve(sourcePath);
+  if (!sourcePath.trim()) throw new Error("Backup import requires a source path.");
+  let source = path.resolve(sourcePath);
   if (!existsSync(source)) throw new Error(`Backup path does not exist: ${source}`);
+  source = await realpath(source);
   await assertRuntimeStopped();
 
   const bundledData = path.join(source, "data");
   const bundledDb = path.join(source, "attention.db");
-  const sourceData = existsSync(bundledData) ? bundledData : source;
+  const sourceData = await realpath(existsSync(bundledData) ? bundledData : source);
   if (!(await stat(sourceData)).isDirectory()) throw new Error(`Backup data is not a directory: ${sourceData}`);
+  if (!existsSync(bundledDb) && !existsSync(path.join(sourceData, "workspace.json"))) {
+    throw new Error("Backup is missing a Tend database or workspace.json.");
+  }
 
-  const home = path.resolve(attentionHome());
-  await mkdir(path.dirname(home), { recursive: true });
-  const stage = await mkdtemp(path.join(os.tmpdir(), "attention-import-"));
+  await mkdir(attentionHome(), { recursive: true });
+  const home = await realpath(attentionHome());
+  const dataDir = existsSync(attentionDataDir()) ? await realpath(attentionDataDir()) : path.join(home, "data");
+  if (isWithin(sourceData, home) || isWithin(dataDir, source) || isWithin(dataDir, sourceData)) throw new Error("Backup source must be outside the data being replaced and cannot contain the runtime home.");
+  const stage = await mkdtemp(path.join(home, ".attention-import-"));
   const rollback = path.join(stage, "rollback");
   const stagedData = path.join(stage, "data");
   const stagedDb = path.join(stage, "attention.db");
+  let preserveRollback = false;
   try {
-    await cp(sourceData, stagedData, { recursive: true });
+    await cp(sourceData, stagedData, { recursive: true, dereference: true });
     await rm(path.join(stagedData, ".mutation-lock"), { recursive: true, force: true });
     if (existsSync(bundledDb)) {
       await cp(bundledDb, stagedDb);
       validateSqliteBackup(stagedDb);
     }
-    await mkdir(home, { recursive: true });
+    const stagedRuntime = await createLocalRuntime(stagedData, stagedDb);
+    try {
+      for (const feedId of await stagedRuntime.store.listFeedIds()) {
+        await stagedRuntime.store.readFeed(feedId);
+      }
+    } finally {
+      stagedRuntime.sqlite.close();
+    }
     await mkdir(rollback, { recursive: true });
 
     const currentFiles = [
@@ -78,6 +93,7 @@ export async function backupImportCommand(sourcePath: string): Promise<void> {
       `${attentionDbPath()}-wal`,
     ];
     const moved: Array<{ from: string; to: string }> = [];
+    const installed: string[] = [];
     try {
       for (const current of currentFiles) {
         if (!existsSync(current)) continue;
@@ -86,17 +102,21 @@ export async function backupImportCommand(sourcePath: string): Promise<void> {
         moved.push({ from: backup, to: current });
       }
       await rename(stagedData, attentionDataDir());
-      if (existsSync(stagedDb)) await rename(stagedDb, attentionDbPath());
+      installed.push(attentionDataDir());
+      await rename(stagedDb, attentionDbPath());
+      installed.push(attentionDbPath());
     } catch (error) {
-      await rm(attentionDataDir(), { recursive: true, force: true });
-      await removeSqliteFiles();
-      for (const item of moved.reverse()) {
-        if (existsSync(item.from)) await rename(item.from, item.to);
+      try {
+        for (const file of installed.reverse()) await rm(file, { recursive: true, force: true });
+        for (const item of moved.reverse()) await rename(item.from, item.to);
+      } catch (rollbackError) {
+        preserveRollback = true;
+        throw new AggregateError([error, rollbackError], `Import and rollback failed. Preserved recovery files at ${rollback}.`);
       }
       throw error;
     }
   } finally {
-    await rm(stage, { recursive: true, force: true });
+    if (!preserveRollback) await rm(stage, { recursive: true, force: true });
   }
 
   print({
@@ -105,7 +125,7 @@ export async function backupImportCommand(sourcePath: string): Promise<void> {
     to: {
       dataDir: attentionDataDir(),
       dbPath: attentionDbPath(),
-      sqlite: existsSync(bundledDb) ? "restored" : "will_rehydrate_from_file_mirrors",
+      sqlite: existsSync(bundledDb) ? "restored" : "rehydrated_from_file_mirrors",
     },
   });
 }
@@ -148,15 +168,7 @@ async function assertRuntimeStopped(): Promise<void> {
   }
 }
 
-async function removeSqliteFiles(): Promise<void> {
-  await Promise.all([
-    rm(attentionDbPath(), { force: true }),
-    rm(`${attentionDbPath()}-shm`, { force: true }),
-    rm(`${attentionDbPath()}-wal`, { force: true }),
-  ]);
-}
-
 function isWithin(parent: string, candidate: string): boolean {
   const relative = path.relative(path.resolve(parent), path.resolve(candidate));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
