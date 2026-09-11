@@ -84,6 +84,7 @@ test("App keeps local dismissal and source cleanup undo requests distinct", asyn
     const url = String(input);
     if (init?.method === "POST") requests.push(url);
     if (url === "/api/session") return Response.json({ mutationToken: "test-token" });
+    if (url.endsWith("/native-approvals")) return Response.json([]);
     if (url === "/api/state?feed=inbox") return Response.json(state);
     if (url.endsWith("/actions/dismiss-card")) return Response.json({ id: "dismissed-card" });
     if (url.endsWith("/actions/default-cleanup")) return Response.json({ id: "cleanup-work" });
