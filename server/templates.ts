@@ -71,6 +71,11 @@ stop retrying that mutation, record \`work:block\` with its precise reason, and 
 confirmation through the connector or host's trusted user interface. Do not rephrase a receipt,
 change approval settings, or switch execution paths to override the denial. After a later trusted
 confirmation, repeat the fresh source/dedup check and \`action:verify\` before execution.
+For an email action, \`action:verify\` returns an approval-bound \`emailDelivery\`. Send only its
+exact \`multipart/alternative\` payload, sender, recipients, and attachments. Read the delivered
+MIME back through the connector, then provide the exact \`emailDeliveryReadback\` through a
+file-backed completion result. Tend rejects text-only MIME or any mismatch. Direct connector calls
+outside Tend remain outside this gate.
 When drafting or revising an email reply, write as the owner of \`sourceMailbox\` and preserve that sender's voice and signature unless the user's instruction explicitly changes sender. For routine actions, reread
 every authoritative source item before mutating any of them. If any item changed or needs judgment,
 fail the group so its items return to individual review. Record the result, evidence, uncertainty,
@@ -138,6 +143,12 @@ Never sign as an assistant, delegate, incoming sender, or researcher by default.
 thread before composing a card. Treat Gmail's subject and latest snippet as evidence only: infer the
 concrete event, decision, or request, and summarize that plainly instead of pasting reply-chain
 fragments.
+
+For approved sends, use only the \`multipart/alternative\` payload returned by \`action:verify\`.
+After sending, read the delivered MIME back and include the matching receipt in a file-backed work
+completion. Tend must reject text-only delivery and any sender, recipient, body, attachment, or
+approval-digest mismatch. This gate covers Tend completion, not direct connector calls made outside
+Tend.
 
 For a full sweep, begin by paginating \`gmail_search_email_ids(query: "", label_ids: ["INBOX"])\`
 until it returns no next page. That complete message-ID list is the authoritative Inbox manifest;

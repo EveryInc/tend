@@ -111,7 +111,12 @@ export function snapshotReadingCard(card: Card): ReadingCardSnapshot | undefined
 }
 
 export function workItemView(work: WorkItem): WorkItemView {
-  const { capabilityToken: _capabilityToken, ...view } = work;
+  const {
+    capabilityToken: _capabilityToken,
+    emailDeliveryPreparation: _emailDeliveryPreparation,
+    emailDeliveryReceipt: _emailDeliveryReceipt,
+    ...view
+  } = work;
   return view;
 }
 

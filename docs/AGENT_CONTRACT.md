@@ -40,6 +40,7 @@ the user wants an immediate sweep.
 - Claim work before connector-backed execution.
 - Upsert cards only after holding the relevant claim.
 - Call `action:verify` immediately before approved external mutations. When `work:claim` returns `operatorGuidance.userAuthorization.riskConfirmation`, treat that app click as the user's risk confirmation for the named recipients while the verified digest still matches.
+- For email, send only the approval-bound `emailDelivery` returned by `action:verify`. Read the delivered MIME back and complete through `--result-file` with an exact `emailDeliveryReadback`. Tend rejects text-only MIME and sender, recipient, body, attachment, or digest drift. Direct connector calls outside Tend remain outside this gate.
 - Complete, fail, block, retry, or cancel work through `tend cli`.
 - Refresh sources only after the queue is drained, unless the claimed work explicitly asks for source collection.
 - Read `context:for-feed` before a normal source collection. A fresh update may focus the feed's
@@ -114,10 +115,10 @@ Run `tend cli help` for the full command surface. Core feed-runner commands are:
 | Edit queued work | `tend cli work:edit --feed <feed> --work <work> --instruction <text>` |
 | Cancel work | `tend cli work:cancel --feed <feed> --work <work>` |
 | Verify approved action | `tend cli action:verify --feed <feed> --work <work> --token <token>` |
-| Complete work | `tend cli work:complete --feed <feed> --work <work> --token <token> --result <json>` |
+| Complete work | `tend cli work:complete --feed <feed> --work <work> --token <token> (--result <json> \| --result-file <path>)` |
 | Fail work | `tend cli work:fail --feed <feed> --work <work> --token <token> --error <text>` |
 | Block work | `tend cli work:block --feed <feed> --work <work> --token <token> --error <text>` |
-| Reconcile succeeded blocked approval | `tend cli work:reconcile-approved --feed <feed> --work <work> --token <token> --result <json>` |
+| Reconcile succeeded blocked approval | `tend cli work:reconcile-approved --feed <feed> --work <work> --token <token> (--result <json> \| --result-file <path>)` |
 | Retry work | `tend cli work:retry --feed <feed> --work <work>` |
 | Request learning | `tend cli learning:request --feed <feed>` |
 

@@ -9,6 +9,7 @@ import { assertCliRuntimeMatchesLive } from "../server/cli/runtimeGuard";
 import { setupChroniclePrompt, setupCodexPrompt } from "../server/cli/setup";
 import { CLI_CONTRACT_VERSION } from "../server/version";
 import { AttentionStore } from "../server/store";
+import { AttentionDomain } from "../server/domain";
 
 describe("CLI contract", () => {
   test("keeps public help focused on the v0 agent surface", () => {
@@ -42,7 +43,7 @@ describe("CLI contract", () => {
   });
 
   test("exposes native readers and exact-version feedback without edition commands", () => {
-    expect(CLI_CONTRACT_VERSION).toBe("0.7");
+    expect(CLI_CONTRACT_VERSION).toBe("0.8");
     expect(CLI_COMMANDS).toContain("readers:run --feed <id> --run <source-run-id> --packet-file <path> --readers-file <path> [--prompt-sha256 <hash>]");
     expect(CLI_COMMANDS).toContain("readers:status --feed <id> --run <source-run-id>");
     expect(CLI_COMMANDS).toContain("readers:output --feed <id> --run <source-run-id> --reader <id>");
@@ -71,6 +72,53 @@ describe("CLI contract", () => {
     expect(operator).toContain('await structured("snapshots")');
     expect(operator).toContain('await structured("judgments")');
     expect(operator).toContain('await structured("checkpoint")');
+  });
+
+  test("supports file-backed completion receipts", async () => {
+    expect(CLI_COMMANDS.find((command) => cliCommandName(command) === "work:complete")).toContain("--result-file <path>");
+    expect(CLI_COMMANDS.find((command) => cliCommandName(command) === "work:reconcile-approved")).toContain("--result-file <path>");
+
+    const operator = await readFile("server/cli/operator.ts", "utf8");
+    expect(operator).toContain('case "work:complete"');
+    expect(operator).toContain('case "work:reconcile-approved"');
+    expect(operator.match(/await structured\("result"\)/g)).toHaveLength(2);
+  });
+
+  test("completes work from a file-backed result end to end", async () => {
+    const home = await mkdtemp(path.join(os.tmpdir(), "tend-cli-result-file-"));
+    const run = async (args: string[]) => {
+      const subprocess = Bun.spawn({
+        cmd: [process.execPath, "tend.ts", "cli", ...args],
+        cwd: process.cwd(),
+        env: { ...process.env, ATTENTION_HOME: home },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([
+        new Response(subprocess.stdout).text(), new Response(subprocess.stderr).text(), subprocess.exited,
+      ]);
+      if (exitCode !== 0) throw new Error(stderr || `CLI exited ${exitCode}`);
+      return JSON.parse(stdout);
+    };
+    try {
+      const store = new AttentionStore(path.join(home, "data"));
+      await store.init();
+      const domain = new AttentionDomain(store);
+      await domain.bindFeed("inbox", "thread-inbox");
+      const queued = await domain.queueFeedInstruction("inbox", "Summarize this synthetic fixture.");
+      const claimed = await run(["work:claim", "--feed", "inbox", "--thread", "thread-inbox"]);
+      expect(claimed.id).toBe(queued.id);
+      const resultFile = path.join(home, "completion.json");
+      await writeFile(resultFile, JSON.stringify({ response: "Synthetic fixture summarized.", done: true }));
+
+      const completed = await run([
+        "work:complete", "--feed", "inbox", "--work", queued.id,
+        "--token", claimed.capabilityToken, "--result-file", resultFile,
+      ]);
+      expect(completed).toMatchObject({ id: queued.id, status: "completed", response: "Synthetic fixture summarized." });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   test("formats command-owned usage hints for missing flags", () => {

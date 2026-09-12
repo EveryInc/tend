@@ -27,7 +27,8 @@ every permitted meeting or that an interpretation is correct.
 ## Set up another person's feed
 
 Use a Tend build that includes the `readers:*` commands (`tend version` reports CLI contract `0.7`
-with retry comparisons and imported card images). Copying the prompt into an older install does not install the runner or comparison UI.
+or newer with retry comparisons and imported card images). Copying the prompt into an older install
+does not install the runner or comparison UI.
 
 Use their own local Tend runtime and their own Codex/Claude accounts. The installed app defaults to
 `~/.attention`; set `ATTENTION_HOME` explicitly for an isolated test. Do not restore another person's

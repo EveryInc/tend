@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parseOptionalWorkAgent } from "../../shared/lanes";
-import type { PostActionCompletion, VoiceTarget } from "../../shared/types";
+import type { EmailDeliveryReadback, PostActionCompletion, VoiceTarget } from "../../shared/types";
 import type { NativeApprovalSubmission } from "../../shared/nativeApproval";
 import type { ReaderConfig } from "../../shared/readers";
 import { ReadingCardRequestError, mindContextPublicationReceipt } from "../domain";
@@ -227,7 +227,7 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   }));
   app.post("/api/feeds/:feed/work/:work/reconcile-approved", async (c) => mutation(c, notify, async () => {
     const input = await body(c);
-    const result = input.result && typeof input.result === "object" ? input.result as { response: string; done?: boolean; postAction?: PostActionCompletion } : { response: "" };
+    const result = input.result && typeof input.result === "object" ? input.result as { response: string; done?: boolean; postAction?: PostActionCompletion; emailDeliveryReadback?: EmailDeliveryReadback } : { response: "" };
     return domain.reconcileApprovedWork(c.req.param("feed"), c.req.param("work"), String(input.token ?? ""), result);
   }));
   app.post("/api/feeds/:feed/work/:work/retry", async (c) => mutation(c, notify, async () => domain.retryApprovedWork(c.req.param("feed"), c.req.param("work"))));

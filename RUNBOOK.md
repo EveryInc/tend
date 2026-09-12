@@ -89,6 +89,15 @@ before acting:
 tend cli action:verify --feed <feed-id> --work <work-id> --token <capability-token>
 ```
 
+For an email action, verification returns `emailDelivery`. Send only that exact sender, recipient
+list, attachment list, and `multipart/alternative` payload. Then read the delivered MIME back from
+the connector and complete with `--result-file`. Build `emailDeliveryReadback` from the connector's
+actual delivered sender, recipients, MIME parts, and attachment metadata; retain the verified
+version, approval digest, and payload digest, then add `source: "connector_readback"`, the provider
+message id, and readback timestamp. Never synthesize it from the proposed draft. Tend rejects
+text-only MIME and any body, sender, recipient, attachment, or approval-digest mismatch. Direct
+connector calls outside Tend are not mechanically covered by this gate.
+
 Repeat claim until it returns the idle handshake. An active claimed item also appears in `work:list`
 for its own lane and is replayed by `work:claim`, so restart recovery stays simple and visible.
 
@@ -418,6 +427,7 @@ tend cli revision:propose \
 ```
 
 `action:verify` is mandatory operator procedure before external connector mutation for both approved
-actions and default cleanup. The app enforces the digest again when work completes, but this
-prototype does not yet wrap connector tools in a capability-scoped executor. Do not describe direct
-connector mutation as mechanically prevented.
+actions and default cleanup. The app enforces the digest again when work completes. For email work,
+it additionally gates completion on exact multipart delivery readback. Tend still does not wrap
+direct connector tools in a capability-scoped executor, so do not describe mutations outside Tend
+as mechanically prevented.

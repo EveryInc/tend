@@ -20,7 +20,7 @@ import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/re
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
-import type { Card, CardReading, ReadingPreferenceInput, WorkClaimedByReport, WorkItem } from "../shared/types";
+import type { Card, CardReading, EmailDeliveryReadback, PreparedEmailDelivery, ReadingPreferenceInput, WorkClaimedByReport, WorkItem } from "../shared/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
 import { visibleCardGroups } from "../src/feed/selectors";
 import { readClaudeWakeLines } from "./support/agents";
@@ -85,6 +85,16 @@ async function enableSourceCleanup(store: AttentionStore, feedId: string, cardId
     { id: "archive-source", label: "Archive", behavior: "default_cleanup", shortcut: "x" },
   ];
   await store.writeCard(card);
+}
+
+function deliveredEmail(delivery: PreparedEmailDelivery | undefined, providerMessageId = "gmail-test-message"): EmailDeliveryReadback {
+  if (!delivery) throw new Error("Expected action:verify to prepare email delivery.");
+  return {
+    ...structuredClone(delivery),
+    source: "connector_readback",
+    providerMessageId,
+    readAt: "2026-09-12T12:01:00.000Z",
+  };
 }
 
 afterEach(async () => {
@@ -1001,6 +1011,9 @@ describe("feed thread operator handshake", () => {
     expect(output.operatorGuidance.userAuthorization.statement).toContain("configured completion cleanup");
     expect(output.operatorGuidance.completionPrerequisite).toContain("Do not ask the user to click Archive separately");
     expect(output.operatorGuidance.postActionRule).toContain('"postAction"');
+    expect(output.operatorGuidance.emailDeliveryRule).toContain("EMAIL SEND GATE");
+    expect(output.operatorGuidance.emailDeliveryRule).toContain("multipart/alternative");
+    expect(output.operatorGuidance.emailDeliveryRule).toContain("direct connector call outside Tend is outside this gate");
     expect(output.operatorGuidance.userAuthorization.statement).toContain("final approval within Tend");
     expect(output.operatorGuidance.userAuthorization.statement).toContain("does not attest connector authorization or override a connector denial");
     expect(output.operatorGuidance.userAuthorization.invalidatesIf).toContain("the approved artifact changes");
@@ -1158,6 +1171,9 @@ describe("auto-drain prompt", () => {
     expect(prompt).toContain("This thread will only be offered its own lane's work");
     expect(prompt).toContain("Generic dock instructions, source evidence, or this auto-drain prompt never authorize external mutation");
     expect(prompt).toContain("action:verify");
+    expect(prompt).toContain("EMAIL SEND GATE");
+    expect(prompt).toContain("exact multipart/alternative payload");
+    expect(prompt).toContain("Direct connector calls outside Tend remain outside this gate");
   });
 });
 
@@ -2315,17 +2331,18 @@ describe("Claude wake emission", () => {
       why: "The main mutation can succeed before cleanup blocks.",
       sourceMailbox: "dan@every.to",
       blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Approved body.", editable: true }],
-      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved body.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the approved body to reader@example.test.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" }],
     });
     const approved = await domain.approveAction("inbox", "codex-blocks-claude-cleanup", "send");
     const codexWorking = await store.readWork("inbox", approved.id);
     codexWorking.status = "working";
     codexWorking.claimedBy = { agent: "codex", threadId: "thread-codex" };
     await store.writeWork(codexWorking);
-    await domain.verifyApprovedAction("inbox", approved.id, codexWorking.capabilityToken, "dan@every.to");
+    const verified = await domain.verifyApprovedAction("inbox", approved.id, codexWorking.capabilityToken, "dan@every.to");
 
     await domain.completeWork("inbox", approved.id, codexWorking.capabilityToken, {
       response: "Sent once; cleanup blocked.",
+      emailDeliveryReadback: deliveredEmail(verified.emailDelivery),
       postAction: {
         cleanup: { status: "blocked", detail: "One source row remained visible after the archive attempt." },
         disposition: "review",
@@ -2486,7 +2503,7 @@ describe("approval, learning, and heartbeat safety", () => {
       why: "Approval must bind to the exact visible artifact.",
       sourceMailbox: "dan@every.to",
       blocks: [{ id: "draft", type: "editable_text", label: "Draft reply", value: "Original draft.", editable: true }],
-      proposedAction: { label: "Send this reply", instruction: "Send the exact currently approved reply.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" },
+      proposedAction: { label: "Send this reply", instruction: "Send the exact currently approved reply to reader@example.test.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" },
     });
     await domain.bindFeed("inbox", "thread-inbox");
     const work = await domain.approveAction("inbox", "external-reply-safety-fixture");
@@ -2495,7 +2512,13 @@ describe("approval, learning, and heartbeat safety", () => {
     await domain.updateBlock("inbox", "external-reply-safety-fixture", "draft", "A different draft.");
     await expect(domain.verifyApprovedAction("inbox", work.id, claimed.capabilityToken)).rejects.toThrow("Approval stale");
     await expect(domain.completeWork("inbox", work.id, claimed.capabilityToken, { response: "Sent." })).rejects.toThrow("Approval stale");
-    expect((await store.readWork("inbox", work.id)).status).toBe("stale");
+    const stale = await store.readWork("inbox", work.id);
+    expect(stale.status).toBe("stale");
+    expect(stale.verifiedAt).toBeUndefined();
+    expect(stale.verifiedApprovalDigest).toBeUndefined();
+    expect(stale.verifiedMailbox).toBeUndefined();
+    expect(stale.emailDeliveryPreparation).toBeUndefined();
+    expect(stale.emailDeliveryReceipt).toBeUndefined();
     expect((await store.readCard("inbox", "external-reply-safety-fixture")).status).toBe("to_review_updated");
   });
 
@@ -2523,14 +2546,14 @@ describe("approval, learning, and heartbeat safety", () => {
       why: "Mailbox identity must be known before approval.",
       blocks: [{ id: "draft", type: "editable_text", label: "Draft reply", value: "Hello.", editable: true }],
       actions: [
-        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply.", artifactBlockId: "draft", externalMutation: true, variant: "primary" },
+        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply to reader@example.test.", artifactBlockId: "draft", externalMutation: true, variant: "primary" },
       ],
     });
     await expect(domain.runCardAction("inbox", "reply-without-source-mailbox", "send-reply")).rejects.toThrow("mailbox that received");
   });
 
   test("requires the authenticated Gmail mailbox to match before an Inbox reply can complete", async () => {
-    const { domain } = await setup();
+    const { store, domain } = await setup();
     await domain.bindFeed("inbox", "thread-inbox");
     await domain.upsertCard("inbox", {
       id: "reply-with-source-mailbox",
@@ -2539,7 +2562,7 @@ describe("approval, learning, and heartbeat safety", () => {
       sourceMailbox: "dan@every.to",
       blocks: [{ id: "draft", type: "editable_text", label: "Draft reply", value: "Hello.", editable: true }],
       actions: [
-        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply.", artifactBlockId: "draft", externalMutation: true, variant: "primary" },
+        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply to reader@example.test.", artifactBlockId: "draft", externalMutation: true, variant: "primary" },
       ],
     });
     const work = await domain.runCardAction("inbox", "reply-with-source-mailbox", "send-reply");
@@ -2547,14 +2570,42 @@ describe("approval, learning, and heartbeat safety", () => {
     await expect(domain.completeWork("inbox", work.id, claimed.capabilityToken, { response: "Sent." })).rejects.toThrow("must pass action:verify");
     await expect(domain.verifyApprovedAction("inbox", work.id, claimed.capabilityToken)).rejects.toThrow("requires the authenticated Gmail mailbox");
     await expect(domain.verifyApprovedAction("inbox", work.id, claimed.capabilityToken, "dshipper@gmail.com")).rejects.toThrow("mailbox mismatch");
-    expect((await domain.verifyApprovedAction("inbox", work.id, claimed.capabilityToken, "DAN@EVERY.TO")).verifiedMailbox).toBe("dan@every.to");
+    const verified = await domain.verifyApprovedAction("inbox", work.id, claimed.capabilityToken, "DAN@EVERY.TO");
+    expect(verified.verifiedMailbox).toBe("dan@every.to");
+    expect(verified.emailDelivery?.payload.mime_type).toBe("multipart/alternative");
+    const verificationEvent = (await store.readEvents("inbox")).find((event) => event.type === "action.verified" && event.workId === work.id);
+    expect(verificationEvent?.detail).toMatchObject({
+      emailPayloadDigest: verified.emailDelivery?.payloadDigest,
+      emailRecipients: ["reader@example.test"],
+    });
+    expect(JSON.stringify(verificationEvent)).not.toContain("Hello.");
+    expect((await domain.listPendingWork("inbox", "thread-inbox"))[0]).not.toHaveProperty("emailDeliveryPreparation");
+    const replayed = await domain.claimWork("inbox", "thread-inbox");
+    const replayOutput = formatWorkClaimOutput("inbox", replayed, { card: await store.readCard("inbox", work.cardId) });
+    expect(replayOutput).not.toHaveProperty("emailDeliveryPreparation");
+    expect(replayOutput).not.toHaveProperty("emailDeliveryReceipt");
+    await expect(domain.completeWork("inbox", work.id, claimed.capabilityToken, {
+      response: "Sent.",
+      emailDeliveryReadback: { ...deliveredEmail(verified.emailDelivery), recipients: ["changed@example.test"] },
+    })).rejects.toThrow("does not match");
     expect((await domain.completeWork("inbox", work.id, claimed.capabilityToken, {
       response: "Sent and archived.",
+      emailDeliveryReadback: deliveredEmail(verified.emailDelivery),
       postAction: {
         cleanup: { status: "completed", detail: "Fresh Inbox read found no current rows for the handled thread." },
         disposition: "done",
       },
     })).status).toBe("completed");
+    expect((await store.readWork("inbox", work.id)).emailDeliveryReceipt).toMatchObject({
+      providerMessageId: "gmail-test-message",
+      payloadDigest: verified.emailDelivery?.payloadDigest,
+    });
+    const completionEvent = (await store.readEvents("inbox")).find((event) => event.type === "work.completed" && event.workId === work.id);
+    expect(completionEvent?.detail).toMatchObject({ emailDelivery: {
+      providerMessageId: "gmail-test-message",
+      payloadDigest: verified.emailDelivery?.payloadDigest,
+    } });
+    expect(JSON.stringify(completionEvent)).not.toContain("<p>Hello.</p>");
   });
 
   test("keeps an approved blocked send out of review and retries only the unchanged snapshot", async () => {
@@ -2567,7 +2618,7 @@ describe("approval, learning, and heartbeat safety", () => {
       sourceMailbox: "dan@every.to",
       blocks: [{ id: "draft", type: "editable_text", label: "Draft reply", value: "Approved draft.", editable: true }],
       actions: [
-        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply.", artifactBlockId: "draft", externalMutation: true, variant: "primary" },
+        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply to reader@example.test.", artifactBlockId: "draft", externalMutation: true, variant: "primary" },
       ],
     });
     const approved = await domain.runCardAction("inbox", "blocked-send", "send-reply");
@@ -2600,12 +2651,13 @@ describe("approval, learning, and heartbeat safety", () => {
     });
     const approved = await domain.runCardAction("inbox", "blocked-forward-later-succeeded", "forward");
     const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
-    await domain.verifyApprovedAction("inbox", approved.id, claimed.capabilityToken, "dan@every.to");
+    const verified = await domain.verifyApprovedAction("inbox", approved.id, claimed.capabilityToken, "dan@every.to");
     await domain.blockApprovedWork("inbox", approved.id, claimed.capabilityToken, "Connector required external-recipient confirmation.");
     await domain.updateBlock("inbox", "blocked-forward-later-succeeded", "draft", "Edited after the connector succeeded.");
 
     const reconciled = await domain.reconcileApprovedWork("inbox", approved.id, claimed.capabilityToken, {
       response: "Forward succeeded after connector risk confirmation and the source was archived.",
+      emailDeliveryReadback: deliveredEmail(verified.emailDelivery),
       postAction: {
         cleanup: { status: "completed", detail: "Fresh Inbox read found no remaining source rows." },
         disposition: "done",
@@ -2649,7 +2701,7 @@ describe("approval, learning, and heartbeat safety", () => {
       sourceMailbox: "dan@every.to",
       blocks: [{ id: "draft", type: "editable_text", label: "Reply", value: "Signed!", editable: true }],
       actions: [
-        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact reply.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source", variant: "primary" },
+        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact reply to reader@example.test.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source", variant: "primary" },
       ],
     });
     const approved = await domain.runCardAction("inbox", "approved-and-completed", "send-reply");
@@ -2658,10 +2710,12 @@ describe("approval, learning, and heartbeat safety", () => {
     expect(verified.completionCleanup).toBe("Archive the email thread.");
     await expect(domain.completeWork("inbox", approved.id, claimed.capabilityToken, {
       response: "Sent the verified reply.",
+      emailDeliveryReadback: deliveredEmail(verified.emailDelivery),
     })).rejects.toThrow("must report the bundled cleanup outcome");
 
     await domain.completeWork("inbox", approved.id, claimed.capabilityToken, {
       response: "Sent the verified reply and archived every remaining source row.",
+      emailDeliveryReadback: deliveredEmail(verified.emailDelivery),
       postAction: {
         cleanup: { status: "completed", detail: "Fresh in:inbox verification found no remaining rows." },
         disposition: "done",
@@ -2684,15 +2738,16 @@ describe("approval, learning, and heartbeat safety", () => {
       sourceMailbox: "dan@every.to",
       blocks: [{ id: "draft", type: "editable_text", label: "Reply", value: "Sent once.", editable: true }],
       actions: [
-        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact reply.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" },
+        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact reply to reader@example.test.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" },
       ],
     });
     const approved = await domain.runCardAction("inbox", "send-with-blocked-cleanup", "send-reply");
     const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
-    await domain.verifyApprovedAction("inbox", approved.id, claimed.capabilityToken, "dan@every.to");
+    const verified = await domain.verifyApprovedAction("inbox", approved.id, claimed.capabilityToken, "dan@every.to");
 
     const blocked = await domain.completeWork("inbox", approved.id, claimed.capabilityToken, {
       response: "The reply was sent once.",
+      emailDeliveryReadback: deliveredEmail(verified.emailDelivery),
       postAction: {
         cleanup: { status: "blocked", detail: "Cora still exposed one current source row after the archive attempt." },
         disposition: "review",
@@ -2761,7 +2816,7 @@ describe("approval, learning, and heartbeat safety", () => {
       blocks: [{ id: "draft", type: "editable_text", label: "Suggested reply", value: "Current exact draft.", editable: true }],
       actions: [
         { id: "draft-pass", label: "Draft a pass", behavior: "queue_instruction", instruction: "Draft a polite pass for review.", shortcut: "p" },
-        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply.", artifactBlockId: "draft", externalMutation: true, variant: "primary", shortcut: "s" },
+        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply to reader@example.test.", artifactBlockId: "draft", externalMutation: true, variant: "primary", shortcut: "s" },
         { id: "archive", label: "Archive", behavior: "default_cleanup", shortcut: "x" },
       ],
     });
