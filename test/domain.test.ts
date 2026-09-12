@@ -3177,7 +3177,7 @@ describe("scoped persistent voice dock routing", () => {
       why: "The visible draft is ready for a decision.",
       sourceMailbox: "dan@every.to",
       blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Exact visible reply.", editable: true }],
-      actions: [{ id: "send", label: "Send reply", behavior: "approve_action", instruction: "Send the exact visible reply.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" }],
+      actions: [{ id: "send", label: "Send reply", behavior: "approve_action", instruction: "Send the exact visible reply to reader@example.test.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" }],
     });
 
     const result = await domain.submitVoiceInstruction(
