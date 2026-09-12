@@ -120,7 +120,7 @@ async function runProcess(binary: string, args: string[], options: {
       if (!failure && options.onLine && lineBuffer.trim()) {
         try { options.onLine(lineBuffer); } catch (error) { failure = error instanceof Error ? error : new Error("Unexpected reader output."); }
       }
-      if (failure) reject(new ReaderExecutionError(failure.message, stdout));
+      if (failure) reject(new ReaderExecutionError(failure.message, JSON.stringify({ stdout, stderr })));
       else resolve({ stdout, stderr, code });
     });
     child.stdin.on("error", () => { /* Process exit is handled above; never let EPIPE crash Tend. */ });

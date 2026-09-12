@@ -168,6 +168,23 @@ describe("native source-run readers", () => {
     await expect(runner.readOutput(run.feedId, run.id, "a")).rejects.toThrow("no recorded output");
   });
 
+  test("timeout preserves diagnostics returned while the adapter shuts down", async () => {
+    const diagnostics = JSON.stringify({ stdout: "partial reader event", stderr: "bounded diagnostic" });
+    const adapter: ReaderAdapter = async (_config, _packet, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        setTimeout(() => reject(new ReaderExecutionError("Reader timed out; no automatic retry was attempted.", diagnostics)), 5);
+      }, { once: true });
+    });
+    const { store, runner, run, input } = await setup({ codex: adapter }, 25);
+    await runner.start({ ...input, readers: [configs[0]] });
+    await runner.waitForRun(run.feedId, run.id);
+
+    const saved = await store.readRun(run.feedId, run.id);
+    expect(saved.readers?.[0].status).toBe("failed");
+    expect(saved.readers?.[0].error).toContain("timed out");
+    expect((await runner.readOutput(run.feedId, run.id, "a")).rawOutput).toBe(diagnostics);
+  });
+
   test("server recovery reclaims a dead owner and interrupts abandoned readers without replaying providers", async () => {
     let calls = 0;
     const probed: number[] = [];
