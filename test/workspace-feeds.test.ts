@@ -10,6 +10,7 @@ import {
   type WorkspaceFeedRepository,
 } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore, SqliteWorkspaceFeedRepository } from "../server/sqlite";
+import { AttentionStore } from "../server/store";
 
 const roots: string[] = [];
 const stores: LocalSqliteStore[] = [];
@@ -103,6 +104,22 @@ class RecordingWorkspaceFeedRepository implements WorkspaceFeedRepository {
   }
 }
 
+class CountingWorkspaceFeedRepository implements WorkspaceFeedRepository {
+  initCalls = 0;
+
+  constructor(private readonly inner: WorkspaceFeedRepository) {}
+
+  async init(defaultFeedIds: string[]): Promise<void> {
+    this.initCalls += 1;
+    await this.inner.init(defaultFeedIds);
+  }
+
+  listFeedIds(): Promise<string[]> { return this.inner.listFeedIds(); }
+  setFeedIds(feedIds: string[]): Promise<void> { return this.inner.setFeedIds(feedIds); }
+  addFeedId(feedId: string): Promise<void> { return this.inner.addFeedId(feedId); }
+  removeFeedId(feedId: string): Promise<void> { return this.inner.removeFeedId(feedId); }
+}
+
 function feedRows(db: Database): Array<{ feed_id: string; position: number; created_at: string }> {
   return db
     .query("SELECT feed_id, position, created_at FROM workspace_feeds ORDER BY position ASC")
@@ -187,5 +204,55 @@ describe("MirroredWorkspaceFeedRepository.init", () => {
 
     expect(await primary.listFeedIds()).toEqual(["inbox", "sqlite-only", "mirror-only"]);
     expect(await mirror.listFeedIds()).toEqual(["inbox", "sqlite-only", "mirror-only"]);
+  });
+});
+
+describe("AttentionStore.init", () => {
+  test("runs startup reconciliation once across concurrent initialization and workspace reads", async () => {
+    const root = tempRoot();
+    const dataDir = path.join(root, "data");
+    const workspaceFeeds = new CountingWorkspaceFeedRepository(
+      new FileWorkspaceFeedRepository(path.join(dataDir, "workspace.json")),
+    );
+    const store = new AttentionStore(dataDir, { workspaceFeeds });
+
+    await Promise.all([store.init(), store.init(), store.init()]);
+    expect(workspaceFeeds.initCalls).toBe(1);
+
+    const workspaces = await Promise.all([
+      store.readWorkspace("inbox"),
+      store.readWorkspace("company-attention"),
+      store.readWorkspace("inbox"),
+    ]);
+    expect(workspaces.map((workspace) => workspace.active.config.id)).toEqual([
+      "inbox",
+      "company-attention",
+      "inbox",
+    ]);
+    expect(workspaceFeeds.initCalls).toBe(1);
+  });
+
+  test("allows a later initialization attempt after a startup failure", async () => {
+    const root = tempRoot();
+    const dataDir = path.join(root, "data");
+    const inner = new FileWorkspaceFeedRepository(path.join(dataDir, "workspace.json"));
+    let attempts = 0;
+    const workspaceFeeds: WorkspaceFeedRepository = {
+      async init(defaultFeedIds) {
+        attempts += 1;
+        if (attempts === 1) throw new Error("fixture startup failure");
+        await inner.init(defaultFeedIds);
+      },
+      listFeedIds: () => inner.listFeedIds(),
+      setFeedIds: (feedIds) => inner.setFeedIds(feedIds),
+      addFeedId: (feedId) => inner.addFeedId(feedId),
+      removeFeedId: (feedId) => inner.removeFeedId(feedId),
+    };
+    const store = new AttentionStore(dataDir, { workspaceFeeds });
+
+    await expect(store.init()).rejects.toThrow("fixture startup failure");
+    await store.init();
+    expect(attempts).toBe(2);
+    expect((await store.readWorkspace("inbox")).active.config.id).toBe("inbox");
   });
 });
