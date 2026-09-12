@@ -90,7 +90,9 @@ function CardHistory({ card }: { card: Card }) {
 function safeVideoHref(href: string): string | null {
   try {
     const url = new URL(href);
-    return url.protocol === "http:" || url.protocol === "https:" ? href : null;
+    return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password
+      ? url.href
+      : null;
   } catch {
     return null;
   }
@@ -106,11 +108,11 @@ function videoEmbedUrl(href: string): string | null {
     }
     if (url.hostname === "youtu.be") {
       const id = url.pathname.slice(1);
-      return id && /^[a-zA-Z0-9_-]+$/.test(id) ? `https://www.youtube.com/embed/${id}` : null;
+      return id && /^[a-zA-Z0-9_-]+$/.test(id) ? `https://www.youtube-nocookie.com/embed/${id}` : null;
     }
     if ((url.hostname === "www.youtube.com" || url.hostname === "youtube.com") && url.pathname === "/watch") {
       const id = url.searchParams.get("v");
-      return id && /^[a-zA-Z0-9_-]+$/.test(id) ? `https://www.youtube.com/embed/${id}` : null;
+      return id && /^[a-zA-Z0-9_-]+$/.test(id) ? `https://www.youtube-nocookie.com/embed/${id}` : null;
     }
     if (url.hostname === "drive.google.com") {
       const match = url.pathname.match(/^\/file\/d\/([a-zA-Z0-9_-]+)(?:\/|$)/);
@@ -195,7 +197,9 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
               src={embedUrl}
               title={block.video.title}
               loading="lazy"
-              allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+              sandbox="allow-scripts allow-same-origin allow-presentation"
+              referrerPolicy="no-referrer"
+              allow="encrypted-media; picture-in-picture; fullscreen"
               allowFullScreen
             />
           </div>

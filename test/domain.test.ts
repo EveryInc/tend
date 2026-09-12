@@ -1803,7 +1803,13 @@ describe("filesystem workspace", () => {
       title: "Unsafe source",
       why: "Private paths must not become feed links.",
       blocks: [{ id: "sources", type: "evidence", items: [{ label: "Local file", href: "file:///Users/danshipper/private.pdf" }] }],
-    })).rejects.toThrow("http(s) or local artifact");
+    })).rejects.toThrow("http(s)");
+    await expect(domain.upsertCard("company-attention", {
+      id: "credential-evidence-link",
+      title: "Unsafe source",
+      why: "Credentials must not travel in source links.",
+      blocks: [{ id: "sources", type: "evidence", items: [{ label: "Private source", href: "https://user:secret@example.com/source" }] }],
+    })).rejects.toThrow("without embedded credentials");
     await expect(domain.upsertCard("company-attention", {
       id: "checklist-link",
       title: "Checklist link",
@@ -1827,6 +1833,12 @@ describe("filesystem workspace", () => {
       title: "Unsafe video",
       why: "Video links must not execute script URLs.",
       blocks: [{ id: "video", type: "video", video: { title: "Unsafe", href: "javascript:alert(1)" } }],
+    })).rejects.toThrow("http(s)");
+    await expect(domain.upsertCard("company-attention", {
+      id: "credential-video-url",
+      title: "Unsafe video",
+      why: "Video links must not contain embedded credentials.",
+      blocks: [{ id: "video", type: "video", video: { title: "Unsafe", href: "https://user:secret@youtu.be/abc_123-XYZ" } }],
     })).rejects.toThrow("http(s)");
   });
 

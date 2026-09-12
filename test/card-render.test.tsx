@@ -90,7 +90,9 @@ test("renders supported videos inline and keeps their source link detached", () 
   };
 
   const html = renderToStaticMarkup(<CardView card={card} active={false} onActivate={() => {}} onChanged={() => {}} onAction={() => {}} onReturnToReview={() => {}} />);
-  expect(html).toContain('src="https://www.youtube.com/embed/abc_123-XYZ"');
+  expect(html).toContain('src="https://www.youtube-nocookie.com/embed/abc_123-XYZ"');
+  expect(html).toContain('sandbox="allow-scripts allow-same-origin allow-presentation"');
+  expect(html).toContain('referrerPolicy="no-referrer"');
   expect(html).toContain('href="https://youtu.be/abc_123-XYZ"');
   expect(html).toContain('target="_blank"');
   expect(html).toContain("Open video: Product walkthrough");
@@ -111,6 +113,21 @@ test("links unsupported video providers without embedding them", () => {
   expect(html).toContain('href="https://video.example.test/watch/123"');
 });
 
+test("does not embed lookalike provider hosts", () => {
+  const card: Card = {
+    id: "lookalike-video", feedId: "company-attention", kind: "attention", status: "to_review_new",
+    title: "Open this video", eyebrow: "Video", why: "Only exact provider hosts may be embedded.",
+    blocks: [{ id: "video", type: "video", video: {
+      title: "Untrusted recording", href: "https://www.youtube.com.example.test/watch?v=abc_123-XYZ",
+    } }],
+    readyForPass: 1, createdAt: "2026-09-12T12:00:00.000Z", updatedAt: "2026-09-12T12:00:00.000Z", history: [],
+  };
+
+  const html = renderToStaticMarkup(<CardView card={card} active={false} onActivate={() => {}} onChanged={() => {}} onAction={() => {}} onReturnToReview={() => {}} />);
+  expect(html).not.toContain("<iframe");
+  expect(html).toContain('href="https://www.youtube.com.example.test/watch?v=abc_123-XYZ"');
+});
+
 test("does not render an unsafe legacy video link", () => {
   const card: Card = {
     id: "unsafe-video", feedId: "company-attention", kind: "attention", status: "to_review_new",
@@ -121,6 +138,20 @@ test("does not render an unsafe legacy video link", () => {
 
   const html = renderToStaticMarkup(<CardView card={card} active={false} onActivate={() => {}} onChanged={() => {}} onAction={() => {}} onReturnToReview={() => {}} />);
   expect(html).not.toContain("javascript:");
+  expect(html).toContain("Video link unavailable");
+});
+
+test("does not render a legacy video URL containing credentials", () => {
+  const card: Card = {
+    id: "credential-video", feedId: "company-attention", kind: "attention", status: "to_review_new",
+    title: "Unsafe video", eyebrow: "Video", why: "Credentials must not travel in card links.",
+    blocks: [{ id: "video", type: "video", video: { title: "Unsafe", href: "https://user:secret@youtu.be/abc_123-XYZ" } }],
+    readyForPass: 1, createdAt: "2026-09-12T12:00:00.000Z", updatedAt: "2026-09-12T12:00:00.000Z", history: [],
+  };
+
+  const html = renderToStaticMarkup(<CardView card={card} active={false} onActivate={() => {}} onChanged={() => {}} onAction={() => {}} onReturnToReview={() => {}} />);
+  expect(html).not.toContain("<iframe");
+  expect(html).not.toContain("secret");
   expect(html).toContain("Video link unavailable");
 });
 
