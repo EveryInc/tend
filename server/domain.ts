@@ -650,6 +650,9 @@ function validateCardBlocks(blocks: unknown): asserts blocks is CardBlock[] {
         if (!isRecord(block.video) || !hasText(block.video.title) || !hasText(block.video.href)) {
           throw new Error(`${blockDescription(block, index)} needs \`video.title\` and \`video.href\` strings.`);
         }
+        if (!isSafeCardHref(block.video.href)) {
+          throw new Error(`${blockDescription(block, index)} needs an http(s) \`video.href\`.`);
+        }
         break;
       case "chart":
         if (!isRecord(block.chart) || typeof block.chart.max !== "number" || !Number.isFinite(block.chart.max) || block.chart.max <= 0) {

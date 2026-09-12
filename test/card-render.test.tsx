@@ -79,6 +79,51 @@ test("renders the imported wide card image inline with a separate editable note"
   expect(html).toContain("What do you think?");
 });
 
+test("renders supported videos inline and keeps their source link detached", () => {
+  const card: Card = {
+    id: "video-card", feedId: "company-attention", kind: "attention", status: "to_review_new",
+    title: "Watch this", eyebrow: "Video", why: "The source is easier to review in place.",
+    blocks: [{ id: "video", type: "video", label: "Demo", video: {
+      title: "Product walkthrough", href: "https://youtu.be/abc_123-XYZ",
+    } }],
+    readyForPass: 1, createdAt: "2026-09-12T12:00:00.000Z", updatedAt: "2026-09-12T12:00:00.000Z", history: [],
+  };
+
+  const html = renderToStaticMarkup(<CardView card={card} active={false} onActivate={() => {}} onChanged={() => {}} onAction={() => {}} onReturnToReview={() => {}} />);
+  expect(html).toContain('src="https://www.youtube.com/embed/abc_123-XYZ"');
+  expect(html).toContain('href="https://youtu.be/abc_123-XYZ"');
+  expect(html).toContain('target="_blank"');
+  expect(html).toContain("Open video: Product walkthrough");
+});
+
+test("links unsupported video providers without embedding them", () => {
+  const card: Card = {
+    id: "linked-video", feedId: "company-attention", kind: "attention", status: "to_review_new",
+    title: "Open this video", eyebrow: "Video", why: "Unknown providers should not become iframes.",
+    blocks: [{ id: "video", type: "video", video: {
+      title: "Private recording", href: "https://video.example.test/watch/123",
+    } }],
+    readyForPass: 1, createdAt: "2026-09-12T12:00:00.000Z", updatedAt: "2026-09-12T12:00:00.000Z", history: [],
+  };
+
+  const html = renderToStaticMarkup(<CardView card={card} active={false} onActivate={() => {}} onChanged={() => {}} onAction={() => {}} onReturnToReview={() => {}} />);
+  expect(html).not.toContain("<iframe");
+  expect(html).toContain('href="https://video.example.test/watch/123"');
+});
+
+test("does not render an unsafe legacy video link", () => {
+  const card: Card = {
+    id: "unsafe-video", feedId: "company-attention", kind: "attention", status: "to_review_new",
+    title: "Unsafe legacy video", eyebrow: "Video", why: "Old stored data still needs a rendering boundary.",
+    blocks: [{ id: "video", type: "video", video: { title: "Unsafe", href: "javascript:alert(1)" } }],
+    readyForPass: 1, createdAt: "2026-09-12T12:00:00.000Z", updatedAt: "2026-09-12T12:00:00.000Z", history: [],
+  };
+
+  const html = renderToStaticMarkup(<CardView card={card} active={false} onActivate={() => {}} onChanged={() => {}} onAction={() => {}} onReturnToReview={() => {}} />);
+  expect(html).not.toContain("javascript:");
+  expect(html).toContain("Video link unavailable");
+});
+
 test("renders a visible lens receipt for a context-influenced card", () => {
   const card: Card = {
     id: "paywall-context",

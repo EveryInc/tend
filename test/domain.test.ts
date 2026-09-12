@@ -1822,6 +1822,12 @@ describe("filesystem workspace", () => {
       why: "Receipt links need markdown text.",
       blocks: [{ id: "receipt", type: "receipt", label: "Source", url: "https://example.com/agreement" } as any],
     })).rejects.toThrow("Markdown link syntax");
+    await expect(domain.upsertCard("company-attention", {
+      id: "unsafe-video-url",
+      title: "Unsafe video",
+      why: "Video links must not execute script URLs.",
+      blocks: [{ id: "video", type: "video", video: { title: "Unsafe", href: "javascript:alert(1)" } }],
+    })).rejects.toThrow("http(s)");
   });
 
   test("requires email thread blocks to contain the full source message", async () => {

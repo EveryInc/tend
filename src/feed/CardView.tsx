@@ -87,6 +87,41 @@ function CardHistory({ card }: { card: Card }) {
   );
 }
 
+function safeVideoHref(href: string): string | null {
+  try {
+    const url = new URL(href);
+    return url.protocol === "http:" || url.protocol === "https:" ? href : null;
+  } catch {
+    return null;
+  }
+}
+
+function videoEmbedUrl(href: string): string | null {
+  try {
+    const url = new URL(href);
+    if (url.protocol !== "https:") return null;
+    if (url.hostname === "www.loom.com" && url.pathname.startsWith("/share/")) {
+      const id = url.pathname.slice("/share/".length).split("/")[0];
+      return id && /^[a-zA-Z0-9_-]+$/.test(id) ? `https://www.loom.com/embed/${id}` : null;
+    }
+    if (url.hostname === "youtu.be") {
+      const id = url.pathname.slice(1);
+      return id && /^[a-zA-Z0-9_-]+$/.test(id) ? `https://www.youtube.com/embed/${id}` : null;
+    }
+    if ((url.hostname === "www.youtube.com" || url.hostname === "youtube.com") && url.pathname === "/watch") {
+      const id = url.searchParams.get("v");
+      return id && /^[a-zA-Z0-9_-]+$/.test(id) ? `https://www.youtube.com/embed/${id}` : null;
+    }
+    if (url.hostname === "drive.google.com") {
+      const match = url.pathname.match(/^\/file\/d\/([a-zA-Z0-9_-]+)(?:\/|$)/);
+      return match ? `https://drive.google.com/file/d/${match[1]}/preview` : null;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: string; block: CardBlock; onChanged: () => void }) {
   const [value, setValue] = useState(block.value ?? "");
   useEffect(() => setValue(block.value ?? ""), [block.value]);
@@ -145,6 +180,29 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
             </div>
           )}
         </div>
+      </section>
+    );
+  }
+  if (block.type === "video" && block.video) {
+    const href = safeVideoHref(block.video.href);
+    const embedUrl = href ? videoEmbedUrl(href) : null;
+    return (
+      <section className="block block-video">
+        {block.label && <h3>{block.label}</h3>}
+        {embedUrl && (
+          <div className="video-frame">
+            <iframe
+              src={embedUrl}
+              title={block.video.title}
+              loading="lazy"
+              allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; fullscreen"
+              allowFullScreen
+            />
+          </div>
+        )}
+        {href
+          ? <DetachedLink className="video-link" href={href}>Open video: {block.video.title}</DetachedLink>
+          : <span className="video-link">Video link unavailable</span>}
       </section>
     );
   }
