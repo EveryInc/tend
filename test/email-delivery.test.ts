@@ -103,6 +103,18 @@ describe("approval-bound email delivery", () => {
     expect(prepared?.payload.parts[0].body.content).toBe("First\r\nline\r\n\r\nSecond");
   });
 
+  test("does not mistake ordinary attribute-like prose for HTML styling", () => {
+    const prose = "Use width=100 and style=compact in the source settings.";
+    const proseArtifact = { ...artifact, value: prose };
+    const prepared = prepareApprovedEmailDelivery({
+      card: { ...card, blocks: [proseArtifact] }, action, artifact: proseArtifact, attachments: [],
+      approvalDigest: "approval-digest", verifiedMailbox: "owner@example.test",
+    });
+    expect(validateEmailDeliveryReadback(prepared!, readback(prepared!)).payload.parts[1].body.content).toBe(
+      `<p>${prose}</p>`,
+    );
+  });
+
   test("fails closed when the reviewed email has no explicit outbound recipient", () => {
     expect(() => prepareApprovedEmailDelivery({
       card,

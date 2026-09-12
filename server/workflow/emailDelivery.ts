@@ -98,7 +98,7 @@ function readbackPayload(value: unknown): EmailMimePayload {
   ) {
     throw new Error("Email delivery readback must contain exact UTF-8 text/plain and text/html parts in that order.");
   }
-  if (/<pre\b|\bstyle\s*=|\b(?:max-)?width\s*=/i.test(html.body.content)) {
+  if (/<pre\b|<[^>]*\s(?:style|(?:max-)?width)\s*=/i.test(html.body.content)) {
     throw new Error("Email delivery HTML must use unstyled semantic paragraphs without preformatted or fixed-width markup.");
   }
   return {
