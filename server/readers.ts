@@ -414,12 +414,31 @@ export class ReaderRunner {
   private async abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
     if (signal.aborted) throw signal.reason;
     let abort: (() => void) | undefined;
+    let graceTimer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return await Promise.race([promise, new Promise<never>((_, reject) => {
-        abort = () => reject(signal.reason ?? new Error("Reader interrupted."));
+      const settled = promise.then(
+        (value) => {
+          if (signal.aborted) throw signal.reason ?? new Error("Reader interrupted.");
+          return value;
+        },
+        (error) => {
+          if (signal.aborted && !(error instanceof ReaderExecutionError)) {
+            throw signal.reason ?? new Error("Reader interrupted.");
+          }
+          throw error;
+        },
+      );
+      return await Promise.race([settled, new Promise<never>((_, reject) => {
+        abort = () => {
+          graceTimer = setTimeout(
+            () => reject(signal.reason ?? new Error("Reader interrupted.")),
+            Math.min(this.timeoutMs, 2_500),
+          );
+        };
         signal.addEventListener("abort", abort, { once: true });
       })]);
     } finally {
+      if (graceTimer) clearTimeout(graceTimer);
       if (abort) signal.removeEventListener("abort", abort);
     }
   }
