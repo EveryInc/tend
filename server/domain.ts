@@ -532,7 +532,7 @@ function isSafeCardHref(value: string): boolean {
   if (value.startsWith("/api/artifacts/")) return true;
   try {
     const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:";
+    return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password;
   } catch {
     return false;
   }
@@ -569,7 +569,7 @@ function validateListBlock(block: Record<string, unknown>, index: number): void 
         throw new Error(`${blockDescription(block, index)} item ${itemIndex + 1} may use \`href\` only in an evidence block.`);
       }
       if (!hasText(item.href) || !isSafeCardHref(item.href)) {
-        throw new Error(`${blockDescription(block, index)} item ${itemIndex + 1} needs an http(s) or local artifact \`href\`.`);
+        throw new Error(`${blockDescription(block, index)} item ${itemIndex + 1} needs an http(s) \`href\` without embedded credentials, or a local artifact \`href\`.`);
       }
     }
   }
@@ -649,6 +649,9 @@ function validateCardBlocks(blocks: unknown): asserts blocks is CardBlock[] {
       case "video":
         if (!isRecord(block.video) || !hasText(block.video.title) || !hasText(block.video.href)) {
           throw new Error(`${blockDescription(block, index)} needs \`video.title\` and \`video.href\` strings.`);
+        }
+        if (!isSafeCardHref(block.video.href)) {
+          throw new Error(`${blockDescription(block, index)} needs an http(s) \`video.href\` without embedded credentials.`);
         }
         break;
       case "chart":
