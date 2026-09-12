@@ -31,7 +31,8 @@ function writeSession(key: string, value: unknown) {
 }
 
 type VoiceInstructionResult =
-  | { kind: "scoped_work"; work: WorkItemView }
+  | { kind: "scoped_work"; work: WorkItemView; approvalInterpretation?: "not_approved" }
+  | { kind: "approved_action"; work: WorkItemView; actionLabel: string }
   | { kind: "revision_proposal"; proposal: RevisionProposal };
 
 type ParkedClaudeWork = { work: WorkItemView; label: string };
@@ -385,18 +386,48 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     }
   };
 
+  const flushVisibleCardEdits = async (card: Card): Promise<Card> => {
+    const textareas = document.querySelectorAll<HTMLTextAreaElement>(`[data-card-id="${CSS.escape(card.id)}"] textarea[data-block-id]`);
+    let current = card;
+    for (const textarea of textareas) {
+      const blockId = textarea.dataset.blockId;
+      const block = current.blocks.find((item) => item.id === blockId);
+      if (!blockId || block?.type !== "editable_text" || textarea.value === (block.value ?? "")) continue;
+      current = await post<Card>(`/api/feeds/${card.feedId}/cards/${card.id}/blocks/${blockId}`, { value: textarea.value });
+    }
+    return current;
+  };
+
   const instruct = (instruction: string) => {
     if (!feed || !dockTarget) return;
     const feedbackGeneration = readingFeedbackGenerationRef.current;
     void (async () => {
       try {
         const assignee = canRouteDockToClaude && routeDockToClaude ? "claude" : undefined;
-        const result = await post<VoiceInstructionResult>("/api/voice/instructions", { feedId: feed.config.id, target: dockTarget, instruction, assignee });
+        const targetCard = dockTarget.kind === "card"
+          ? feed.cards.find((card) => card.id === dockTarget.cardId)
+          : undefined;
+        const currentCard = targetCard ? await flushVisibleCardEdits(targetCard) : undefined;
+        const result = await post<VoiceInstructionResult>("/api/voice/instructions", {
+          feedId: feed.config.id,
+          target: dockTarget,
+          instruction,
+          assignee,
+          ...(currentCard ? { expectedCardUpdatedAt: currentCard.updatedAt } : {}),
+        });
         if (result.kind === "scoped_work") {
           const queued = { feedId: feed.config.id, workId: result.work.id };
           offerQueuedUndo(queued);
           const agentName = agentLabel(effectiveWorkLane(result.work, feed.thread));
-          showToast(result.work.intent === "sweep_rejudge" ? `Feedback queued for ${agentName}` : `Queued for ${agentName}`);
+          showToast(result.work.intent === "sweep_rejudge"
+            ? `Feedback queued for ${agentName}`
+            : result.approvalInterpretation === "not_approved"
+              ? `Queued for ${agentName}; no action approved`
+              : `Queued for ${agentName}`);
+        } else if (result.kind === "approved_action") {
+          const queued = { feedId: feed.config.id, workId: result.work.id };
+          offerQueuedUndo(queued);
+          showToast(`${result.actionLabel} approved and queued`);
         } else {
           showToast("Revision proposal ready for approval");
         }
@@ -455,15 +486,6 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     () => post(`/api/feeds/${work.feedId}/work/${work.id}/assignee`, { agent: "codex" }),
     "Reassigned to Codex",
   );
-  const flushVisibleCardEdits = async (card: Card) => {
-    const textareas = document.querySelectorAll<HTMLTextAreaElement>(`[data-card-id="${CSS.escape(card.id)}"] textarea[data-block-id]`);
-    await Promise.all(Array.from(textareas).map(async (textarea) => {
-      const blockId = textarea.dataset.blockId;
-      const block = card.blocks.find((item) => item.id === blockId);
-      if (!blockId || block?.type !== "editable_text" || textarea.value === (block.value ?? "")) return;
-      await post(`/api/feeds/${card.feedId}/cards/${card.id}/blocks/${blockId}`, { value: textarea.value });
-    }));
-  };
   const runCardAction = (card: Card, action: CardAction) => {
     if (!feed) return;
     void (async () => {

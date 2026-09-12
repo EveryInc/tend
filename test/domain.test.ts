@@ -1303,6 +1303,55 @@ describe("filesystem workspace", () => {
     expect((await store.readCard("inbox", "stale-source-action")).sourceRunIds).toEqual([newRun]);
   });
 
+  test("keeps an unchanged reviewed source item current across unrelated sweep changes", async () => {
+    const { domain, store } = await setup();
+    const reviewedThread = { id: "thread-reviewed", history_id: "history-1", messages: [{ id: "message-1", text: "Please make an introduction." }] };
+    const oldRun = await domain.recordSourceRun("inbox", "gmail-inbox", [
+      reviewedThread,
+      { id: "thread-unrelated", history_id: "history-2", messages: [{ id: "message-2", text: "Old unrelated mail." }] },
+    ], [], { cursor: "old" });
+    await domain.recordSweepBatch("inbox", [oldRun]);
+    await domain.upsertCard("inbox", {
+      id: "gmail-thread-thread-reviewed",
+      title: "Introduce the two people.",
+      why: "The reviewed Gmail thread still requests the introduction.",
+      sourceRunIds: [oldRun],
+      blocks: [{ id: "source", type: "evidence", label: "Source", items: [{ label: "Original thread", href: "https://mail.google.com/mail/u/0/#inbox/thread-reviewed" }] }],
+      actions: [{ id: "draft", label: "Draft introduction", behavior: "queue_instruction", instruction: "Draft the introduction for review." }],
+    });
+
+    const unchangedRun = await domain.recordSourceRun("inbox", "gmail-inbox", [
+      reviewedThread,
+      { id: "thread-new", history_id: "history-3", messages: [{ id: "message-3", text: "New unrelated mail." }] },
+    ], [], { cursor: "new" });
+    await domain.recordSweepBatch("inbox", [unchangedRun]);
+
+    const queued = await domain.runCardAction("inbox", "gmail-thread-thread-reviewed", "draft");
+    expect(queued.kind).toBe("instruction");
+    await domain.cancelQueuedWork("inbox", queued.id);
+
+    const conflictingRun = await domain.recordSourceRun("inbox", "gmail-inbox", [{
+      ...reviewedThread,
+      history_id: "history-conflict",
+      messages: [{ id: "message-1", text: "A conflicting current version." }],
+    }], [], { cursor: "conflict" });
+    await domain.recordSweepBatch("inbox", [unchangedRun, conflictingRun]);
+    await expect(domain.runCardAction("inbox", "gmail-thread-thread-reviewed", "draft")).rejects.toThrow("conflicting versions");
+
+    const changedRun = await domain.recordSourceRun("inbox", "gmail-inbox", [{
+      ...reviewedThread,
+      history_id: "history-4",
+      messages: [{ id: "message-1", text: "The introduction was already sent." }],
+    }], [], { cursor: "changed" });
+    await domain.recordSweepBatch("inbox", [changedRun]);
+
+    const error = await domain.runCardAction("inbox", "gmail-thread-thread-reviewed", "draft").then(() => null, (failure: Error) => failure);
+    expect(error?.message).toContain("Gmail source evidence is stale because the reviewed item changed");
+    expect(error?.message).not.toContain(oldRun);
+    expect(error?.message).not.toContain(changedRun);
+    expect(error?.message).not.toContain((await store.readSweepState("inbox")).currentBatchId!);
+  });
+
   test("refuses to record raw evidence for an unconfigured source recipe", async () => {
     const { root, domain } = await setup();
     await expect(domain.recordSourceRun("inbox", "not-an-authorized-recipe", [{ threadId: "nope" }], [], { cursor: "nope" })).rejects.toThrow("Source recipe not found");
@@ -3062,6 +3111,122 @@ describe("scoped persistent voice dock routing", () => {
     expect(result.work.target).toEqual({ kind: "card", feedId: "inbox", cardId: "inbox-ready-to-collect" });
     expect((await store.readCard("inbox", "inbox-ready-to-collect")).status).toBe("queued");
     expect((await store.readEvents("inbox")).map((event) => event.type)).toContain("voice.instruction_submitted");
+  });
+
+  test("binds an explicit trusted card instruction to the one exact visible approval action", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const card = await domain.upsertCard("inbox", {
+      id: "voice-approved-send",
+      title: "Review one exact reply.",
+      why: "The visible draft is ready for a decision.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Exact visible reply.", editable: true }],
+      actions: [{ id: "send", label: "Send reply", behavior: "approve_action", instruction: "Send the exact visible reply.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" }],
+    });
+
+    const result = await domain.submitVoiceInstruction(
+      "inbox",
+      { kind: "card", feedId: "inbox", cardId: card.id },
+      "if so, you can send it",
+      { trustedCardSnapshot: { updatedAt: card.updatedAt } },
+    );
+    expect(result).toMatchObject({
+      kind: "approved_action",
+      actionLabel: "Send reply",
+      work: { kind: "execute_approved_action", approvalSource: "voice_instruction", approvalInstruction: "if so, you can send it" },
+    });
+
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    const currentCard = await store.readCard("inbox", card.id);
+    const output = formatWorkClaimOutput("inbox", claimed, { card: currentCard, feedConfig: await store.readConfig("inbox") }) as any;
+    expect(output.operatorGuidance.userAuthorization).toMatchObject({
+      kind: "tend_voice_instruction",
+      approvalInstruction: "if so, you can send it",
+      actionLabel: "Send reply",
+      noSecondChatConfirmationNeeded: true,
+    });
+    expect(output.operatorGuidance.userAuthorization.statement).toContain("explicit card-scoped instruction");
+    expect((await domain.verifyApprovedAction("inbox", claimed.id, claimed.capabilityToken, "dan@every.to")).action.label).toBe("Send reply");
+  });
+
+  test("keeps untrusted, stale, and negative card speech outside approval work", async () => {
+    const untrustedSetup = await setup();
+    const cardA = await untrustedSetup.domain.upsertCard("inbox", {
+      id: "voice-untrusted-send", title: "Exact reply", why: "Ready.",
+      blocks: [{ id: "draft", type: "editable_text", value: "Exact.", editable: true }],
+      actions: [{ id: "send", label: "Send reply", behavior: "approve_action", instruction: "Send it.", artifactBlockId: "draft" }],
+    });
+    const untrusted = await untrustedSetup.domain.submitVoiceInstruction("inbox", { kind: "card", feedId: "inbox", cardId: cardA.id }, "This is fine");
+    expect(untrusted).toMatchObject({ kind: "scoped_work", approvalInterpretation: "not_approved", work: { kind: "scoped_instruction" } });
+
+    const staleSetup = await setup();
+    const cardB = await staleSetup.domain.upsertCard("inbox", {
+      id: "voice-stale-send", title: "Exact reply", why: "Ready.",
+      blocks: [{ id: "draft", type: "editable_text", value: "Exact.", editable: true }],
+      actions: [{ id: "send", label: "Send reply", behavior: "approve_action", instruction: "Send it.", artifactBlockId: "draft" }],
+    });
+    await expect(staleSetup.domain.submitVoiceInstruction(
+      "inbox",
+      { kind: "card", feedId: "inbox", cardId: cardB.id },
+      "Send it",
+      { trustedCardSnapshot: { updatedAt: "2026-01-01T00:00:00.000Z" } },
+    )).rejects.toThrow("card changed");
+    expect(await staleSetup.store.readWorkItems("inbox")).toEqual([]);
+
+    const negativeSetup = await setup();
+    const cardC = await negativeSetup.domain.upsertCard("inbox", {
+      id: "voice-negative-send", title: "Exact reply", why: "Ready.",
+      blocks: [{ id: "draft", type: "editable_text", value: "Exact.", editable: true }],
+      actions: [{ id: "send", label: "Send reply", behavior: "approve_action", instruction: "Send it.", artifactBlockId: "draft" }],
+    });
+    const negative = await negativeSetup.domain.submitVoiceInstruction(
+      "inbox",
+      { kind: "card", feedId: "inbox", cardId: cardC.id },
+      "Don't send it; revise the ending",
+      { trustedCardSnapshot: { updatedAt: cardC.updatedAt } },
+    );
+    expect(negative).toMatchObject({ kind: "scoped_work", approvalInterpretation: "not_approved", work: { kind: "scoped_instruction" } });
+  });
+
+  test("completes preparation work by returning a newly exact action to review without inheriting approval", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    const card = await domain.upsertCard("inbox", {
+      id: "voice-calendar-preparation",
+      title: "Decide what to do with these tickets.",
+      why: "No calendar mutation has been prepared yet.",
+      blocks: [{ id: "source", type: "memo", text: "Tickets for a dated event." }],
+      actions: [],
+    });
+    const queued = await domain.submitVoiceInstruction(
+      "inbox",
+      { kind: "card", feedId: "inbox", cardId: card.id },
+      "Don't reply; add this to my calendar and remind me to choose who is going.",
+      { trustedCardSnapshot: { updatedAt: card.updatedAt } },
+    );
+    expect(queued).toMatchObject({ kind: "scoped_work", work: { kind: "scoped_instruction" } });
+    expect(queued.work.approvalDigest).toBeUndefined();
+
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    const guidance = formatWorkClaimOutput("inbox", claimed, { card }) as any;
+    expect(guidance.operatorGuidance.voicePreparationRule).toContain("not an approved external action");
+    await domain.completeWork("inbox", claimed.id, claimed.capabilityToken, {
+      response: "Prepared the exact calendar action for review; no calendar mutation ran.",
+      proposedAction: {
+        label: "Add calendar hold and reminder",
+        instruction: "Create the exact dated calendar hold and reminder shown on this card.",
+        externalMutation: true,
+      },
+    });
+
+    const completed = await store.readWork("inbox", claimed.id);
+    expect(completed).toMatchObject({ status: "completed" });
+    expect(completed?.approvalDigest).toBeUndefined();
+    expect(await store.readCard("inbox", card.id)).toMatchObject({
+      status: "to_review_updated",
+      proposedAction: { label: "Add calendar hold and reminder" },
+    });
   });
 
   test("does not record submitted feedback when the card and work mutation cannot commit", async () => {

@@ -371,6 +371,54 @@ async function mountReadingApp(feedId: string) {
   return { ui, client, close: () => { ui.unmount(); client.clear(); } };
 }
 
+test("card-scoped voice approval sends the displayed revision and confirms the exact action", async () => {
+  sessionStorage.clear();
+  globalThis.EventSource = class { addEventListener() {} close() {} } as unknown as typeof EventSource;
+  const card = readingCard({
+    id: "voice-approval-ui",
+    reading: undefined,
+    title: "Review one exact reply",
+    blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Exact visible reply.", editable: true }],
+    actions: [{ id: "send", label: "Send reply", behavior: "approve_action", instruction: "Send the exact visible reply.", artifactBlockId: "draft", externalMutation: true }],
+  });
+  const state = readingWorkspace([card]);
+  const instructions: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/session") return Response.json({ mutationToken: "fixture-token" });
+    if (url.startsWith("/api/state?")) return Response.json(state);
+    if (url.endsWith("/native-approvals")) return Response.json([]);
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (url === "/api/voice/target-change") return Response.json(body.target);
+    if (url === "/api/voice/instructions") {
+      instructions.push(body);
+      return Response.json({ kind: "approved_action", actionLabel: "Send reply", work: { id: "voice-approved-work", kind: "execute_approved_action", intent: "voice_instruction" } });
+    }
+    throw new Error(`Unexpected fixture request: ${url}`);
+  }) as typeof fetch;
+
+  const mounted = await mountReadingApp(card.feedId);
+  try {
+    await waitFor(() => expect(mounted.ui.container.querySelector(".dock-target")?.textContent).toBe(card.title));
+    const input = mounted.ui.getByRole("textbox", { name: "Instruction for Codex" });
+    input.focus();
+    fireEvent.input(input, { target: { value: "This is fine" } });
+    fireEvent.input(input, { target: { value: "This is fine" } });
+    fireEvent.keyUp(input, { key: "." });
+    fireEvent.click(mounted.ui.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(instructions).toHaveLength(1));
+    expect(instructions[0]).toMatchObject({
+      target: { kind: "card", feedId: card.feedId, cardId: card.id },
+      instruction: "This is fine",
+      expectedCardUpdatedAt: card.updatedAt,
+    });
+    await waitFor(() => expect(mounted.ui.getByText("Send reply approved and queued")).toBeTruthy());
+  } finally {
+    mounted.close();
+    sessionStorage.clear();
+  }
+});
+
 test("a neutrally read card keeps its place and feedback target; Undo restores unread without duplicating the card", async () => {
   sessionStorage.clear();
   globalThis.EventSource = class { addEventListener() {} close() {} } as unknown as typeof EventSource;

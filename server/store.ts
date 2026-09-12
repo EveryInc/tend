@@ -745,6 +745,14 @@ export class AttentionStore {
     await writeJson(file, value);
   }
 
+  async readSourceSnapshots(run: Pick<SourceRun, "feedId" | "id" | "sourceId" | "snapshots">): Promise<Array<{ id: string; value: unknown }>> {
+    return Promise.all(Array.from({ length: run.snapshots }, async (_, index) => {
+      const id = `snapshot-${index + 1}`;
+      const value = await readJson<unknown>(this.feedPath(run.feedId, "raw", run.id, run.sourceId, `${id}.json`));
+      return { id, value };
+    }));
+  }
+
   async writeRun(run: SourceRun): Promise<void> {
     await this.sourceRuns.write(run);
   }

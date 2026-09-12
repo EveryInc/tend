@@ -38,6 +38,7 @@ import type {
   RevisionProposal,
   RoutineActionGroup,
   SourceRecipe,
+  SourceRun,
   SourceRunContextUse,
   SweepFeedbackTrace,
   ThreadBinding,
@@ -67,6 +68,7 @@ import { detectMonologue } from "./monologue";
 import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./util";
 import { actionDigest, cleanupDigest, configuredApprovalAction, requiredSourceMailbox, routineActionDigest, verifySourceMailbox } from "./workflow/approvals";
 import { queuedWork } from "./workflow/workItems";
+import { hasVoiceApprovalCandidate, matchExplicitVoiceApproval } from "./workflow/voiceApprovals";
 import { mobileActionConfirmation, projectMobileCard, projectMobileRoutineAction } from "./mobile/projection";
 
 function appendHistory(card: Card, type: string, detail?: string): void {
@@ -444,6 +446,61 @@ function assertGmailInboxSweepEnumeration(sourceId: string, checkpoint: unknown)
   if (unresolvedThreads.length) {
     throw new Error(`Full Gmail sweep is incomplete: ${unresolvedThreads.length} authoritative Inbox thread(s) were neither read nor explicitly carried forward: ${unresolvedThreads.join(", ")}.`);
   }
+}
+
+type SourceSnapshotFingerprint = { id: string; key?: string; digest: string };
+
+function canonicalSourceValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalSourceValue);
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, canonicalSourceValue(item)]),
+  );
+}
+
+function sourceSnapshotKey(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  for (const key of ["threadId", "thread_id", "documentId", "document_id", "id", "url", "href"]) {
+    const candidate = value[key];
+    if ((typeof candidate === "string" || typeof candidate === "number") && String(candidate).trim()) {
+      const normalized = String(candidate).trim();
+      if (normalized.length >= 6) return normalized;
+    }
+  }
+  return undefined;
+}
+
+function cardSourceHints(card: Pick<Card, "id" | "blocks">): string[] {
+  const hints = [card.id];
+  for (const block of card.blocks) {
+    for (const item of block.items ?? []) {
+      if (typeof item !== "string" && item.href) hints.push(item.href);
+    }
+    if (block.profile) {
+      hints.push(block.profile.href, ...((block.profile.links ?? []).map((link) => link.href)));
+    }
+    if (block.video) hints.push(block.video.href);
+  }
+  return hints;
+}
+
+function relevantSourceSnapshots(
+  snapshots: SourceSnapshotFingerprint[],
+  card?: Pick<Card, "id" | "blocks">,
+): SourceSnapshotFingerprint[] {
+  if (!card) return snapshots.length === 1 ? snapshots : [];
+  const hints = cardSourceHints(card);
+  const matched = snapshots.filter((snapshot) => snapshot.key && hints.some((hint) => hint.includes(snapshot.key!)));
+  return matched.length ? matched : snapshots.length === 1 ? snapshots : [];
+}
+
+function sourceDisplayName(sourceId: string): string {
+  if (/gmail|email/i.test(sourceId)) return "Gmail";
+  return sourceId
+    .replace(/[-_]+/g, " ")
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
 function isSafeCardHref(value: string): boolean {
@@ -1292,31 +1349,76 @@ export class AttentionDomain {
     return staleGroups.map((group) => group.id);
   }
 
-  private async assertSourceRunIdsCurrent(feedId: string, sourceRunIds: string[], cardId?: string): Promise<void> {
+  private async assertSourceRunIdsCurrent(
+    feedId: string,
+    sourceRunIds: string[],
+    card?: Pick<Card, "id" | "blocks">,
+  ): Promise<void> {
+    const sourceRuns: SourceRun[] = [];
     for (const runId of sourceRunIds) {
-      let run: { id: string; feedId: string };
+      let run: SourceRun;
       try {
         run = await this.store.readRun(feedId, runId);
       } catch {
-        throw new Error(`Card references an unknown source run for this feed: ${runId}`);
+        throw new Error("This card references source evidence that Tend can no longer read. Refresh the card from its source before acting.");
       }
-      if (run.id !== runId || run.feedId !== feedId) throw new Error(`Card source run does not belong to this feed: ${runId}`);
+      if (run.id !== runId || run.feedId !== feedId) {
+        throw new Error("This card references source evidence from another feed. Refresh the card from its source before acting.");
+      }
+      sourceRuns.push(run);
     }
 
     const sweep = await this.store.readSweepState(feedId);
     if (!sweep.currentBatchId) return;
     const batch = await this.store.readSweepBatch(feedId, sweep.currentBatchId);
     const currentRunIds = new Set(batch.sourceRunIds);
-    const staleRunIds = sourceRunIds.filter((runId) => !currentRunIds.has(runId));
-    if (staleRunIds.length === 0) return;
-    throw new Error(
-      `Card${cardId ? ` ${cardId}` : ""} source evidence is stale: ${staleRunIds.join(", ")} ${staleRunIds.length === 1 ? "is" : "are"} not in current sweep batch ${batch.id}. Refresh the sources and upsert the card from the current batch before acting.`,
-    );
+    const staleRuns = sourceRuns.filter((run) => !currentRunIds.has(run.id));
+    if (staleRuns.length === 0) return;
+
+    const currentRuns = await Promise.all(batch.sourceRunIds.map((runId) => this.store.readRun(feedId, runId)));
+    for (const staleRun of staleRuns) {
+      const sourceName = sourceDisplayName(staleRun.sourceId);
+      const replacements = currentRuns.filter((run) => run.sourceId === staleRun.sourceId);
+      if (!replacements.length) {
+        throw new Error(`This card's ${sourceName} source evidence is stale because that source is absent from the latest sweep. Refresh the card before acting.`);
+      }
+
+      let priorSnapshots: SourceSnapshotFingerprint[];
+      let replacementSnapshots: SourceSnapshotFingerprint[];
+      try {
+        priorSnapshots = (await this.store.readSourceSnapshots(staleRun)).map(({ id, value }) => ({
+          id,
+          key: sourceSnapshotKey(value),
+          digest: digest(canonicalSourceValue(value)),
+        }));
+        replacementSnapshots = (await Promise.all(replacements.map((run) => this.store.readSourceSnapshots(run))))
+          .flat()
+          .map(({ id, value }) => ({ id, key: sourceSnapshotKey(value), digest: digest(canonicalSourceValue(value)) }));
+      } catch {
+        throw new Error(`This card's ${sourceName} source evidence is stale because Tend cannot compare it with the latest sweep. Refresh the card before acting.`);
+      }
+
+      const reviewed = relevantSourceSnapshots(priorSnapshots, card);
+      if (!reviewed.length) {
+        throw new Error(`This card's ${sourceName} source evidence is stale because Tend cannot identify the exact reviewed item. Refresh the card before acting.`);
+      }
+      for (const snapshot of reviewed) {
+        const sameUnit = snapshot.key
+          ? replacementSnapshots.filter((candidate) => candidate.key === snapshot.key)
+          : replacementSnapshots;
+        if (sameUnit.length && sameUnit.every((candidate) => candidate.digest === snapshot.digest)) continue;
+        if (sameUnit.some((candidate) => candidate.digest === snapshot.digest)) {
+          throw new Error(`This card's ${sourceName} source evidence is stale because the latest sweep contains conflicting versions of the reviewed item. Refresh the card before acting.`);
+        }
+        const reason = sameUnit.length ? "changed since the card was reviewed" : "is no longer present in the latest sweep";
+        throw new Error(`This card's ${sourceName} source evidence is stale because the reviewed item ${reason}. Refresh the card before acting.`);
+      }
+    }
   }
 
   private async assertCardSourceCurrent(card: Card): Promise<void> {
     if (!card.sourceRunIds?.length) return;
-    await this.assertSourceRunIdsCurrent(card.feedId, card.sourceRunIds, card.id);
+    await this.assertSourceRunIdsCurrent(card.feedId, card.sourceRunIds, card);
   }
 
   private async quarantineLegacyMutationWork(feed: FeedView, work: WorkItem): Promise<boolean> {
@@ -1358,7 +1460,12 @@ export class AttentionDomain {
     return target;
   }
 
-  async submitVoiceInstruction(anchorFeedId: string, requested: VoiceTarget, instruction: string, options: { assignee?: WorkAgent } = {}) {
+  async submitVoiceInstruction(
+    anchorFeedId: string,
+    requested: VoiceTarget,
+    instruction: string,
+    options: { assignee?: WorkAgent; trustedCardSnapshot?: { updatedAt: string } } = {},
+  ) {
     if (!instruction.trim()) throw new Error("Instruction is required.");
     const target = await this.store.validateVoiceTarget(requested);
     const targetFeedId = "feedId" in target ? target.feedId : anchorFeedId;
@@ -1414,6 +1521,36 @@ export class AttentionDomain {
 
       const feedId = "feedId" in target ? target.feedId : anchorFeedId;
       const cardId = target.kind === "card" ? target.cardId : "__feed__";
+      const card = target.kind === "card" ? await this.store.readCard(feedId, target.cardId) : undefined;
+      if (card && options.trustedCardSnapshot && card.updatedAt !== options.trustedCardSnapshot.updatedAt) {
+        throw new Error("This card changed before the voice instruction arrived. Review the current card and try again.");
+      }
+      const approvalMatch = card ? matchExplicitVoiceApproval(card, instruction) : undefined;
+      if (card && approvalMatch && options.trustedCardSnapshot) {
+        const work = await this.approveActionLocked(
+          feedId,
+          card.id,
+          approvalMatch.cardActionId,
+          undefined,
+          card,
+          { approvalSource: "voice_instruction", approvalInstruction: instruction.trim() },
+        );
+        await this.store.appendEvent({
+          feedId,
+          cardId: card.id,
+          workId: work.id,
+          type: "voice.action_approved",
+          detail: { target, actionLabel: approvalMatch.actionLabel, approvalDigest: work.approvalDigest },
+        });
+        await this.store.appendEvent({
+          feedId: anchorFeedId,
+          cardId: card.id,
+          workId: work.id,
+          type: "voice.instruction_submitted",
+          detail: { target, instruction: instruction.trim(), approvalDigest: work.approvalDigest },
+        });
+        return { kind: "approved_action" as const, target, actionLabel: approvalMatch.actionLabel, work };
+      }
       const work = queuedWork(feedId, cardId, instruction, {
         kind: "scoped_instruction",
         target,
@@ -1421,7 +1558,7 @@ export class AttentionDomain {
         ...(options.assignee ? { assignee: options.assignee } : {}),
       });
       if (target.kind === "card") {
-        const card = await this.store.readCard(feedId, target.cardId);
+        if (!card) throw new Error("Voice target card not found.");
         if (card.status === "done" && !card.reading) throw new Error("Done cards cannot be queued.");
         work.readingCard = snapshotReadingCard(card);
         card.status = "queued";
@@ -1441,7 +1578,12 @@ export class AttentionDomain {
           });
         },
       });
-      return { kind: "scoped_work" as const, target, work };
+      return {
+        kind: "scoped_work" as const,
+        target,
+        work,
+        ...(card && hasVoiceApprovalCandidate(card) ? { approvalInterpretation: "not_approved" as const } : {}),
+      };
     });
   }
 
@@ -1679,6 +1821,7 @@ export class AttentionDomain {
     cardActionId?: string,
     sourceMobileCommandId?: string,
     preparedCard?: Card,
+    approval?: Pick<WorkItem, "approvalSource" | "approvalInstruction">,
   ): Promise<WorkItem> {
     const card = preparedCard ?? await this.store.readCard(feedId, cardId);
     if (card.feedId !== feedId || card.id !== cardId) throw new Error("Approved card does not belong to this feed.");
@@ -1726,6 +1869,8 @@ export class AttentionDomain {
     const work = queuedWork(feedId, cardId, action.instruction, {
       kind: "execute_approved_action",
       approvalDigest,
+      ...(approval?.approvalSource ? { approvalSource: approval.approvalSource } : {}),
+      ...(approval?.approvalInstruction ? { approvalInstruction: approval.approvalInstruction } : {}),
       completionCleanup: feed.config.defaultCleanup,
       ...(cardActionId ? { cardActionId } : {}),
       ...(sourceMobileCommandId ? { sourceMobileCommandId } : {}),
@@ -2953,7 +3098,7 @@ export class AttentionDomain {
       const config = await this.store.readConfig(feedId);
       const now = isoNow();
       const existing = (await this.store.hasCard(feedId, input.id)) ? await this.store.readCard(feedId, input.id) : null;
-      if (sourceRunIds) await this.assertSourceRunIdsCurrent(feedId, sourceRunIds, input.id);
+      if (sourceRunIds) await this.assertSourceRunIdsCurrent(feedId, sourceRunIds, { id: input.id, blocks: input.blocks });
       const contextInfluence = await this.normalizeCardContextInfluence(feedId, sourceRunIds, input.contextInfluence);
       if (existing?.reading && (existing.title !== input.title || existing.why !== input.why)) {
         throw new ReadingCardRequestError("Reading-card content is immutable; publish changed text as a new card.", 409, "immutable_card");
