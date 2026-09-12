@@ -68,7 +68,7 @@ import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, readingAttent
 import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
 import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./util";
-import { actionDigest, cleanupDigest, configuredApprovalAction, requiredSourceMailbox, routineActionDigest, verifySourceMailbox } from "./workflow/approvals";
+import { actionDigest, cleanupDigest, configuredApprovalAction, legacyActionDigestWithoutSourceMailbox, requiredSourceMailbox, routineActionDigest, verifySourceMailbox } from "./workflow/approvals";
 import { prepareApprovedEmailDelivery, validateEmailDeliveryReadback } from "./workflow/emailDelivery";
 import { queuedWork } from "./workflow/workItems";
 import { hasVoiceApprovalCandidate, matchExplicitVoiceApproval } from "./workflow/voiceApprovals";
@@ -1442,6 +1442,24 @@ export class AttentionDomain {
   private async assertCardSourceCurrent(card: Card): Promise<void> {
     if (!card.sourceRunIds?.length) return;
     await this.assertSourceRunIdsCurrent(card.feedId, card.sourceRunIds, card);
+  }
+
+  private async migrateLegacyMailboxApproval(work: WorkItem, card: Card): Promise<{ from: string; to: string } | null> {
+    if (!card.sourceRunIds?.length) return null;
+    const legacyDigest = legacyActionDigestWithoutSourceMailbox(card, work.cardActionId);
+    const currentDigest = actionDigest(card, work.cardActionId);
+    if (!legacyDigest || legacyDigest === currentDigest || work.approvalDigest !== legacyDigest) return null;
+    const contentChangedAfterApproval = (await this.store.readEvents(card.feedId)).some((event) =>
+      event.cardId === card.id
+      && event.at >= work.createdAt
+      && (event.type === "card.updated" || event.type === "card.block_edited")
+    );
+    if (contentChangedAfterApproval) return null;
+    await this.assertCardSourceCurrent(card);
+    const from = work.approvalDigest;
+    work.approvalDigest = currentDigest;
+    clearActionVerification(work);
+    return { from, to: currentDigest };
   }
 
   private async quarantineLegacyMutationWork(feed: FeedView, work: WorkItem): Promise<boolean> {
@@ -3019,15 +3037,29 @@ export class AttentionDomain {
     let staleError: Error | undefined;
     const retried = await this.store.serializeAtomic(async () => {
       const work = await this.store.readWork(feedId, workId);
-      if ((work.status !== "approved_blocked" && work.status !== "failed") || work.kind !== "execute_approved_action" || !work.approvalDigest) {
+      const migrationStale = work.status === "stale" && work.error === "Approval stale - the proposed action or artifact changed after approval.";
+      if ((work.status !== "approved_blocked" && work.status !== "failed" && !migrationStale) || work.kind !== "execute_approved_action" || !work.approvalDigest) {
         throw new Error("Only an approved blocked action can be retried.");
       }
       if (work.postAction?.cleanup.status === "blocked") {
         throw new Error("The main action already succeeded. Retry only the bundled cleanup, then use work:reconcile-approved.");
       }
       const card = await this.store.readCard(feedId, work.cardId);
+      const newerCompletedAction = (await this.store.readWorkItems(feedId)).some((other) =>
+        other.id !== work.id
+        && other.cardId === work.cardId
+        && other.kind === "execute_approved_action"
+        && other.cardActionId === work.cardActionId
+        && other.status === "completed"
+        && other.createdAt > work.createdAt
+      );
+      if (newerCompletedAction) throw new Error("A newer approval already completed this card action; the older action cannot be retried.");
       requiredSourceMailbox(feedId, card, configuredApprovalAction(card, work.cardActionId));
+      let migration: { from: string; to: string } | null = null;
       if (work.approvalDigest !== actionDigest(card, work.cardActionId)) {
+        migration = await this.migrateLegacyMailboxApproval(work, card);
+      }
+      if (work.approvalDigest !== actionDigest(card, work.cardActionId) || (migrationStale && !migration)) {
         work.status = "stale";
         work.error = "Approval stale - the proposed action or artifact changed after approval.";
         clearActionVerification(work);
@@ -3042,10 +3074,20 @@ export class AttentionDomain {
       }
       this.requeueWorkItem(work);
       card.status = "queued";
+      if (migration) appendHistory(card, "system.approval_digest_migrated", work.id);
       appendHistory(card, "codex.approved_action_retry_queued", work.id);
       await this.persistQueuedWork(feedId, work, {
         afterWrite: async () => {
           await this.store.writeCard(card);
+          if (migration) {
+            await this.store.appendEvent({
+              feedId,
+              cardId: work.cardId,
+              workId,
+              type: "action.approval_digest_migrated",
+              detail: { from: migration.from, to: migration.to, addedBinding: "source_mailbox" },
+            });
+          }
           await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.approved_action_retry_queued" });
         },
       });

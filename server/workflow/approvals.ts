@@ -51,6 +51,14 @@ export function actionDigest(card: Card, cardActionId?: string): string {
   return digest({ cardActionId: cardActionId ?? null, action, artifact, ...(sourceMailbox ? { sourceMailbox } : {}), ...(attachments.length ? { attachments } : {}) });
 }
 
+export function legacyActionDigestWithoutSourceMailbox(card: Card, cardActionId?: string): string | undefined {
+  const action = configuredApprovalAction(card, cardActionId);
+  if (!requiresSourceMailboxMatch(card.feedId, action) || !normalizeMailbox(card.sourceMailbox)) return undefined;
+  const artifact = action.artifactBlockId ? card.blocks.find((block) => block.id === action.artifactBlockId) : undefined;
+  const attachments = card.blocks.filter((block) => block.type === "image");
+  return digest({ cardActionId: cardActionId ?? null, action, artifact, ...(attachments.length ? { attachments } : {}) });
+}
+
 export function cleanupDigest(card: Card, instruction: string): string {
   return digest({
     instruction,
