@@ -350,7 +350,7 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
           required("feed"),
           required("work"),
           required("token"),
-          json(required("result")),
+          await structured("result"),
         );
         break;
       case "action:verify":
@@ -382,7 +382,7 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
           required("feed"),
           required("work"),
           required("token"),
-          json(required("result")),
+          await structured("result"),
         );
         break;
       case "work:retry":

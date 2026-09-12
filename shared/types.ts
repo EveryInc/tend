@@ -500,6 +500,38 @@ export interface WorkClaimant {
   sessionId?: string;
 }
 
+export interface EmailDeliveryAttachment {
+  blockId: string;
+  filename: string;
+  mediaType: "image/png";
+  byteLength: number;
+  sha256: string;
+}
+
+export interface EmailMimePayload {
+  mime_type: "multipart/alternative";
+  parts: [
+    { mime_type: "text/plain"; charset: "utf-8"; body: { content: string } },
+    { mime_type: "text/html"; charset: "utf-8"; body: { content: string } },
+  ];
+}
+
+export interface PreparedEmailDelivery {
+  version: 1;
+  approvalDigest: string;
+  payloadDigest: string;
+  fromAddress: string;
+  recipients: string[];
+  payload: EmailMimePayload;
+  attachments: EmailDeliveryAttachment[];
+}
+
+export interface EmailDeliveryReadback extends PreparedEmailDelivery {
+  source: "connector_readback";
+  providerMessageId: string;
+  readAt: string;
+}
+
 export interface WorkItem {
   id: string;
   feedId: FeedId;
@@ -534,10 +566,12 @@ export interface WorkItem {
   verifiedAt?: string;
   verifiedApprovalDigest?: string;
   verifiedMailbox?: string;
+  emailDeliveryPreparation?: PreparedEmailDelivery;
+  emailDeliveryReceipt?: EmailDeliveryReadback;
   sourceMobileCommandId?: string;
 }
 
-export type WorkItemView = Omit<WorkItem, "capabilityToken">;
+export type WorkItemView = Omit<WorkItem, "capabilityToken" | "emailDeliveryPreparation" | "emailDeliveryReceipt">;
 
 export interface WorkClaimedByReport {
   claim: "claimed_by_other";

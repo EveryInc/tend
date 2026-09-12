@@ -13,7 +13,7 @@ export interface IdleWorkHandshake {
   };
 }
 
-export interface ClaimedWorkOutput extends WorkItem {
+export interface ClaimedWorkOutput extends Omit<WorkItem, "emailDeliveryPreparation" | "emailDeliveryReceipt"> {
   operatorGuidance?: {
     replyDraftSender?: string;
     userAuthorization?: UserAuthorizationReceipt;
@@ -23,6 +23,7 @@ export interface ClaimedWorkOutput extends WorkItem {
     sourceRunRule?: string;
     postActionRule?: string;
     voicePreparationRule?: string;
+    emailDeliveryRule?: string;
     readingCardRule?: string;
     readingFeedbackRule?: string;
   };
@@ -234,6 +235,9 @@ export function formatWorkClaimOutput(feedId: string, work: WorkClaimResult, con
   const userAuthorization = buildAuthorizationReceipt(work, context);
   if (userAuthorization) {
     operatorGuidance.userAuthorization = userAuthorization;
+    if (userAuthorization.sourceMailbox && userAuthorization.exactApprovedArtifact?.type === "editable_text") {
+      operatorGuidance.emailDeliveryRule = "EMAIL SEND GATE: action:verify returns emailDelivery with the only payload authorized for this send. Pass its multipart/alternative payload, fromAddress, recipients, and attachments to the connector unchanged. Then read the delivered message back and use --result-file to report its actual sender, recipients, MIME parts, and attachment metadata in emailDeliveryReadback; retain the verified version, approvalDigest, and payloadDigest, and add source=connector_readback, providerMessageId, and readAt. Never synthesize the readback from the proposed draft. Tend rejects text-only MIME or any sender, recipient, body, attachment, or approval-digest mismatch. A direct connector call outside Tend is outside this gate.";
+    }
   }
 
   if (work.kind === "execute_approved_action" && work.completionCleanup) {
@@ -265,5 +269,12 @@ export function formatWorkClaimOutput(feedId: string, work: WorkClaimResult, con
     operatorGuidance.readingFeedbackRule = "Review learningContext.readingFeedbackEvents, including archived Likes, exact compared-face preferences, and voice comments. A cleared reaction or an untouched card is not a dislike; neither is an alternative to a preferred version. Do not invent reasons for taps. Use the latest explicit reaction per card (highest reactionSequence), and the latest preference per run/topic group (highest preferenceSequence), scoped only to its exact member IDs and revisions. Join voice feedback by cardId and contentRevision. Return a policy proposal for approval, never an automatic policy change.";
   }
 
-  return Object.keys(operatorGuidance).length ? { ...work, operatorGuidance } : work;
+  const hasGuidance = Object.keys(operatorGuidance).length > 0;
+  if (!hasGuidance && !work.emailDeliveryPreparation && !work.emailDeliveryReceipt) return work;
+  const {
+    emailDeliveryPreparation: _emailDeliveryPreparation,
+    emailDeliveryReceipt: _emailDeliveryReceipt,
+    ...claim
+  } = work;
+  return hasGuidance ? { ...claim, operatorGuidance } : claim;
 }

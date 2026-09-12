@@ -9,6 +9,7 @@ import type {
   CardReading,
   CardReadingInput,
   CardReaction,
+  EmailDeliveryReadback,
   ReadingCardSnapshot,
   ReadingComparison,
   ReadingComparisonInput,
@@ -34,6 +35,7 @@ import type {
   MindContextWorkspace,
   PolicyRevision,
   PostActionCompletion,
+  PreparedEmailDelivery,
   ProposedAction,
   RevisionProposal,
   RoutineActionGroup,
@@ -67,12 +69,35 @@ import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
 import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./util";
 import { actionDigest, cleanupDigest, configuredApprovalAction, requiredSourceMailbox, routineActionDigest, verifySourceMailbox } from "./workflow/approvals";
+import { prepareApprovedEmailDelivery, validateEmailDeliveryReadback } from "./workflow/emailDelivery";
 import { queuedWork } from "./workflow/workItems";
 import { hasVoiceApprovalCandidate, matchExplicitVoiceApproval } from "./workflow/voiceApprovals";
 import { mobileActionConfirmation, projectMobileCard, projectMobileRoutineAction } from "./mobile/projection";
 
 function appendHistory(card: Card, type: string, detail?: string): void {
   card.history.push({ at: isoNow(), type, detail });
+}
+
+function emailDeliveryAudit(receipt?: EmailDeliveryReadback): unknown {
+  if (!receipt) return undefined;
+  return {
+    source: receipt.source,
+    providerMessageId: receipt.providerMessageId,
+    readAt: receipt.readAt,
+    approvalDigest: receipt.approvalDigest,
+    payloadDigest: receipt.payloadDigest,
+    fromAddress: receipt.fromAddress,
+    recipients: receipt.recipients,
+    attachments: receipt.attachments,
+  };
+}
+
+function clearActionVerification(work: WorkItem): void {
+  work.verifiedAt = undefined;
+  work.verifiedApprovalDigest = undefined;
+  work.verifiedMailbox = undefined;
+  work.emailDeliveryPreparation = undefined;
+  work.emailDeliveryReceipt = undefined;
 }
 
 type WorkCaller =
@@ -1064,9 +1089,7 @@ export class AttentionDomain {
     work.claimedAt = undefined;
     work.claimedBy = undefined;
     work.error = undefined;
-    work.verifiedAt = undefined;
-    work.verifiedApprovalDigest = undefined;
-    work.verifiedMailbox = undefined;
+    clearActionVerification(work);
   }
 
   async registerAgentPresence(
@@ -1857,6 +1880,7 @@ export class AttentionDomain {
     for (const work of active) {
       work.status = "stale";
       work.error = "Approval stale - a newer visible action snapshot was approved.";
+      clearActionVerification(work);
       await this.store.writeWork(work);
       await this.store.appendEvent({
         feedId,
@@ -1934,6 +1958,7 @@ export class AttentionDomain {
     for (const work of active) {
       work.status = "stale";
       work.error = "Approval stale - a newer visible cleanup snapshot was approved.";
+      clearActionVerification(work);
       await this.store.writeWork(work);
       await this.store.appendEvent({
         feedId,
@@ -2131,6 +2156,7 @@ export class AttentionDomain {
     for (const work of active) {
       work.status = "stale";
       work.error = "Approval stale - a newer routine action snapshot was approved.";
+      clearActionVerification(work);
       await this.store.writeWork(work);
     }
     const work = queuedWork(feedId, "__routine__", group.proposedAction.instruction, {
@@ -2189,6 +2215,7 @@ export class AttentionDomain {
       for (const work of activeWork) {
         work.status = "cancelled";
         work.error = "Returned to review by the user.";
+        clearActionVerification(work);
         await this.store.writeWork(work);
         await this.store.appendEvent({ feedId, cardId, workId: work.id, type: "work.cancelled", detail: { reason: work.error } });
       }
@@ -2600,7 +2627,7 @@ export class AttentionDomain {
     });
   }
 
-  async completeWork(feedId: string, workId: string, token: string, result: { response: string; blocks?: CardBlock[]; proposedAction?: ProposedAction; actions?: CardAction[]; done?: boolean; postAction?: PostActionCompletion }): Promise<WorkItem> {
+  async completeWork(feedId: string, workId: string, token: string, result: { response: string; blocks?: CardBlock[]; proposedAction?: ProposedAction; actions?: CardAction[]; done?: boolean; postAction?: PostActionCompletion; emailDeliveryReadback?: EmailDeliveryReadback }): Promise<WorkItem> {
     if (result.blocks) validateCardBlocks(result.blocks);
     if (result.blocks) await verifyCardImages(this.artifactsDir, result.blocks);
     validateCardActions(result.actions);
@@ -2666,6 +2693,7 @@ export class AttentionDomain {
         if (work.approvalDigest !== currentApprovalDigest) {
           work.status = "stale";
           work.error = "Approval stale - the proposed action or artifact changed after approval.";
+          clearActionVerification(work);
           card.status = "to_review_updated";
           card.readyForPass = (await this.store.readConfig(feedId)).currentPass + 1;
           appendHistory(card, "codex.stale_approval", work.id);
@@ -2686,6 +2714,12 @@ export class AttentionDomain {
           const sourceMailbox = requiredSourceMailbox(feedId, card, action);
           if (sourceMailbox && work.verifiedMailbox !== sourceMailbox) {
             throw new Error(`Approved email reply must be reverified for ${sourceMailbox} before completion.`);
+          }
+          if (sourceMailbox) {
+            if (!work.emailDeliveryPreparation) {
+              throw new Error("Approved email delivery must rerun action:verify to prepare an approval-bound multipart payload before completion.");
+            }
+            work.emailDeliveryReceipt = validateEmailDeliveryReadback(work.emailDeliveryPreparation, result.emailDeliveryReadback);
           }
           if (work.completionCleanup) {
             const config = await this.store.readConfig(feedId);
@@ -2716,7 +2750,7 @@ export class AttentionDomain {
             cardId: work.cardId,
             workId,
             type: "work.post_action_cleanup_blocked",
-            detail: { response: work.response, postAction: result.postAction },
+            detail: { response: work.response, postAction: result.postAction, emailDelivery: emailDeliveryAudit(work.emailDeliveryReceipt) },
           });
           return work;
         }
@@ -2739,7 +2773,7 @@ export class AttentionDomain {
       work.postAction = result.postAction;
       await this.store.writeWork(work);
       await this.retireQueuedCleanup(work);
-      await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.completed", detail: { response: work.response, postAction: result.postAction } });
+      await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.completed", detail: { response: work.response, postAction: result.postAction, emailDelivery: emailDeliveryAudit(work.emailDeliveryReceipt) } });
       return work;
     });
     if (staleError) throw staleError;
@@ -2755,15 +2789,13 @@ export class AttentionDomain {
       if (other.id === completed.id || other.cardId !== completed.cardId || other.status !== "queued" || !carriesCleanup(other)) continue;
       other.status = "stale";
       other.error = "Source cleanup was completed by another approved work item.";
-      other.verifiedAt = undefined;
-      other.verifiedApprovalDigest = undefined;
-      other.verifiedMailbox = undefined;
+      clearActionVerification(other);
       await this.store.writeWork(other);
       await this.store.appendEvent({ feedId: other.feedId, cardId: other.cardId, workId: other.id, type: "action.stale", detail: { reason: other.error } });
     }
   }
 
-  async verifyApprovedAction(feedId: string, workId: string, token: string, authenticatedMailbox?: string): Promise<{ approvalDigest: string; action: ProposedAction; artifact?: CardBlock; attachments?: CardBlock[]; verifiedMailbox?: string; completionCleanup?: string }> {
+  async verifyApprovedAction(feedId: string, workId: string, token: string, authenticatedMailbox?: string): Promise<{ approvalDigest: string; action: ProposedAction; artifact?: CardBlock; attachments?: CardBlock[]; verifiedMailbox?: string; completionCleanup?: string; emailDelivery?: PreparedEmailDelivery }> {
     return this.store.serialize(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "working") throw new Error("Approved action work must be claimed before verification.");
@@ -2778,7 +2810,7 @@ export class AttentionDomain {
         );
         if (conflict) throw new Error("Conflicting source cleanup requires reconciliation before verification.");
       }
-      let result: { approvalDigest: string; action: ProposedAction; artifact?: CardBlock; attachments?: CardBlock[]; verifiedMailbox?: string; completionCleanup?: string };
+      let result: { approvalDigest: string; action: ProposedAction; artifact?: CardBlock; attachments?: CardBlock[]; verifiedMailbox?: string; completionCleanup?: string; emailDelivery?: PreparedEmailDelivery };
       if (work.kind === "routine_action_batch") {
         if (!work.routineActionGroupId) throw new Error("Routine action work is missing its group.");
         const group = await this.store.readRoutineActionGroup(feedId, work.routineActionGroupId);
@@ -2801,21 +2833,43 @@ export class AttentionDomain {
           }
           const verifiedMailbox = verifySourceMailbox(feedId, card, action, authenticatedMailbox);
           const attachments = await verifyCardImages(this.artifactsDir, card.blocks);
+          const artifact = action.artifactBlockId ? card.blocks.find((block) => block.id === action.artifactBlockId) : undefined;
+          const emailDelivery = prepareApprovedEmailDelivery({
+            card,
+            action,
+            artifact,
+            attachments,
+            approvalDigest: work.approvalDigest,
+            verifiedMailbox,
+          });
           result = {
             approvalDigest: work.approvalDigest,
             action,
-            artifact: action.artifactBlockId ? card.blocks.find((block) => block.id === action.artifactBlockId) : undefined,
+            artifact,
             ...(attachments.length ? { attachments } : {}),
             ...(verifiedMailbox ? { verifiedMailbox } : {}),
             ...(work.completionCleanup ? { completionCleanup: work.completionCleanup } : {}),
+            ...(emailDelivery ? { emailDelivery } : {}),
           };
         }
       }
       work.verifiedAt = isoNow();
       work.verifiedApprovalDigest = work.approvalDigest;
       work.verifiedMailbox = result.verifiedMailbox;
+      work.emailDeliveryPreparation = result.emailDelivery;
+      work.emailDeliveryReceipt = undefined;
       await this.store.writeWork(work);
-      await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "action.verified", detail: { verifiedMailbox: work.verifiedMailbox } });
+      await this.store.appendEvent({
+        feedId,
+        cardId: work.cardId,
+        workId,
+        type: "action.verified",
+        detail: {
+          verifiedMailbox: work.verifiedMailbox,
+          emailPayloadDigest: work.emailDeliveryPreparation?.payloadDigest,
+          emailRecipients: work.emailDeliveryPreparation?.recipients,
+        },
+      });
       return result;
     });
   }
@@ -2870,6 +2924,7 @@ export class AttentionDomain {
       if (work.approvalDigest !== actionDigest(card, work.cardActionId)) {
         work.status = "stale";
         work.error = "Approval stale - the proposed action or artifact changed after approval.";
+        clearActionVerification(work);
         card.status = "to_review_updated";
         card.readyForPass = (await this.store.readConfig(feedId)).currentPass + 1;
         appendHistory(card, "codex.stale_approval", work.id);
@@ -2891,7 +2946,7 @@ export class AttentionDomain {
     });
   }
 
-  async reconcileApprovedWork(feedId: string, workId: string, token: string, result: { response: string; done?: boolean; postAction?: PostActionCompletion }): Promise<WorkItem> {
+  async reconcileApprovedWork(feedId: string, workId: string, token: string, result: { response: string; done?: boolean; postAction?: PostActionCompletion; emailDeliveryReadback?: EmailDeliveryReadback }): Promise<WorkItem> {
     return this.store.serializeAtomic(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "approved_blocked" || work.kind !== "execute_approved_action" || !work.approvalDigest) {
@@ -2902,6 +2957,20 @@ export class AttentionDomain {
         throw new Error("Blocked approved action must have passed action:verify before it can be reconciled.");
       }
       if (!result.response?.trim()) throw new Error("A reconciliation response is required.");
+      if (work.verifiedMailbox) {
+        if (!work.emailDeliveryPreparation) {
+          throw new Error("Blocked email delivery is missing its approval-bound multipart payload. Retry the unchanged action and rerun action:verify.");
+        }
+        if (result.emailDeliveryReadback) {
+          const receipt = validateEmailDeliveryReadback(work.emailDeliveryPreparation, result.emailDeliveryReadback);
+          if (work.emailDeliveryReceipt && work.emailDeliveryReceipt.providerMessageId !== receipt.providerMessageId) {
+            throw new Error("Email delivery readback identifies a different provider message than the already verified send.");
+          }
+          work.emailDeliveryReceipt ??= receipt;
+        } else if (!work.emailDeliveryReceipt) {
+          throw new Error("Email reconciliation requires a connector delivery readback for the exact verified payload.");
+        }
+      }
       const completedAt = isoNow();
       const card = await this.store.readCard(feedId, work.cardId);
       const config = await this.store.readConfig(feedId);
@@ -2926,7 +2995,7 @@ export class AttentionDomain {
       await this.store.writeWork(work);
       await this.store.writeCard(card);
       await this.retireQueuedCleanup(work);
-      await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.approved_action_reconciled", detail: { response: work.response, postAction: result.postAction } });
+      await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.approved_action_reconciled", detail: { response: work.response, postAction: result.postAction, emailDelivery: emailDeliveryAudit(work.emailDeliveryReceipt) } });
       return work;
     });
   }
@@ -2961,6 +3030,7 @@ export class AttentionDomain {
       if (work.approvalDigest !== actionDigest(card, work.cardActionId)) {
         work.status = "stale";
         work.error = "Approval stale - the proposed action or artifact changed after approval.";
+        clearActionVerification(work);
         card.status = "to_review_updated";
         card.readyForPass = (await this.store.readConfig(feedId)).currentPass + 1;
         appendHistory(card, "codex.stale_approval", work.id);
