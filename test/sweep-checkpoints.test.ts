@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AttentionDomain } from "../server/domain";
@@ -16,24 +16,26 @@ async function setup() {
   const domain = new AttentionDomain(runtime.store);
   await domain.seedDemo();
   await domain.bindFeed(FEED, THREAD);
-  return { root, runtime, store: runtime.store, domain };
+  // A fresh demo feed has not offered "search again" yet; the first request needs that offer.
+  const sweep = await runtime.store.readSweepState(FEED);
+  await runtime.store.writeSweepState(FEED, { ...sweep, recollectionOffered: true });
+  const mirrorCheckpoint = async () => JSON.parse(await readFile(path.join(root, "data", "feeds", FEED, "checkpoints", `${SOURCE}.json`), "utf8")) as unknown;
+  return { root, runtime, store: runtime.store, domain, mirrorCheckpoint };
 }
 
 async function claimRecollection(domain: AttentionDomain): Promise<WorkItem> {
-  const sweep = await domain.store.readSweepState(FEED);
-  await domain.store.writeSweepState(FEED, { ...sweep, recollectionOffered: true });
   const requested = await domain.requestSweepRecollection(FEED);
   const claimed = await domain.claimWork(FEED, THREAD) as WorkItem;
   expect(claimed.id).toBe(requested.id);
   return claimed;
 }
 
-test("a recollection checkpoint advances only when the work completes with cards for every kept judgment", async () => {
-  const { root, runtime, store, domain } = await setup();
+test("a recollection checkpoint advances only when the work completes with cards for every review judgment", async () => {
+  const { root, runtime, store, domain, mirrorCheckpoint } = await setup();
   try {
     const before = await store.readSourceCheckpoint(FEED, SOURCE);
     const work = await claimRecollection(domain);
-    const run = await domain.recordSourceRun(FEED, SOURCE, [{ transcript: "A kept fixture." }], [{ decision: "keep" }, { decision: "suppress" }], { cursor: "after-fixture" }, work.id);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ transcript: "A reviewed fixture." }], [{ decision: "review" }, { decision: "suppress" }], { cursor: "after-fixture" }, work.id);
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
     expect((await store.readRun(FEED, run)).pendingCheckpoint).toEqual({ cursor: "after-fixture" });
 
@@ -41,18 +43,20 @@ test("a recollection checkpoint advances only when the work completes with cards
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
 
     await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Collected." }))
-      .rejects.toThrow(`Source run ${run} (Company Attention) has 1 kept judgment but no card references it`);
+      .rejects.toThrow(`Source run ${run} (Company Attention) has 1 judgment marked review or keep but no card references it`);
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
+    expect(await mirrorCheckpoint()).toEqual(before);
     expect((await store.readWork(FEED, work.id)).status).toBe("working");
 
-    await domain.upsertCard(FEED, { id: "kept-fixture", title: "Kept fixture", why: "The kept judgment needs a card.", blocks: [], sourceRunIds: [run] });
+    await domain.upsertCard(FEED, { id: "reviewed-fixture", title: "Reviewed fixture", why: "The review judgment needs a card.", blocks: [], sourceRunIds: [run] });
     expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Collected and presented." })).status).toBe("completed");
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "after-fixture" });
+    expect(await mirrorCheckpoint()).toEqual({ cursor: "after-fixture" });
     const committed = await store.readRun(FEED, run);
     expect(committed.pendingCheckpoint).toBeUndefined();
     expect(typeof committed.checkpointCommittedAt).toBe("string");
     const events = await store.readEvents(FEED);
-    expect(events.some((event) => event.type === "sweep.checkpoints_committed" && event.workId === work.id)).toBe(true);
+    expect(events.find((event) => event.type === "sweep.checkpoints_committed")?.detail).toMatchObject({ sourceRunIds: [run], skipped: [] });
     expect(events.find((event) => event.type === "source.run_completed")?.detail).toMatchObject({ checkpointHeld: true });
   } finally {
     runtime.sqlite.close();
@@ -60,20 +64,23 @@ test("a recollection checkpoint advances only when the work completes with cards
   }
 });
 
-test("an interrupted recollection leaves the previous checkpoint for the next sweep to resume from", async () => {
+test("an interrupted recollection keeps the previous checkpoint and offers searching again", async () => {
   const { root, runtime, store, domain } = await setup();
   try {
     const before = await store.readSourceCheckpoint(FEED, SOURCE);
     const interrupted = await claimRecollection(domain);
-    const lostRun = await domain.recordSourceRun(FEED, SOURCE, [{ transcript: "Judged but never presented." }], [{ decision: "keep" }], { cursor: "would-skip-this" }, interrupted.id);
+    const lostRun = await domain.recordSourceRun(FEED, SOURCE, [{ transcript: "Judged but never presented." }], [{ decision: "review" }], { cursor: "would-skip-this" }, interrupted.id);
     await domain.recordSweepBatch(FEED, [lostRun], interrupted.id);
-    // The agent dies before creating cards: its work fails or is abandoned, and nothing moved the checkpoint.
+    // The agent dies before creating cards: its work fails, and nothing moved the checkpoint.
     await domain.failWork(FEED, interrupted.id, interrupted.capabilityToken, "Agent backend crashed while preparing cards.");
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
     const how = await domain.inspectHowFeedWorks(FEED) as { sources: Array<{ id: string; checkpoint: string }> };
     expect(JSON.parse(how.sources.find((source) => source.id === SOURCE)!.checkpoint)).toEqual(before);
+    const sweep = await store.readSweepState(FEED);
+    expect(sweep.recollectionOffered).toBe(true);
+    expect(sweep.statusMessage).toBe("Source search failed before its results were presented");
 
-    // The next sweep starts from the untouched checkpoint; an empty sweep commits immediately on completion.
+    // Searching again is offered without any manual reset; the next sweep resumes from the untouched checkpoint.
     const retry = await claimRecollection(domain);
     const run = await domain.recordSourceRun(FEED, SOURCE, [], [], { cursor: "resumed" }, retry.id);
     await domain.recordSweepBatch(FEED, [run], retry.id);
@@ -85,10 +92,72 @@ test("an interrupted recollection leaves the previous checkpoint for the next sw
   }
 });
 
+test("a held checkpoint never overwrites one that advanced after the run was recorded", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const heldRun = await domain.recordSourceRun(FEED, SOURCE, [], [{ decision: "suppress" }], { cursor: "10" }, work.id);
+    await domain.recordSweepBatch(FEED, [heldRun], work.id);
+    // A work-less run (an import, say) advances the same source in the meantime.
+    await domain.recordSourceRun(FEED, SOURCE, [], [], { cursor: "20" });
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "20" });
+    expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "20" });
+    const settled = await store.readRun(FEED, heldRun);
+    expect(settled.pendingCheckpoint).toBeUndefined();
+    expect(typeof settled.checkpointCommittedAt).toBe("string");
+    const event = (await store.readEvents(FEED)).find((item) => item.type === "sweep.checkpoints_committed");
+    expect(event?.detail).toMatchObject({ sourceRunIds: [], skipped: [{ runId: heldRun, reason: "source checkpoint advanced after this run was recorded" }] });
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("the newest run for a source owns its checkpoint regardless of batch order", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const first = await domain.recordSourceRun(FEED, SOURCE, [], [], { cursor: "first" }, work.id);
+    await Bun.sleep(5);
+    const second = await domain.recordSourceRun(FEED, SOURCE, [], [], { cursor: "second" }, work.id);
+    await domain.recordSweepBatch(FEED, [second, first], work.id);
+    expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "second" });
+    const event = (await store.readEvents(FEED)).find((item) => item.type === "sweep.checkpoints_committed");
+    expect(event?.detail).toMatchObject({ sourceRunIds: [second], skipped: [{ runId: first, reason: "superseded by a newer run for the same source in this batch" }] });
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a refused completion writes nothing, even when an earlier run in the batch was complete", async () => {
+  const { root, runtime, store, domain, mirrorCheckpoint } = await setup();
+  try {
+    const before = await store.readSourceCheckpoint(FEED, SOURCE);
+    const beforeMirror = await mirrorCheckpoint();
+    const work = await claimRecollection(domain);
+    const presented = await domain.recordSourceRun(FEED, SOURCE, [{ transcript: "Presented." }], [{ decision: "review" }], { cursor: "presented" }, work.id);
+    const second = await domain.addSourceFromBrief(FEED, "Read the dispute ledger.");
+    const missing = await domain.recordSourceRun(FEED, second.id, [{ note: "Not presented." }], [{ decision: "review" }], { cursor: "missing" }, work.id);
+    await domain.recordSweepBatch(FEED, [presented, missing], work.id);
+    await domain.upsertCard(FEED, { id: "presented-card", title: "Presented", why: "Has a card.", blocks: [], sourceRunIds: [presented] });
+    await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).rejects.toThrow(`Source run ${missing}`);
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
+    expect(await mirrorCheckpoint()).toEqual(beforeMirror);
+    expect((await store.readRun(FEED, presented)).pendingCheckpoint).toEqual({ cursor: "presented" });
+    expect((await store.readWork(FEED, work.id)).status).toBe("working");
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("runs recorded without recollection work still advance the checkpoint immediately", async () => {
   const { root, runtime, store, domain } = await setup();
   try {
-    const run = await domain.recordSourceRun(FEED, SOURCE, [{ transcript: "Manual import." }], [{ decision: "keep" }], { cursor: "manual" });
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ transcript: "Manual import." }], [{ decision: "review" }], { cursor: "manual" });
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "manual" });
     expect((await store.readRun(FEED, run)).pendingCheckpoint).toBeUndefined();
   } finally {

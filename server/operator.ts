@@ -256,7 +256,7 @@ export function formatWorkClaimOutput(feedId: string, work: WorkClaimResult, con
   }
 
   if (work.intent === "recollect_sources") {
-    operatorGuidance.requiredWriteBack = "Record one or more source runs with `source:record-run --work <workId>`, then create a sweep batch with `sweep:record-batch --work <workId>`, then upsert a card (with sourceRunIds) for every kept judgment before `work:complete`. Checkpoints recorded with --work advance only when completion succeeds; completion is refused while a run's kept judgments have no card.";
+    operatorGuidance.requiredWriteBack = "Record one or more source runs with `source:record-run --work <workId>`, then create a sweep batch with `sweep:record-batch --work <workId>`, then upsert a card (with sourceRunIds) for every review judgment before `work:complete`. Checkpoints recorded with --work advance only when completion succeeds; completion is refused while a run has review judgments but no card.";
     operatorGuidance.sourceRunRule = feedId === "inbox"
       ? "For a full Gmail sweep, first paginate gmail_search_email_ids(query='', label_ids=['INBOX']). Treat that message-ID manifest as authoritative, direct-read every ID, and record an inboxEnumeration.messages entry mapping each messageId to its threadId. Its readThreadIds and carriedForwardThreadIds must then classify every resulting thread exactly once. gmail_search_emails results may enrich the run but cannot define the Inbox universe. Source recollection must complete with a new sweep batch recorded for this exact work item."
       : "Source recollection work must complete with a new sweep batch recorded for this exact work item.";

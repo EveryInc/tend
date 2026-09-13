@@ -646,6 +646,8 @@ export interface SourceRun {
   completedAt?: string;
   /** Checkpoint recorded with claimed recollection work; written to the source only when that work completes. */
   pendingCheckpoint?: unknown;
+  /** Digest of the source checkpoint when this run was recorded; a held checkpoint never overwrites a newer one. */
+  checkpointBaseDigest?: string;
   checkpointCommittedAt?: string;
 }
 

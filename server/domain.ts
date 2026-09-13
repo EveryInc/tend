@@ -387,6 +387,11 @@ const CARD_BLOCK_TYPES = new Set<CardBlock["type"]>([
   "quote",
 ]);
 
+// Sweep judgments that must be presented as a card before their checkpoint may advance. The judge
+// prompt uses `review`; older runs and fixtures use `keep`. `suppress` needs no card and
+// `routine_action` items are presented as a proposed routine group rather than individual cards.
+const CARD_PRODUCING_DECISIONS = new Set(["review", "keep"]);
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -2920,8 +2925,11 @@ export class AttentionDomain {
         await this.store.writeCard(card);
       } else if (work.intent === "recollect_sources") {
         const sweep = await this.store.readSweepState(feedId);
-        if (sweep.currentBatchId === work.startingBatchId) {
-          await this.store.writeSweepState(feedId, { ...sweep, recollectionOffered: true, statusMessage: "Source search failed" });
+        const currentBatch = sweep.currentBatchId ? await this.store.readSweepBatch(feedId, sweep.currentBatchId) : null;
+        // A batch this work recorded but never completed still holds its checkpoints, so searching again must stay available.
+        const unpresented = currentBatch !== null && currentBatch.triggerWorkId === work.id && sweep.currentBatchId !== work.startingBatchId;
+        if (sweep.currentBatchId === work.startingBatchId || unpresented) {
+          await this.store.writeSweepState(feedId, { ...sweep, recollectionOffered: true, statusMessage: unpresented ? "Source search failed before its results were presented" : "Source search failed" });
           await this.store.appendEvent({ feedId, workId, type: "sweep.recollection_offered", detail: { feedbackId: work.feedbackId, reason: "recollection_failed" } });
         }
       } else if (work.intent === "sweep_rejudge" && work.feedbackId) {
@@ -3694,7 +3702,8 @@ export class AttentionDomain {
       // work completes with cards for every kept judgment (see commitHeldSourceCheckpoints). A crash in
       // between then re-reads those items on the next sweep instead of silently dropping them.
       const holdCheckpoint = Boolean(triggerWorkId);
-      await this.store.writeRun({ id: runId, feedId, sourceId, snapshots: snapshots.length, judgments, ...(normalizedContextUse ? { contextUse: normalizedContextUse } : {}), ...(triggerWorkId ? { triggerWorkId, pendingCheckpoint: checkpoint } : {}), completedAt: isoNow() });
+      const held = holdCheckpoint ? { pendingCheckpoint: checkpoint, checkpointBaseDigest: digest((await this.store.readSourceCheckpoint(feedId, sourceId)) ?? null) } : {};
+      await this.store.writeRun({ id: runId, feedId, sourceId, snapshots: snapshots.length, judgments, ...(normalizedContextUse ? { contextUse: normalizedContextUse } : {}), ...(triggerWorkId ? { triggerWorkId, ...held } : {}), completedAt: isoNow() });
       if (!holdCheckpoint) await this.store.writeSourceCheckpoint(feedId, sourceId, checkpoint);
       await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "source.run_completed", detail: { runId, sourceId, triggerWorkId, snapshots: snapshots.length, judgments: judgments.length, contextUse: normalizedContextUse, checkpointHeld: holdCheckpoint } });
       return runId;
@@ -3743,29 +3752,45 @@ export class AttentionDomain {
     });
   }
 
-  // Recollection work completes only once every kept judgment in its batch has a card; that is when the
+  // Recollection work completes only once every judgment that needs a card has one; that is when the
   // checkpoints held on the batch's runs become the sources' live checkpoints, inside the same transaction.
+  // Every run is validated before anything is written so a refusal leaves both SQLite and the file mirrors untouched.
   private async commitHeldSourceCheckpoints(feedId: string, batch: SweepBatch): Promise<void> {
     const cards = await this.store.listCards(feedId);
-    const committedAt = isoNow();
-    const committed: string[] = [];
-    for (const runId of batch.sourceRunIds) {
-      const run = await this.store.readRun(feedId, runId);
-      const kept = run.judgments.filter((judgment) => isRecord(judgment) && judgment.decision === "keep").length;
-      if (kept > 0 && !cards.some((card) => card.sourceRunIds?.includes(run.id))) {
+    const runs = await Promise.all(batch.sourceRunIds.map((runId) => this.store.readRun(feedId, runId)));
+    for (const run of runs) {
+      const needingCards = run.judgments.filter((judgment) => isRecord(judgment) && CARD_PRODUCING_DECISIONS.has(judgment.decision as string)).length;
+      if (needingCards > 0 && !cards.some((card) => card.sourceRunIds?.includes(run.id))) {
         throw new Error(
-          `Source run ${run.id} (${sourceDisplayName(run.sourceId)}) has ${kept} kept ${kept === 1 ? "judgment" : "judgments"} but no card references it. Upsert its cards with sourceRunIds including ${run.id} before completing this work; Tend holds the source checkpoint until then.`,
+          `Source run ${run.id} (${sourceDisplayName(run.sourceId)}) has ${needingCards} ${needingCards === 1 ? "judgment" : "judgments"} marked review or keep but no card references it. Upsert its cards with sourceRunIds including ${run.id} before completing this work; Tend holds the source checkpoint until then.`,
         );
       }
-      if (run.pendingCheckpoint === undefined) continue;
-      await this.store.writeSourceCheckpoint(feedId, run.sourceId, run.pendingCheckpoint);
-      const committedRun: SourceRun = { ...run, checkpointCommittedAt: committedAt };
-      delete committedRun.pendingCheckpoint;
-      await this.store.writeRun(committedRun);
-      committed.push(run.id);
     }
-    if (committed.length) {
-      await this.store.appendEvent({ feedId, workId: batch.triggerWorkId, type: "sweep.checkpoints_committed", detail: { batchId: batch.id, sourceRunIds: committed } });
+    // The newest run per source owns that source's checkpoint; earlier same-source runs in the batch are superseded.
+    const newestBySource = new Map<string, SourceRun>();
+    for (const run of [...runs].sort((a, b) => (a.completedAt ?? "").localeCompare(b.completedAt ?? ""))) newestBySource.set(run.sourceId, run);
+    const committedAt = isoNow();
+    const committed: string[] = [];
+    const skipped: Array<{ runId: string; reason: string }> = [];
+    for (const run of runs) {
+      if (run.pendingCheckpoint === undefined) continue;
+      if (newestBySource.get(run.sourceId) === run) {
+        const liveDigest = digest((await this.store.readSourceCheckpoint(feedId, run.sourceId)) ?? null);
+        if (run.checkpointBaseDigest === undefined || run.checkpointBaseDigest === liveDigest) {
+          await this.store.writeSourceCheckpoint(feedId, run.sourceId, run.pendingCheckpoint);
+          committed.push(run.id);
+        } else {
+          skipped.push({ runId: run.id, reason: "source checkpoint advanced after this run was recorded" });
+        }
+      } else {
+        skipped.push({ runId: run.id, reason: "superseded by a newer run for the same source in this batch" });
+      }
+      const settled: SourceRun = { ...run, checkpointCommittedAt: committedAt };
+      delete settled.pendingCheckpoint;
+      await this.store.writeRun(settled);
+    }
+    if (committed.length || skipped.length) {
+      await this.store.appendEvent({ feedId, workId: batch.triggerWorkId, type: "sweep.checkpoints_committed", detail: { batchId: batch.id, sourceRunIds: committed, skipped } });
     }
   }
 
