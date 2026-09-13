@@ -3818,7 +3818,7 @@ export class AttentionDomain {
     // must be resurfaced. Content an agent writes while completing work the user queued or approved is the
     // outcome of that reviewed item and does not count as a new write.
     const CONTENT_EVENTS = new Set(["card.created", "card.updated"]);
-    const ACTION_EVENTS = new Set(["card.dismissed", "action.approved", "work.queued", "cleanup.queued", "card.reaction_recorded", "card.block_edited", "card.returned_to_review"]);
+    const ACTION_EVENTS = new Set(["card.dismissed", "action.approved", "work.queued", "cleanup.queued", "voice.intent_queued", "voice.instruction_submitted", "card.reaction_recorded", "card.block_edited", "card.returned_to_review"]);
     const lastWrite = new Map<string, number>();
     const lastAction = new Map<string, number>();
     (await this.store.readEvents(feedId)).forEach((event, index) => {
@@ -3836,6 +3836,10 @@ export class AttentionDomain {
       if (!card.sourceRunIds?.includes(run.id)) return `card ${card.id} does not list run ${run.id} in sourceRunIds`;
       if (card.updatedAt < recordedAt) return `card ${card.id} was last written before this run was recorded`;
       if (forReview && card.routineActionGroupId) return `card ${card.id} belongs to routine action group ${card.routineActionGroupId}, so it is not individually reviewable; a review judgment needs its own card`;
+      if (!forReview && card.routineActionGroupId) {
+        const group = feed.routineActions.find((candidate) => candidate.id === card.routineActionGroupId);
+        if (group && group.createdAt < batch.createdAt) return `card ${card.id} belongs to routine action group ${group.id}, which was proposed before this sweep; propose a group for this sweep or resurface the card`;
+      }
       if (card.sweep?.hidden) return `card ${card.id} is hidden by sweep feedback ${card.sweep.feedbackId}; upsert it again with status to_review_updated if it must be presented`;
       if (card.status === "to_review_new" || card.status === "to_review_updated") {
         return card.readyForPass <= currentPass ? undefined : `card ${card.id} is deferred to pass ${card.readyForPass} (current pass ${currentPass})`;
@@ -3902,13 +3906,14 @@ export class AttentionDomain {
     // routine_action judgments without a card may be covered by items of routine action groups proposed since the
     // sweep. Group items do not identify judgments, so this coverage is aggregate: when it falls short, every such
     // judgment is listed rather than an invented subset.
-    const earliestRecordedAt = runs.map((run) => run.completedAt ?? "").sort()[0] ?? "";
     // A group counts when it was proposed for this sweep, which its createdAt records: recording the batch marks
-    // earlier proposals stale, and re-proposing a stale group under a reused id dates it from the re-proposal.
-    // Status alone is not enough (an older approved group returns to `proposed` when its work is cancelled) and
-    // updatedAt is not used, since approval or completion of an older group refreshes it without presenting anything new.
+    // earlier proposals stale, so a proposal for this sweep is created at or after the batch, and re-proposing a
+    // stale group under a reused id dates it from the re-proposal. Keying on the batch rather than the earliest
+    // run keeps a group created and approved between two runs from covering the later run's judgments. Status
+    // alone is not enough (an older approved group returns to `proposed` when its work is cancelled) and updatedAt
+    // is not used, since approval or completion of an older group refreshes it without presenting anything new.
     const routineGroupItems = feed.routineActions
-      .filter((group) => group.status !== "stale" && group.status !== "failed" && group.createdAt >= earliestRecordedAt)
+      .filter((group) => group.status !== "stale" && group.status !== "failed" && group.createdAt >= batch.createdAt)
       .reduce((total, group) => total + group.items.filter((item) => !item.cardId || !presenting.has(item.cardId)).length, 0);
     const routineCoveredByGroups = Math.min(routineGroupItems, routineWithoutCard.length);
     if (routineGroupItems < routineWithoutCard.length) {

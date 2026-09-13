@@ -681,6 +681,50 @@ test("a card the user queued an instruction or cleanup for counts as reviewed", 
   }
 });
 
+test("a group created and approved between two runs does not cover the later run's judgment", async () => {
+  const { root, runtime, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const second = await domain.addSourceFromBrief(FEED, "Read the dispute ledger.");
+    const a = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "suppress" }], { cursor: "a" }, work.id);
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "between", label: "Between", summary: "Proposed and approved between the runs.",
+      proposedAction: { label: "Archive", instruction: "Archive these." },
+      items: [{ id: "i1", title: "One", reason: "Routine." }],
+    });
+    await domain.approveRoutineActionGroup(FEED, "between");
+    const b = await domain.recordSourceRun(FEED, second.id, [{ b: 1 }], [{ decision: "routine_action" }], { cursor: "b" }, work.id);
+    await domain.recordSweepBatch(FEED, [a, b], work.id);
+    expect(await domain.sweepPresentationStatus(FEED)).toMatchObject({ ready: false, routineGroupItems: 0 });
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "for-this-sweep", label: "Now", summary: "Proposed after the batch.",
+      proposedAction: { label: "Archive", instruction: "Archive these." },
+      items: [{ id: "i2", title: "Two", reason: "Routine." }],
+    });
+    expect(await domain.sweepPresentationStatus(FEED)).toMatchObject({ ready: true, routineGroupItems: 1 });
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a voice instruction on a card counts as reviewing it", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "review", cardId: "voiced" }], { cursor: "voice" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    await domain.upsertCard(FEED, { id: "voiced", title: "Voiced", why: "The user will dictate an instruction.", blocks: [], sourceRunIds: [run] });
+    const result = await domain.submitVoiceInstruction(FEED, { kind: "card", feedId: FEED, cardId: "voiced" }, "Reply and ask for the invoice.");
+    expect("work" in result).toBe(true);
+    expect((await store.readCard(FEED, "voiced")).status).toBe("queued");
+    expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true);
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a card hidden by sweep feedback does not present its judgment", async () => {
   const { root, runtime, store, domain } = await setup();
   try {
