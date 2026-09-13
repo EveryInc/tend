@@ -589,6 +589,25 @@ test("a run recorded after the batch must be batched before the work can complet
   }
 });
 
+test("a card counted for one run's unnamed judgment is not counted again for another run", async () => {
+  const { root, runtime, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const second = await domain.addSourceFromBrief(FEED, "Read the dispute ledger.");
+    const a = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "review" }], { cursor: "a" }, work.id);
+    const b = await domain.recordSourceRun(FEED, second.id, [{ b: 1 }], [{ decision: "review" }], { cursor: "b" }, work.id);
+    await domain.recordSweepBatch(FEED, [a, b], work.id);
+    await domain.upsertCard(FEED, { id: "both", title: "Both", why: "Lists both runs without being named by either judgment.", blocks: [], sourceRunIds: [a, b] });
+    const status = await domain.sweepPresentationStatus(FEED);
+    expect(status.ready).toBe(false);
+    expect(status.missing.map((gap) => gap.runId)).toEqual([b]);
+    expect(status.runs.map((run) => run.presented)).toEqual([1, 0]);
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("two judgments may deliberately share one cardId", async () => {
   const { root, runtime, store, domain } = await setup();
   try {
@@ -635,7 +654,13 @@ test("re-claiming an interrupted recollection returns what is still missing", as
     expect(output.operatorGuidance?.completionPrerequisite).toContain("do not record another");
     expect(output.operatorGuidance?.pendingPresentation?.missing.map((gap) => gap.cardId)).toEqual(["thread-x"]);
     expect(output.operatorGuidance?.requiredWriteBack).toContain("cardId");
-    await domain.upsertCard(FEED, { id: "thread-x", title: "X", why: "Presented after re-claim.", blocks: [], sourceRunIds: [run] });
+    // A run recorded after the batch changes the instruction: re-record the batch first.
+    const late = await domain.recordSourceRun(FEED, SOURCE, [{ later: true }], [{ decision: "suppress" }], { cursor: "late" }, work.id);
+    const lateOutput = formatWorkClaimOutput(FEED, reclaimed, { sweepPresentation: await domain.sweepPresentationStatus(FEED) });
+    if (!("operatorGuidance" in lateOutput)) throw new Error("Expected claim guidance.");
+    expect(lateOutput.operatorGuidance?.completionPrerequisite).toContain(`${late} recorded afterwards is not in it. Record the batch again with sweep:record-batch --work ${work.id}`);
+    await domain.recordSweepBatch(FEED, [late], work.id); // supersedes run and its judgment moves out of the batch
+    expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true);
     expect((await domain.completeWork(FEED, work.id, reclaimed.capabilityToken, { response: "Finished." })).status).toBe("completed");
   } finally {
     runtime.sqlite.close();

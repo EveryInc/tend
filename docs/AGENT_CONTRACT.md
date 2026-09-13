@@ -74,7 +74,8 @@ For `recollect_sources` work:
   exact id in `card:upsert`. A judgment looks like
   `{"decision":"review","cardId":"gmail-18c2f0a1","reason":"..."}`; `suppress` judgments need no
   card. Two judgments may share one `cardId` when one card deliberately presents both. Judgments
-  without a `cardId` still work and are matched by count instead of by id.
+  without a `cardId` still work and are matched by count instead of by id; a card counts once per
+  sweep unless the judgments it presents name it.
 - Record the resulting sweep with `tend cli sweep:record-batch --work <work>`. The batch must include
   every run recorded for the work (or a newer run for the same source that supersedes it).
 - Upsert one card per judgment with `sourceRunIds` including its run, then run

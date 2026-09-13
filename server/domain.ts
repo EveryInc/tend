@@ -3855,13 +3855,14 @@ export class AttentionDomain {
         presenting.add(item.cardId);
       }
     }
-    // Judgments without a cardId are matched by count over the run's presenting cards that no judgment reserved.
+    // Judgments without a cardId are matched by count, in batch order, over the run's presenting cards that no
+    // judgment reserved and no earlier match already used: a card counts once per batch unless judgments name it.
     const routineWithoutCard: Judged[] = [];
     for (const run of runs) {
       const unnamed = judged.filter((item) => item.run === run && item.cardId === undefined);
       const reviews = unnamed.filter((item) => item.review);
       const routines = unnamed.filter((item) => !item.review);
-      const unreserved = cards.filter((card) => !reserved.has(card.id));
+      const unreserved = cards.filter((card) => !reserved.has(card.id) && !presenting.has(card.id));
       const reviewCards = unreserved.filter((card) => hiddenReason(card, run, true) === undefined);
       const routineOnlyCards = unreserved.filter((card) => hiddenReason(card, run, false) === undefined && hiddenReason(card, run, true) !== undefined);
       const reviewPool = reviewCards.length;
