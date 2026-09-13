@@ -683,6 +683,8 @@ export interface SweepPresentationStatus {
   ready: boolean;
   runs: SweepPresentationRun[];
   missing: SweepPresentationGap[];
+  /** Held runs recorded for the batch's work that the batch neither includes nor supersedes; the batch must be recorded again. */
+  unbatchedRuns: Array<{ runId: string; sourceId: string }>;
   /** Items of routine action groups proposed since the sweep, available to cover routine_action judgments without a card. */
   routineGroupItems: number;
   /** routine_action judgments without a card that those group items cover (aggregate, not attributable to a run). */

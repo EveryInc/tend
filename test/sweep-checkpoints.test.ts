@@ -564,6 +564,31 @@ test("a card that already presents a judgment adds no routine group capacity", a
   }
 });
 
+test("a run recorded after the batch must be batched before the work can complete", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const second = await domain.addSourceFromBrief(FEED, "Read the dispute ledger.");
+    const a = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "suppress" }], { cursor: "a" }, work.id);
+    await domain.recordSweepBatch(FEED, [a], work.id);
+    const b = await domain.recordSourceRun(FEED, second.id, [{ b: 1 }], [{ decision: "review", cardId: "b-card" }], { cursor: "b" }, work.id);
+    const status = await domain.sweepPresentationStatus(FEED);
+    expect(status).toMatchObject({ ready: false, status: "pending", unbatchedRuns: [{ runId: b, sourceId: second.id }] });
+    expect(status.summary).toMatch(new RegExp(`^Source run ${b} \\(.+\\) recorded for this work after batch .+ is not in it; record the batch again`));
+    await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).rejects.toThrow("record the batch again");
+    expect((await store.readRun(FEED, b)).pendingCheckpoint).toEqual({ cursor: "b" });
+    await domain.recordSweepBatch(FEED, [a, b], work.id);
+    await domain.upsertCard(FEED, { id: "b-card", title: "B", why: "Presented.", blocks: [], sourceRunIds: [b] });
+    expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true);
+    expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "a" });
+    expect(await store.readSourceCheckpoint(FEED, second.id)).toEqual({ cursor: "b" });
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("two judgments may deliberately share one cardId", async () => {
   const { root, runtime, store, domain } = await setup();
   try {

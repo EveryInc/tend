@@ -3796,7 +3796,7 @@ export class AttentionDomain {
     return this.store.serialize(async () => {
       const sweep = await this.store.readSweepState(feedId);
       if (!sweep.currentBatchId) {
-        return { status: "idle", currentBatchId: null, workId: null, workStatus: null, ready: true, runs: [], missing: [], routineGroupItems: 0, routineCoveredByGroups: 0, summary: "No sweep batch has been recorded for this feed." };
+        return { status: "idle", currentBatchId: null, workId: null, workStatus: null, ready: true, runs: [], missing: [], unbatchedRuns: [], routineGroupItems: 0, routineCoveredByGroups: 0, summary: "No sweep batch has been recorded for this feed." };
       }
       return this.presentationReport(feedId, await this.store.readSweepBatch(feedId, sweep.currentBatchId));
     });
@@ -3895,14 +3895,25 @@ export class AttentionDomain {
     const reports = [...runReports.values()];
     const held = reports.filter((report) => report.checkpointHeld).length;
     const needing = reports.reduce((total, report) => total + report.needingPresentation, 0);
-    const presentationReady = missing.length === 0;
-    const status = held ? "pending" : "committed";
     const workId = batch.triggerWorkId ?? null;
+    // A run recorded for this work after the batch is neither presented nor superseded; the batch must be
+    // recorded again so its judgments are checked and its checkpoint commits with the others.
+    const unbatchedRuns = workId
+      ? (await this.store.listRuns(feedId))
+        .filter((run) => run.triggerWorkId === workId && run.pendingCheckpoint !== undefined && !batch.sourceRunIds.includes(run.id)
+          && !runs.some((included) => included.sourceId === run.sourceId && (included.checkpointSequence ?? 0) > (run.checkpointSequence ?? 0)))
+        .map((run) => ({ runId: run.id, sourceId: run.sourceId }))
+      : [];
+    const presentationReady = missing.length === 0 && unbatchedRuns.length === 0;
+    const status = held || unbatchedRuns.length ? "pending" : "committed";
     const workStatus = workId ? workItems.find((work) => work.id === workId)?.status ?? null : null;
     const completable = workStatus === "working" || workStatus === "queued";
     const ready = presentationReady && (status === "committed" || completable);
     const describe = (gap: SweepPresentationGap) => `run ${gap.runId} judgment ${gap.judgment} (${gap.decision}${gap.cardId ? `, cardId ${gap.cardId}` : ""}): ${gap.reason}`;
-    const gaps = `${missing.length} of ${needing} judgments are not presented yet: ${missing.slice(0, 3).map(describe).join("; ")}${missing.length > 3 ? `; and ${missing.length - 3} more` : ""}.`;
+    const unbatched = unbatchedRuns.length
+      ? `Source ${unbatchedRuns.length === 1 ? "run" : "runs"} ${unbatchedRuns.map((run) => `${run.runId} (${sourceDisplayName(run.sourceId)})`).join(", ")} recorded for this work after batch ${batch.id} ${unbatchedRuns.length === 1 ? "is" : "are"} not in it; record the batch again including ${unbatchedRuns.length === 1 ? "it" : "them"} (or a newer run for the same source). `
+      : "";
+    const gaps = `${unbatched}${missing.length ? `${missing.length} of ${needing} judgments are not presented yet: ${missing.slice(0, 3).map(describe).join("; ")}${missing.length > 3 ? `; and ${missing.length - 3} more` : ""}.` : ""}`.trim();
     const checkpoints = `${held} held checkpoint${held === 1 ? "" : "s"}`;
     let summary: string;
     if (status === "committed") {
@@ -3917,7 +3928,7 @@ export class AttentionDomain {
     } else {
       summary = `All ${needing} judgments that need presentation are presented; work:complete will commit the ${checkpoints}.`;
     }
-    return { status, currentBatchId: batch.id, workId, workStatus, ready, runs: reports, missing, routineGroupItems, routineCoveredByGroups, summary };
+    return { status, currentBatchId: batch.id, workId, workStatus, ready, runs: reports, missing, unbatchedRuns, routineGroupItems, routineCoveredByGroups, summary };
   }
 
   // Recollection work completes only once every judgment that needs presentation has it; that is when the
