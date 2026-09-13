@@ -5,7 +5,7 @@ import path from "node:path";
 import { attentionDataDir, attentionDbPath, attentionHome } from "../paths";
 import { createLocalRuntime } from "../runtime";
 import { SQLITE_SCHEMA_VERSION } from "../sqlite";
-import { removeLockArtifacts } from "../processLock";
+import { isLockArtifact, removeLockArtifacts } from "../processLock";
 import { withMutationLock } from "../util";
 import { apiUrl, initRuntime, print } from "./shared";
 
@@ -25,8 +25,8 @@ export async function backupExportCommand(targetPath: string): Promise<void> {
       const sqlite = await initRuntime();
       try {
         await sqlite.backupTo(path.join(stage, "attention.db"));
-        await cp(attentionDataDir(), path.join(stage, "data"), { recursive: true });
-        await removeLockArtifacts(path.join(stage, "data"));
+        // Skip lock artifacts up front: opening the held lock file from this process would drop the lock.
+        await cp(attentionDataDir(), path.join(stage, "data"), { recursive: true, filter: (source) => !isLockArtifact(source) });
         await writeFile(path.join(stage, "manifest.json"), JSON.stringify({
           name: "tend-backup",
           format: 2,

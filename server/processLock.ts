@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readlink, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 
 export interface ProcessLockOptions {
@@ -9,23 +9,23 @@ export interface ProcessLockOptions {
   busyMessage?: string;
 }
 
-const OWNER_FILE = "owner.json";
 const POLL_MS = 15;
-const LOCK_NAMES = [".mutation-lock", ".agent-wake-lock"];
-const LOCK_SUFFIXES = ["", ".sqlite", ".sqlite-journal"];
+const LOCK_ARTIFACT = /^\.(?:mutation-lock|agent-wake-lock)(?:\.sqlite(?:-journal)?)?$/;
 
 /**
  * Cross-process mutual exclusion that survives crashes.
  *
  * The lock itself is a SQLite database file beside `legacyPath`: holding a `BEGIN IMMEDIATE`
  * transaction takes an operating-system file lock that the kernel releases the moment the holding
- * process exits, so a killed or crashed Tend never leaves the lock held.
+ * process exits, so a killed or crashed Tend never leaves the lock held. Nothing else in the process
+ * may open that file while the lock is held (POSIX drops a process's locks when any descriptor for
+ * the file closes), which is why backups skip lock artifacts instead of copying them.
  *
- * `legacyPath` is still created as a directory while the lock is held because older Tend builds use
- * that directory as their lock; during an upgrade the two builds keep excluding each other. A
- * directory created by this build carries an owner marker. If such a directory is found while we
- * already hold the SQLite lock, its creator must have died, so it is reclaimed. A directory without
- * a marker belongs to an older build and is respected until it disappears.
+ * Older Tend builds lock by creating `legacyPath` as a directory. While the lock is held, this build
+ * atomically creates a symlink at that path whose target records the owning pid, so the two builds
+ * keep excluding each other during an upgrade (`mkdir` fails on an existing symlink too). A symlink
+ * found while the SQLite lock is already held can only have been left by a process that died, so it
+ * is reclaimed. A real directory belongs to an older build and is respected until it disappears.
  */
 export async function withProcessLock<T>(legacyPath: string, callback: () => Promise<T>, options: ProcessLockOptions = {}): Promise<T> {
   const timeoutMs = options.timeoutMs ?? 6_000;
@@ -44,7 +44,7 @@ export async function withProcessLock<T>(legacyPath: string, callback: () => Pro
         await sleep(POLL_MS);
       }
     }
-    await claimLegacyDirectory(legacyPath, deadline, options.busyMessage);
+    await claimLegacyPath(legacyPath, deadline, options.busyMessage);
     try {
       return await callback();
     } finally {
@@ -55,30 +55,43 @@ export async function withProcessLock<T>(legacyPath: string, callback: () => Pro
   }
 }
 
+/** True for the lock files and directories Tend keeps inside a data directory. */
+export function isLockArtifact(filePath: string): boolean {
+  return LOCK_ARTIFACT.test(path.basename(filePath));
+}
+
 /** Remove lock artifacts from a copied data directory (backups must not carry live lock state). */
 export async function removeLockArtifacts(dataDir: string): Promise<void> {
-  for (const name of LOCK_NAMES) {
-    for (const suffix of LOCK_SUFFIXES) await rm(path.join(dataDir, `${name}${suffix}`), { recursive: true, force: true });
+  for (const name of [".mutation-lock", ".agent-wake-lock"]) {
+    for (const suffix of ["", ".sqlite", ".sqlite-journal"]) await rm(path.join(dataDir, `${name}${suffix}`), { recursive: true, force: true });
   }
 }
 
-async function claimLegacyDirectory(legacyPath: string, deadline: number, busyMessage?: string): Promise<void> {
+async function claimLegacyPath(legacyPath: string, deadline: number, busyMessage?: string): Promise<void> {
+  const marker = JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() });
   while (true) {
     try {
-      await mkdir(legacyPath);
-      await writeFile(path.join(legacyPath, OWNER_FILE), JSON.stringify({ pid: process.pid, acquiredAt: new Date().toISOString() }));
+      await symlink(marker, legacyPath);
       return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    if (!(await lstat(legacyPath)).isDirectory()) {
-      throw new Error(`A file exists at ${legacyPath} where Tend keeps its lock directory. Remove it and retry.`);
+    let entry;
+    try {
+      entry = await lstat(legacyPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; // the holder released between our attempt and the check
+      throw error;
     }
-    if (await createdByThisBuild(legacyPath)) {
-      // We hold the SQLite lock, so no live process of this build can own the directory: its creator died.
-      await rm(legacyPath, { recursive: true, force: true });
-      continue;
+    if (entry.isSymbolicLink()) {
+      if (await createdByThisBuild(legacyPath)) {
+        // We hold the SQLite lock, so no live process of this build can own the path: its creator died.
+        await rm(legacyPath, { force: true });
+        continue;
+      }
+      throw new Error(`An unexpected symlink exists at ${legacyPath} where Tend keeps its lock. Remove it and retry.`);
     }
+    if (!entry.isDirectory()) throw new Error(`A file exists at ${legacyPath} where Tend keeps its lock. Remove it and retry.`);
     if (Date.now() >= deadline) {
       throw new Error(
         `${busyMessage ? `${busyMessage} ` : ""}A lock directory exists at ${legacyPath}. It belongs to an older Tend process or was left behind when one crashed; if no older Tend process is running, delete that directory and retry.`,
@@ -90,7 +103,7 @@ async function claimLegacyDirectory(legacyPath: string, deadline: number, busyMe
 
 async function createdByThisBuild(legacyPath: string): Promise<boolean> {
   try {
-    const owner = JSON.parse(await readFile(path.join(legacyPath, OWNER_FILE), "utf8")) as { pid?: unknown };
+    const owner = JSON.parse(await readlink(legacyPath)) as { pid?: unknown };
     return typeof owner.pid === "number";
   } catch {
     return false;
