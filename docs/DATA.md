@@ -24,7 +24,7 @@ ATTENTION_HOME=/path/to/attention tend start
 - `data/feeds/*/cards/*.json` mirrors feed cards for backup compatibility and readable local debugging.
 - `data/feeds/*/routine-actions/*.json` mirrors routine action groups for backup compatibility and readable local debugging.
 - `data/feeds/*/sources.json`, `data/feeds/*/sources/*.md`, and `data/feeds/*/checkpoints/*.json` mirror source recipes and checkpoints.
-- `data/feeds/*/runs/*.json` mirrors source run records for backup compatibility and readable local debugging.
+- `data/feeds/*/runs/*.json` mirrors source run records for backup compatibility and readable local debugging. A run recorded for claimed recollection work carries its `pendingCheckpoint` until that work completes; `checkpoints/*.json` only ever holds committed checkpoints.
 - `data/.mutation-lock.sqlite` and `data/.agent-wake-lock.sqlite` (plus `attention.lock.sqlite` beside the database) are cross-process locks that the operating system releases when the holding process exits, so a crashed Tend never blocks later commands. While a lock is held this build also places a symlink at the older builds' lock-directory path so the two keep excluding each other during an upgrade; backups never include lock files.
 - `data/feeds/*/sweep-state.json`, `data/feeds/*/sweeps/*.json`, and `data/feeds/*/sweep-feedback/*.json` mirror sweep state, batches, and feedback traces.
 - `data/revision-proposals/*.json`, `data/workspace-revisions/*.json`, and `data/feeds/*/policy-revisions/*.json` mirror revision records.

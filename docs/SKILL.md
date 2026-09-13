@@ -64,7 +64,8 @@ waking this same thread and saying `go deal with the feed`.
 5. Use local connectors only for the claimed item.
 6. Write results back through the relevant `tend cli` command.
 7. For `sweep_rejudge`, run `sweep:rejudge` against the returned `operatorGuidance.visibleCardIds` before completing the work.
-8. For source recollection, record source runs and a sweep batch with the claimed `--work` id before completing the work.
+8. For source recollection, record source runs and a sweep batch with the claimed `--work` id, then upsert a card for every kept judgment before completing the work.
+   Checkpoints recorded with `--work` only advance when `work:complete` succeeds, and completion is refused until every `review` judgment has its own card and every `routine_action` judgment has a card or a proposed routine action group.
    If context influenced collection, include a file-backed `contextUse` on the relevant source run
    and pin the same update id to the sweep batch.
    A full Gmail sweep must begin with paginated `gmail_search_email_ids(query: "", label_ids:
