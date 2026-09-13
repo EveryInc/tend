@@ -72,6 +72,10 @@ For `recollect_sources` work:
   in `readThreadIds` or `carriedForwardThreadIds` before recording the batch.
 - Record the resulting sweep with `tend cli sweep:record-batch --work <work>`.
 - Complete the work only after the source run and sweep batch are written back.
+- Checkpoints recorded with `--work` are held on the run until `work:complete` succeeds, and
+  completion is refused while a run's kept judgments have no card whose `sourceRunIds` lists that
+  run. If the work never completes, the next sweep starts from the previous checkpoint and
+  re-reads those items.
 
 ## Core Commands
 

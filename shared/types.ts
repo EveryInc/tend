@@ -644,6 +644,9 @@ export interface SourceRun {
   contextUse?: SourceRunContextUse;
   triggerWorkId?: string;
   completedAt?: string;
+  /** Checkpoint recorded with claimed recollection work; written to the source only when that work completes. */
+  pendingCheckpoint?: unknown;
+  checkpointCommittedAt?: string;
 }
 
 export interface AppFeedback {

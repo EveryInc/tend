@@ -41,6 +41,7 @@ import type {
   RoutineActionGroup,
   SourceRecipe,
   SourceRun,
+  SweepBatch,
   SourceRunContextUse,
   SweepFeedbackTrace,
   ThreadBinding,
@@ -2672,6 +2673,7 @@ export class AttentionDomain {
         const batch = await this.store.readSweepBatch(feedId, sweep.currentBatchId);
         if (batch.createdAt < work.createdAt) throw new Error("Source recollection completed with a sweep batch that predates the request.");
         if (batch.triggerWorkId !== work.id) throw new Error("Source recollection must complete with a sweep batch recorded for this work item.");
+        await this.commitHeldSourceCheckpoints(feedId, batch);
       }
       if (work.kind === "routine_action_batch") {
         if (!work.routineActionGroupId || !work.approvalDigest) throw new Error("Routine action work is missing its approved snapshot.");
@@ -3688,9 +3690,13 @@ export class AttentionDomain {
         : undefined;
       const runId = makeId("run");
       for (const [index, snapshot] of snapshots.entries()) await this.store.writeRawSnapshot(feedId, runId, sourceId, `snapshot-${index + 1}`, snapshot);
-      await this.store.writeRun({ id: runId, feedId, sourceId, snapshots: snapshots.length, judgments, ...(normalizedContextUse ? { contextUse: normalizedContextUse } : {}), ...(triggerWorkId ? { triggerWorkId } : {}), completedAt: isoNow() });
-      await this.store.writeSourceCheckpoint(feedId, sourceId, checkpoint);
-      await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "source.run_completed", detail: { runId, sourceId, triggerWorkId, snapshots: snapshots.length, judgments: judgments.length, contextUse: normalizedContextUse } });
+      // A run recorded for claimed recollection work keeps its checkpoint on the run record until the
+      // work completes with cards for every kept judgment (see commitHeldSourceCheckpoints). A crash in
+      // between then re-reads those items on the next sweep instead of silently dropping them.
+      const holdCheckpoint = Boolean(triggerWorkId);
+      await this.store.writeRun({ id: runId, feedId, sourceId, snapshots: snapshots.length, judgments, ...(normalizedContextUse ? { contextUse: normalizedContextUse } : {}), ...(triggerWorkId ? { triggerWorkId, pendingCheckpoint: checkpoint } : {}), completedAt: isoNow() });
+      if (!holdCheckpoint) await this.store.writeSourceCheckpoint(feedId, sourceId, checkpoint);
+      await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "source.run_completed", detail: { runId, sourceId, triggerWorkId, snapshots: snapshots.length, judgments: judgments.length, contextUse: normalizedContextUse, checkpointHeld: holdCheckpoint } });
       return runId;
     });
   }
@@ -3735,6 +3741,32 @@ export class AttentionDomain {
       await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "sweep.batch_recorded", detail: { batchId, sourceRunIds, contextUpdateId: normalizedContextUpdateId, triggerWorkId, supersededRoutineGroups } });
       return batchId;
     });
+  }
+
+  // Recollection work completes only once every kept judgment in its batch has a card; that is when the
+  // checkpoints held on the batch's runs become the sources' live checkpoints, inside the same transaction.
+  private async commitHeldSourceCheckpoints(feedId: string, batch: SweepBatch): Promise<void> {
+    const cards = await this.store.listCards(feedId);
+    const committedAt = isoNow();
+    const committed: string[] = [];
+    for (const runId of batch.sourceRunIds) {
+      const run = await this.store.readRun(feedId, runId);
+      const kept = run.judgments.filter((judgment) => isRecord(judgment) && judgment.decision === "keep").length;
+      if (kept > 0 && !cards.some((card) => card.sourceRunIds?.includes(run.id))) {
+        throw new Error(
+          `Source run ${run.id} (${sourceDisplayName(run.sourceId)}) has ${kept} kept ${kept === 1 ? "judgment" : "judgments"} but no card references it. Upsert its cards with sourceRunIds including ${run.id} before completing this work; Tend holds the source checkpoint until then.`,
+        );
+      }
+      if (run.pendingCheckpoint === undefined) continue;
+      await this.store.writeSourceCheckpoint(feedId, run.sourceId, run.pendingCheckpoint);
+      const committedRun: SourceRun = { ...run, checkpointCommittedAt: committedAt };
+      delete committedRun.pendingCheckpoint;
+      await this.store.writeRun(committedRun);
+      committed.push(run.id);
+    }
+    if (committed.length) {
+      await this.store.appendEvent({ feedId, workId: batch.triggerWorkId, type: "sweep.checkpoints_committed", detail: { batchId: batch.id, sourceRunIds: committed } });
+    }
   }
 
   private async assertClaimedRecollectionWork(feedId: string, workId: string): Promise<WorkItem> {
