@@ -3765,30 +3765,40 @@ export class AttentionDomain {
   // Every run is validated before anything is written so a refusal leaves both SQLite and the file mirrors untouched.
   private async commitHeldSourceCheckpoints(feedId: string, batch: SweepBatch): Promise<void> {
     const cards = await this.store.listCards(feedId);
-    const routineGroups = (await this.store.readFeed(feedId)).routineActions;
+    const feed = await this.store.readFeed(feedId);
+    const workItems = await this.store.readWorkItems(feedId);
     const runs = await Promise.all(batch.sourceRunIds.map((runId) => this.store.readRun(feedId, runId)));
+    // Cards carry no judgment ids, so presentation is counted: each review judgment needs its own card that the
+    // user can actually see now or has already acted on since the run; routine judgments need cards or items of
+    // routine action groups proposed since the batch was recorded.
+    const presentsRun = (card: Card, run: SourceRun): boolean => {
+      const recordedAt = run.completedAt ?? "";
+      if (!card.sourceRunIds?.includes(run.id) || card.updatedAt < recordedAt) return false;
+      if (card.status === "to_review_new" || card.status === "to_review_updated") return card.readyForPass <= feed.config.currentPass;
+      if (card.status === "done") return (card.completedAt ?? "") >= recordedAt;
+      return workItems.some((work) => work.cardId === card.id && work.createdAt >= recordedAt);
+    };
+    let routineNeeded = 0;
     for (const run of runs) {
       const decisions = run.judgments.flatMap((judgment) => isRecord(judgment) && typeof judgment.decision === "string" ? [judgment.decision] : []);
       const reviews = decisions.filter((decision) => REVIEW_DECISIONS.has(decision)).length;
       const routines = decisions.filter((decision) => decision === ROUTINE_DECISION).length;
-      const recordedAt = run.completedAt ?? "";
-      // A card presents this run only if it was written for it and is actually visible for review (or was
-      // acted on after the run). A previously dismissed card that merely gained the run id stays hidden.
-      const presented = cards.filter((card) =>
-        card.sourceRunIds?.includes(run.id)
-        && card.updatedAt >= recordedAt
-        && (card.status !== "done" || (card.completedAt ?? "") >= recordedAt)
-      ).length;
-      const label = `Source run ${run.id} (${sourceDisplayName(run.sourceId)})`;
+      const presented = cards.filter((card) => presentsRun(card, run)).length;
       if (presented < reviews) {
         throw new Error(
-          `${label} has ${reviews} review ${reviews === 1 ? "judgment" : "judgments"} but only ${presented} ${presented === 1 ? "card presents" : "cards present"} it. Upsert one card per review judgment with sourceRunIds including ${run.id}, in a review status, before completing this work; Tend holds the source checkpoint until then.`,
+          `Source run ${run.id} (${sourceDisplayName(run.sourceId)}) has ${reviews} review ${reviews === 1 ? "judgment" : "judgments"} but only ${presented} ${presented === 1 ? "card presents" : "cards present"} it. Upsert one card per review judgment with sourceRunIds including ${run.id}, in a review status for the current pass, before completing this work; Tend holds the source checkpoint until then.`,
         );
       }
-      const groupProposedSince = routineGroups.some((group) => group.status !== "stale" && group.status !== "failed" && group.updatedAt >= (run.completedAt ?? ""));
-      if (routines > 0 && presented < reviews + routines && !groupProposedSince) {
+      routineNeeded += Math.max(0, routines - (presented - reviews));
+    }
+    if (routineNeeded > 0) {
+      const earliestRecordedAt = runs.map((run) => run.completedAt ?? "").sort()[0] ?? "";
+      const routineItems = feed.routineActions
+        .filter((group) => group.status !== "stale" && group.status !== "failed" && group.createdAt >= earliestRecordedAt)
+        .reduce((total, group) => total + group.items.length, 0);
+      if (routineItems < routineNeeded) {
         throw new Error(
-          `${label} has ${routines} routine_action ${routines === 1 ? "judgment" : "judgments"} but neither a card referencing the run nor a routine action group proposed since the run presents ${routines === 1 ? "it" : "them"}. Upsert those cards or propose the routine action group before completing this work; Tend holds the source checkpoint until then.`,
+          `This sweep has ${routineNeeded} routine_action ${routineNeeded === 1 ? "judgment" : "judgments"} without a card, but routine action groups proposed since it was recorded hold only ${routineItems} ${routineItems === 1 ? "item" : "items"}. Propose the routine action group or upsert cards for them before completing this work; Tend holds the source checkpoints until then.`,
         );
       }
     }

@@ -166,7 +166,7 @@ test("every review judgment needs its own card, and routine_action judgments nee
       .rejects.toThrow(`has 2 review judgments but only 1 card presents it`);
     await domain.upsertCard(FEED, { id: "the-other", title: "Two", why: "Covers the other review judgment.", blocks: [], sourceRunIds: [run] });
     await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." }))
-      .rejects.toThrow(`has 1 routine_action judgment but neither a card referencing the run nor a routine action group proposed since the run presents it`);
+      .rejects.toThrow(`This sweep has 1 routine_action judgment without a card, but routine action groups proposed since it was recorded hold only 0 items`);
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
     await domain.upsertRoutineActionGroup(FEED, {
       id: "routine-fixture", label: "Archive newsletters", summary: "Three newsletters with the same obvious cleanup.",
@@ -226,6 +226,67 @@ test("a dismissed card that merely gains the run id does not count as presented"
     await domain.upsertCard(FEED, { id: "old-thread", title: "Old thread", why: "A new message arrived.", blocks: [], sourceRunIds: [run], status: "to_review_updated" });
     expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "after-old-thread" });
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("cards deferred to a later pass or merely re-tagged while active do not count as presented", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    const before = await store.readSourceCheckpoint(FEED, SOURCE);
+    const currentPass = (await store.readConfig(FEED)).currentPass;
+    await domain.upsertCard(FEED, { id: "already-queued", title: "Queued earlier", why: "Approved before the sweep.", blocks: [], status: "queued" });
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }, { b: 2 }], [{ decision: "review" }, { decision: "review" }], { cursor: "visibility" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    // One card is pushed to the next pass; the other is a pre-existing queued card that only gained the run id.
+    await domain.upsertCard(FEED, { id: "deferred", title: "Deferred", why: "Hidden until the next pass.", blocks: [], sourceRunIds: [run], readyForPass: currentPass + 1 });
+    await domain.upsertCard(FEED, { id: "already-queued", title: "Queued earlier", why: "Approved before the sweep.", blocks: [], sourceRunIds: [run] });
+    expect((await store.readCard(FEED, "already-queued")).status).toBe("queued");
+    await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." }))
+      .rejects.toThrow("has 2 review judgments but only 0 cards present it");
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
+    await domain.upsertCard(FEED, { id: "deferred", title: "Deferred", why: "Now visible.", blocks: [], sourceRunIds: [run], readyForPass: currentPass });
+    await domain.upsertCard(FEED, { id: "already-queued", title: "Queued earlier", why: "Back in review with new evidence.", blocks: [], sourceRunIds: [run], status: "to_review_updated" });
+    expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "visibility" });
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a routine action group proposed before the sweep does not present its routine judgments", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    const before = await store.readSourceCheckpoint(FEED, SOURCE);
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "stale-routine", label: "Old batch", summary: "Proposed before this sweep.",
+      proposedAction: { label: "Archive", instruction: "Archive the listed items." },
+      items: [{ id: "old-1", title: "Old digest", reason: "Routine." }, { id: "old-2", title: "Older digest", reason: "Routine." }],
+    });
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }, { b: 2 }], [{ decision: "routine_action" }, { decision: "routine_action" }], { cursor: "routine" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id); // supersedes the earlier proposed group
+    await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." }))
+      .rejects.toThrow("This sweep has 2 routine_action judgments without a card, but routine action groups proposed since it was recorded hold only 0 items");
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "fresh-routine", label: "New batch", summary: "Proposed for this sweep.",
+      proposedAction: { label: "Archive", instruction: "Archive the listed items." },
+      items: [{ id: "new-1", title: "Digest", reason: "Routine." }],
+    });
+    await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." }))
+      .rejects.toThrow("hold only 1 item");
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "fresh-routine", label: "New batch", summary: "Proposed for this sweep.",
+      proposedAction: { label: "Archive", instruction: "Archive the listed items." },
+      items: [{ id: "new-1", title: "Digest", reason: "Routine." }, { id: "new-2", title: "Other digest", reason: "Routine." }],
+    });
+    expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "routine" });
   } finally {
     runtime.sqlite.close();
     await rm(root, { recursive: true, force: true });
