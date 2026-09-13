@@ -3811,14 +3811,21 @@ export class AttentionDomain {
     const workItems = await this.store.readWorkItems(feedId);
     const runs = await Promise.all(batch.sourceRunIds.map((runId) => this.store.readRun(feedId, runId)));
     const currentPass = feed.config.currentPass;
-    // An action on a card (dismissal, approval) presents the card version that existed at the time. The feed
-    // event ledger is strictly ordered, so a card was acted on in its current version exactly when its latest
-    // action event comes after its latest content-write event; a card refreshed afterwards must be resurfaced.
+    // A user disposition on a card (dismissal, approval, queued instruction or cleanup, reaction, block edit,
+    // return to review, reading preference) presents the card version that existed at the time. The feed event
+    // ledger is strictly ordered, so a card was acted on in its current version exactly when its latest
+    // disposition event comes after its latest content-write event (card:upsert); a card refreshed afterwards
+    // must be resurfaced. Content an agent writes while completing work the user queued or approved is the
+    // outcome of that reviewed item and does not count as a new write.
     const CONTENT_EVENTS = new Set(["card.created", "card.updated"]);
-    const ACTION_EVENTS = new Set(["card.dismissed", "action.approved"]);
+    const ACTION_EVENTS = new Set(["card.dismissed", "action.approved", "work.queued", "cleanup.queued", "card.reaction_recorded", "card.block_edited", "card.returned_to_review"]);
     const lastWrite = new Map<string, number>();
     const lastAction = new Map<string, number>();
     (await this.store.readEvents(feedId)).forEach((event, index) => {
+      if (event.type === "reading.preference_recorded" && isRecord(event.detail) && isRecord(event.detail.beforeCardUpdatedAt)) {
+        for (const memberId of Object.keys(event.detail.beforeCardUpdatedAt)) lastAction.set(memberId, index);
+        return;
+      }
       if (!event.cardId) return;
       if (CONTENT_EVENTS.has(event.type)) lastWrite.set(event.cardId, index);
       else if (ACTION_EVENTS.has(event.type)) lastAction.set(event.cardId, index);

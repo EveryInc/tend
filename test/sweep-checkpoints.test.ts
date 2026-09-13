@@ -661,6 +661,26 @@ test("a card refreshed after its approval does not present the refreshed content
   }
 });
 
+test("a card the user queued an instruction or cleanup for counts as reviewed", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }, { b: 2 }], [{ decision: "review", cardId: "instructed" }, { decision: "review", cardId: "cleaned" }], { cursor: "dispositions" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    await domain.upsertCard(FEED, { id: "instructed", title: "Instructed", why: "The user will queue an instruction.", blocks: [], sourceRunIds: [run] });
+    await domain.upsertCard(FEED, { id: "cleaned", title: "Cleaned", why: "The user will queue source cleanup.", blocks: [], sourceRunIds: [run], actions: [{ id: "archive", label: "Archive", behavior: "default_cleanup" }] });
+    await domain.queueInstruction(FEED, "instructed", "Draft a reply to this.");
+    await domain.queueSourceCleanup(FEED, "cleaned");
+    expect((await store.readCard(FEED, "instructed")).status).toBe("queued");
+    expect((await store.readCard(FEED, "cleaned")).status).toBe("queued");
+    expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true);
+    expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a card hidden by sweep feedback does not present its judgment", async () => {
   const { root, runtime, store, domain } = await setup();
   try {
