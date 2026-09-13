@@ -672,6 +672,13 @@ test("an older routine group approved after the run is not new coverage", async 
     await domain.cancelQueuedWork(FEED, approval.id);
     expect((await store.readFeed(FEED)).routineActions.find((group) => group.id === "older")?.status).toBe("proposed");
     expect(await domain.sweepPresentationStatus(FEED)).toMatchObject({ ready: false, routineGroupItems: 0 });
+    // Explicitly re-proposing it under the same id is a new proposal for this sweep.
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "older", label: "Older", summary: "Re-proposed for this sweep.",
+      proposedAction: { label: "Archive", instruction: "Archive these." },
+      items: [{ id: "i1", title: "One", reason: "Routine." }],
+    });
+    expect(await domain.sweepPresentationStatus(FEED)).toMatchObject({ ready: true, routineGroupItems: 1 });
   } finally {
     runtime.sqlite.close();
     await rm(root, { recursive: true, force: true });
