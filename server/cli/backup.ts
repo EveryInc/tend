@@ -5,6 +5,7 @@ import path from "node:path";
 import { attentionDataDir, attentionDbPath, attentionHome } from "../paths";
 import { createLocalRuntime } from "../runtime";
 import { SQLITE_SCHEMA_VERSION } from "../sqlite";
+import { isLockArtifact, removeLockArtifacts } from "../processLock";
 import { withMutationLock } from "../util";
 import { apiUrl, initRuntime, print } from "./shared";
 
@@ -24,8 +25,8 @@ export async function backupExportCommand(targetPath: string): Promise<void> {
       const sqlite = await initRuntime();
       try {
         await sqlite.backupTo(path.join(stage, "attention.db"));
-        await cp(attentionDataDir(), path.join(stage, "data"), { recursive: true });
-        await rm(path.join(stage, "data", ".mutation-lock"), { recursive: true, force: true });
+        // Skip lock artifacts up front: opening the held lock file from this process would drop the lock.
+        await cp(attentionDataDir(), path.join(stage, "data"), { recursive: true, filter: (source) => !isLockArtifact(source) });
         await writeFile(path.join(stage, "manifest.json"), JSON.stringify({
           name: "tend-backup",
           format: 2,
@@ -70,8 +71,9 @@ export async function backupImportCommand(sourcePath: string): Promise<void> {
   const stagedDb = path.join(stage, "attention.db");
   let preserveRollback = false;
   try {
-    await cp(sourceData, stagedData, { recursive: true, dereference: true });
-    await rm(path.join(stagedData, ".mutation-lock"), { recursive: true, force: true });
+    // Lock artifacts are skipped before dereferencing: a dangling lock marker in a hand-copied backup must not abort the import.
+    await cp(sourceData, stagedData, { recursive: true, dereference: true, filter: (source) => !isLockArtifact(source) });
+    await removeLockArtifacts(stagedData);
     if (existsSync(bundledDb)) {
       await cp(bundledDb, stagedDb);
       validateSqliteBackup(stagedDb);

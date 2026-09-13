@@ -5,6 +5,10 @@ a promise of ongoing maintenance.
 
 ## Unreleased
 
+- Replace directory-based process locks with SQLite file locks that the operating system releases
+  when the holder exits, so a crashed or killed Tend no longer blocks later commands until someone
+  deletes a lock directory by hand. A marker at the old lock-directory path keeps older builds and
+  this one excluding each other during an upgrade; backups no longer carry lock artifacts.
 - Make full Gmail sweeps start from paginated Inbox label-ID enumeration, require every message to
   resolve to a conversation, and reject checkpoints that do not read or explicitly carry forward
   every resulting thread.
