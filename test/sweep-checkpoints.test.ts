@@ -43,7 +43,7 @@ test("a recollection checkpoint advances only when the work completes with cards
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
 
     await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Collected." }))
-      .rejects.toThrow(`Source run ${run} (Company Attention) has 1 judgment marked review or keep but no card references it`);
+      .rejects.toThrow(`Source run ${run} (Company Attention) has 1 review judgment but only 0 cards reference it`);
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
     expect(await mirrorCheckpoint()).toEqual(before);
     expect((await store.readWork(FEED, work.id)).status).toBe("working");
@@ -119,8 +119,8 @@ test("the newest run for a source owns its checkpoint regardless of batch order"
   try {
     const work = await claimRecollection(domain);
     const first = await domain.recordSourceRun(FEED, SOURCE, [], [], { cursor: "first" }, work.id);
-    await Bun.sleep(5);
     const second = await domain.recordSourceRun(FEED, SOURCE, [], [], { cursor: "second" }, work.id);
+    expect((await store.readRun(FEED, second)).checkpointSequence).toBe((await store.readRun(FEED, first)).checkpointSequence! + 1);
     await domain.recordSweepBatch(FEED, [second, first], work.id);
     expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "second" });
@@ -147,6 +147,60 @@ test("a refused completion writes nothing, even when an earlier run in the batch
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
     expect(await mirrorCheckpoint()).toEqual(beforeMirror);
     expect((await store.readRun(FEED, presented)).pendingCheckpoint).toEqual({ cursor: "presented" });
+    expect((await store.readWork(FEED, work.id)).status).toBe("working");
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("every review judgment needs its own card, and routine_action judgments need a card or a proposed group", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    const before = await store.readSourceCheckpoint(FEED, SOURCE);
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }, { b: 2 }, { c: 3 }, { d: 4 }], [{ decision: "review" }, { decision: "review" }, { decision: "routine_action" }, { decision: "suppress" }], { cursor: "counted" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    await domain.upsertCard(FEED, { id: "only-one", title: "One", why: "Covers one review judgment.", blocks: [], sourceRunIds: [run] });
+    await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." }))
+      .rejects.toThrow(`has 2 review judgments but only 1 card references it`);
+    await domain.upsertCard(FEED, { id: "the-other", title: "Two", why: "Covers the other review judgment.", blocks: [], sourceRunIds: [run] });
+    await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." }))
+      .rejects.toThrow(`has 1 routine_action judgment but neither a card referencing the run nor a routine action group proposed since the run presents it`);
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "routine-fixture", label: "Archive newsletters", summary: "Three newsletters with the same obvious cleanup.",
+      proposedAction: { label: "Archive", instruction: "Archive the listed newsletters." },
+      items: [{ id: "item-1", title: "Weekly digest", reason: "Routine newsletter." }],
+    });
+    expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "counted" });
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a failure after checkpoint writes begin rolls back SQLite and the file mirrors together", async () => {
+  const { root, runtime, store, domain, mirrorCheckpoint } = await setup();
+  try {
+    const before = await store.readSourceCheckpoint(FEED, SOURCE);
+    const beforeMirror = await mirrorCheckpoint();
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [], [], { cursor: "rolled-back" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    const appendEvent = store.appendEvent.bind(store);
+    store.appendEvent = async (event) => {
+      if (event.type === "work.completed") throw new Error("injected failure after checkpoint writes");
+      return appendEvent(event);
+    };
+    await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).rejects.toThrow("injected failure after checkpoint writes");
+    store.appendEvent = appendEvent;
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
+    expect(await mirrorCheckpoint()).toEqual(beforeMirror);
+    expect((await store.readRun(FEED, run)).pendingCheckpoint).toEqual({ cursor: "rolled-back" });
+    const runMirror = JSON.parse(await readFile(path.join(root, "data", "feeds", FEED, "runs", `${run}.json`), "utf8")) as { pendingCheckpoint?: unknown };
+    expect(runMirror.pendingCheckpoint).toEqual({ cursor: "rolled-back" });
     expect((await store.readWork(FEED, work.id)).status).toBe("working");
   } finally {
     runtime.sqlite.close();

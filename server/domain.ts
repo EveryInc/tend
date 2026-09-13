@@ -387,10 +387,11 @@ const CARD_BLOCK_TYPES = new Set<CardBlock["type"]>([
   "quote",
 ]);
 
-// Sweep judgments that must be presented as a card before their checkpoint may advance. The judge
-// prompt uses `review`; older runs and fixtures use `keep`. `suppress` needs no card and
-// `routine_action` items are presented as a proposed routine group rather than individual cards.
-const CARD_PRODUCING_DECISIONS = new Set(["review", "keep"]);
+// Sweep judgments that must be presented before their checkpoint may advance. The judge prompt uses
+// `review` (one card each) and `routine_action` (a card, or an item of a proposed routine action group);
+// older runs and fixtures use `keep`. `suppress` needs no presentation.
+const REVIEW_DECISIONS = new Set(["review", "keep"]);
+const ROUTINE_DECISION = "routine_action";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -3702,7 +3703,14 @@ export class AttentionDomain {
       // work completes with cards for every kept judgment (see commitHeldSourceCheckpoints). A crash in
       // between then re-reads those items on the next sweep instead of silently dropping them.
       const holdCheckpoint = Boolean(triggerWorkId);
-      const held = holdCheckpoint ? { pendingCheckpoint: checkpoint, checkpointBaseDigest: digest((await this.store.readSourceCheckpoint(feedId, sourceId)) ?? null) } : {};
+      const held = holdCheckpoint
+        ? {
+          pendingCheckpoint: checkpoint,
+          checkpointBaseDigest: digest((await this.store.readSourceCheckpoint(feedId, sourceId)) ?? null),
+          // Recording order per source, independent of clock resolution and of the order runs are later listed in a batch.
+          checkpointSequence: (await this.store.listRuns(feedId)).reduce((max, run) => run.sourceId === sourceId ? Math.max(max, run.checkpointSequence ?? 0) : max, 0) + 1,
+        }
+        : {};
       await this.store.writeRun({ id: runId, feedId, sourceId, snapshots: snapshots.length, judgments, ...(normalizedContextUse ? { contextUse: normalizedContextUse } : {}), ...(triggerWorkId ? { triggerWorkId, ...held } : {}), completedAt: isoNow() });
       if (!holdCheckpoint) await this.store.writeSourceCheckpoint(feedId, sourceId, checkpoint);
       await this.store.appendEvent({ feedId, workId: triggerWorkId, type: "source.run_completed", detail: { runId, sourceId, triggerWorkId, snapshots: snapshots.length, judgments: judgments.length, contextUse: normalizedContextUse, checkpointHeld: holdCheckpoint } });
@@ -3757,18 +3765,31 @@ export class AttentionDomain {
   // Every run is validated before anything is written so a refusal leaves both SQLite and the file mirrors untouched.
   private async commitHeldSourceCheckpoints(feedId: string, batch: SweepBatch): Promise<void> {
     const cards = await this.store.listCards(feedId);
+    const routineGroups = (await this.store.readFeed(feedId)).routineActions;
     const runs = await Promise.all(batch.sourceRunIds.map((runId) => this.store.readRun(feedId, runId)));
     for (const run of runs) {
-      const needingCards = run.judgments.filter((judgment) => isRecord(judgment) && CARD_PRODUCING_DECISIONS.has(judgment.decision as string)).length;
-      if (needingCards > 0 && !cards.some((card) => card.sourceRunIds?.includes(run.id))) {
+      const decisions = run.judgments.flatMap((judgment) => isRecord(judgment) && typeof judgment.decision === "string" ? [judgment.decision] : []);
+      const reviews = decisions.filter((decision) => REVIEW_DECISIONS.has(decision)).length;
+      const routines = decisions.filter((decision) => decision === ROUTINE_DECISION).length;
+      const presented = cards.filter((card) => card.sourceRunIds?.includes(run.id)).length;
+      const label = `Source run ${run.id} (${sourceDisplayName(run.sourceId)})`;
+      if (presented < reviews) {
         throw new Error(
-          `Source run ${run.id} (${sourceDisplayName(run.sourceId)}) has ${needingCards} ${needingCards === 1 ? "judgment" : "judgments"} marked review or keep but no card references it. Upsert its cards with sourceRunIds including ${run.id} before completing this work; Tend holds the source checkpoint until then.`,
+          `${label} has ${reviews} review ${reviews === 1 ? "judgment" : "judgments"} but only ${presented} ${presented === 1 ? "card references" : "cards reference"} it. Upsert one card per review judgment with sourceRunIds including ${run.id} before completing this work; Tend holds the source checkpoint until then.`,
+        );
+      }
+      const groupProposedSince = routineGroups.some((group) => group.status !== "stale" && group.status !== "failed" && group.updatedAt >= (run.completedAt ?? ""));
+      if (routines > 0 && presented < reviews + routines && !groupProposedSince) {
+        throw new Error(
+          `${label} has ${routines} routine_action ${routines === 1 ? "judgment" : "judgments"} but neither a card referencing the run nor a routine action group proposed since the run presents ${routines === 1 ? "it" : "them"}. Upsert those cards or propose the routine action group before completing this work; Tend holds the source checkpoint until then.`,
         );
       }
     }
-    // The newest run per source owns that source's checkpoint; earlier same-source runs in the batch are superseded.
+    // The newest run per source (by recording sequence, then recorded time) owns that source's checkpoint;
+    // earlier same-source runs in the batch are superseded.
+    const recordingOrder = (a: SourceRun, b: SourceRun) => (a.checkpointSequence ?? 0) - (b.checkpointSequence ?? 0) || (a.completedAt ?? "").localeCompare(b.completedAt ?? "");
     const newestBySource = new Map<string, SourceRun>();
-    for (const run of [...runs].sort((a, b) => (a.completedAt ?? "").localeCompare(b.completedAt ?? ""))) newestBySource.set(run.sourceId, run);
+    for (const run of [...runs].sort(recordingOrder)) newestBySource.set(run.sourceId, run);
     const committedAt = isoNow();
     const committed: string[] = [];
     const skipped: Array<{ runId: string; reason: string }> = [];

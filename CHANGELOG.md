@@ -6,10 +6,11 @@ a promise of ongoing maintenance.
 ## Unreleased
 
 - Hold source checkpoints recorded for claimed recollection work until `work:complete` succeeds,
-  and refuse completion while a run has `review` judgments but no card, so a sweep interrupted
-  between judging and presenting re-reads its items on the next pass instead of silently dropping
-  them. A recollection that fails after recording its batch offers searching again, and a held
-  checkpoint never overwrites a newer one.
+  and refuse completion until every `review` judgment has a card and every `routine_action`
+  judgment has a card or a proposed routine action group, so a sweep
+  interrupted between judging and presenting re-reads its items on the next pass instead of
+  silently dropping them. A recollection that fails after recording its batch offers searching
+  again, and a held checkpoint is not written over one that changed after the run was recorded.
 - Make full Gmail sweeps start from paginated Inbox label-ID enumeration, require every message to
   resolve to a conversation, and reject checkpoints that do not read or explicitly carry forward
   every resulting thread.

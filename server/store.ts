@@ -766,6 +766,10 @@ export class AttentionStore {
     return this.sourceRuns.get(feedId, runId);
   }
 
+  async listRuns(feedId: string): Promise<SourceRun[]> {
+    return this.sourceRuns.list(feedId);
+  }
+
   async readSweepBatch(feedId: string, batchId: string): Promise<SweepBatch> {
     return this.sweeps.getBatch(feedId, batchId);
   }
