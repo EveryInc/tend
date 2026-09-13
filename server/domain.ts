@@ -3771,11 +3771,18 @@ export class AttentionDomain {
       const decisions = run.judgments.flatMap((judgment) => isRecord(judgment) && typeof judgment.decision === "string" ? [judgment.decision] : []);
       const reviews = decisions.filter((decision) => REVIEW_DECISIONS.has(decision)).length;
       const routines = decisions.filter((decision) => decision === ROUTINE_DECISION).length;
-      const presented = cards.filter((card) => card.sourceRunIds?.includes(run.id)).length;
+      const recordedAt = run.completedAt ?? "";
+      // A card presents this run only if it was written for it and is actually visible for review (or was
+      // acted on after the run). A previously dismissed card that merely gained the run id stays hidden.
+      const presented = cards.filter((card) =>
+        card.sourceRunIds?.includes(run.id)
+        && card.updatedAt >= recordedAt
+        && (card.status !== "done" || (card.completedAt ?? "") >= recordedAt)
+      ).length;
       const label = `Source run ${run.id} (${sourceDisplayName(run.sourceId)})`;
       if (presented < reviews) {
         throw new Error(
-          `${label} has ${reviews} review ${reviews === 1 ? "judgment" : "judgments"} but only ${presented} ${presented === 1 ? "card references" : "cards reference"} it. Upsert one card per review judgment with sourceRunIds including ${run.id} before completing this work; Tend holds the source checkpoint until then.`,
+          `${label} has ${reviews} review ${reviews === 1 ? "judgment" : "judgments"} but only ${presented} ${presented === 1 ? "card presents" : "cards present"} it. Upsert one card per review judgment with sourceRunIds including ${run.id}, in a review status, before completing this work; Tend holds the source checkpoint until then.`,
         );
       }
       const groupProposedSince = routineGroups.some((group) => group.status !== "stale" && group.status !== "failed" && group.updatedAt >= (run.completedAt ?? ""));
