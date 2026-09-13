@@ -42,6 +42,9 @@ import type {
   SourceRecipe,
   SourceRun,
   SweepBatch,
+  SweepPresentationGap,
+  SweepPresentationRun,
+  SweepPresentationStatus,
   SourceRunContextUse,
   SweepFeedbackTrace,
   ThreadBinding,
@@ -392,6 +395,16 @@ const CARD_BLOCK_TYPES = new Set<CardBlock["type"]>([
 // older runs and fixtures use `keep`. `suppress` needs no presentation.
 const REVIEW_DECISIONS = new Set(["review", "keep"]);
 const ROUTINE_DECISION = "routine_action";
+
+// A judgment may name the card that will present it; the id must be usable as a card id so the agent
+// hears about a bad id when recording the run rather than when completing the work.
+function validateJudgmentCardIds(judgments: unknown[]): void {
+  judgments.forEach((judgment, index) => {
+    if (!isRecord(judgment) || judgment.cardId === undefined) return;
+    if (typeof judgment.cardId !== "string" || !judgment.cardId.trim()) throw new Error(`Judgment ${index + 1} cardId must be a non-empty string.`);
+    safeIdentifier(judgment.cardId, `Judgment ${index + 1} cardId`);
+  });
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -2137,7 +2150,9 @@ export class AttentionDomain {
         proposedAction: input.proposedAction,
         items: input.items.map((item) => ({ ...item, id: item.id.trim(), title: item.title.trim(), reason: item.reason.trim() })),
         status: "proposed",
-        createdAt: existing?.createdAt ?? now,
+        // Every explicit upsert (only proposed, stale, or failed groups can be upserted) starts a new proposal
+        // cycle, so createdAt is the time of the current proposal; sweep presentation relies on that.
+        createdAt: now,
         updatedAt: now,
       };
       for (const item of group.items) {
@@ -3694,6 +3709,7 @@ export class AttentionDomain {
       if (!feed.sources.some((source) => source.id === sourceId)) throw new Error(`Source recipe not found: ${sourceId}`);
       if (triggerWorkId) await this.assertClaimedRecollectionWork(feedId, triggerWorkId);
       assertGmailInboxSweepEnumeration(sourceId, checkpoint);
+      validateJudgmentCardIds(judgments);
       const normalizedContextUse = contextUse
         ? normalizeContextUse(contextUse, await this.requireCurrentMindContext(contextUse.updateId), snapshots)
         : undefined;
@@ -3751,6 +3767,18 @@ export class AttentionDomain {
         }
       }
       if (researchQuestions.size > 1) throw new Error("One sweep may originate only one On Your Mind research question.");
+      if (triggerWork) {
+        // Every run recorded for this work that still holds a checkpoint must be in the batch, or be superseded
+        // there by a newer run for the same source; otherwise its judged items would be neither presented nor re-read.
+        const included = await Promise.all(sourceRunIds.map((runId) => this.store.readRun(feedId, runId)));
+        const leftOut = (await this.store.listRuns(feedId)).filter((run) =>
+          run.triggerWorkId === triggerWork.id && run.pendingCheckpoint !== undefined && !sourceRunIds.includes(run.id)
+          && !included.some((candidate) => candidate.sourceId === run.sourceId && (candidate.checkpointSequence ?? 0) > (run.checkpointSequence ?? 0)),
+        );
+        if (leftOut.length) {
+          throw new Error(`Source ${leftOut.length === 1 ? "run" : "runs"} ${leftOut.map((run) => `${run.id} (${sourceDisplayName(run.sourceId)})`).join(", ")} recorded for this recollection ${leftOut.length === 1 ? "is" : "are"} missing from the batch. Include ${leftOut.length === 1 ? "it" : "them"}, or record a newer run for the same source and include that.`);
+        }
+      }
       const batchId = makeId("batch");
       const supersededRoutineGroups = await this.staleProposedRoutineActionGroups(feedId, `Superseded by newer sweep batch ${batchId}.`);
       await this.store.writeSweepBatch({ id: batchId, feedId, sourceRunIds, ...(normalizedContextUpdateId ? { contextUpdateId: normalizedContextUpdateId } : {}), ...(triggerWorkId ? { triggerWorkId } : {}), createdAt: isoNow() });
@@ -3760,48 +3788,199 @@ export class AttentionDomain {
     });
   }
 
-  // Recollection work completes only once every judgment that needs a card has one; that is when the
-  // checkpoints held on the batch's runs become the sources' live checkpoints, inside the same transaction.
-  // Every run is validated before anything is written so a refusal leaves both SQLite and the file mirrors untouched.
-  private async commitHeldSourceCheckpoints(feedId: string, batch: SweepBatch): Promise<void> {
+  /**
+   * What the current sweep still needs before its recollection work can complete. Judgments that name a
+   * `cardId` are matched exactly against that card; judgments without one fall back to counting cards that
+   * present the run and were not claimed by an exact match. `routine_action` judgments without a card may
+   * also be covered by items of routine action groups proposed since the sweep.
+   */
+  async sweepPresentationStatus(feedId: string): Promise<SweepPresentationStatus> {
+    return this.store.serialize(async () => {
+      const sweep = await this.store.readSweepState(feedId);
+      if (!sweep.currentBatchId) {
+        return { status: "idle", currentBatchId: null, workId: null, workStatus: null, ready: true, runs: [], missing: [], unbatchedRuns: [], routineGroupItems: 0, routineCoveredByGroups: 0, summary: "No sweep batch has been recorded for this feed." };
+      }
+      return this.presentationReport(feedId, await this.store.readSweepBatch(feedId, sweep.currentBatchId));
+    });
+  }
+
+  private async presentationReport(feedId: string, batch: SweepBatch): Promise<SweepPresentationStatus> {
     const cards = await this.store.listCards(feedId);
+    const cardsById = new Map(cards.map((card) => [card.id, card]));
     const feed = await this.store.readFeed(feedId);
     const workItems = await this.store.readWorkItems(feedId);
     const runs = await Promise.all(batch.sourceRunIds.map((runId) => this.store.readRun(feedId, runId)));
-    // Cards carry no judgment ids, so presentation is counted: each review judgment needs its own card that the
-    // user can actually see now or has already acted on since the run; routine judgments need cards or items of
-    // routine action groups proposed since the batch was recorded.
-    const presentsRun = (card: Card, run: SourceRun): boolean => {
-      const recordedAt = run.completedAt ?? "";
-      if (!card.sourceRunIds?.includes(run.id) || card.updatedAt < recordedAt) return false;
-      if (card.status === "to_review_new" || card.status === "to_review_updated") return card.readyForPass <= feed.config.currentPass;
-      if (card.status === "done") return (card.completedAt ?? "") >= recordedAt;
-      return workItems.some((work) => work.cardId === card.id && work.createdAt >= recordedAt);
+    const currentPass = feed.config.currentPass;
+    // A user disposition on a card (dismissal, approval, queued instruction or cleanup, reaction, block edit,
+    // return to review, reading preference) presents the card version that existed at the time. The feed event
+    // ledger is strictly ordered, so a card was acted on in its current version exactly when its latest
+    // disposition event comes after its latest content-write event (card:upsert); a card refreshed afterwards
+    // must be resurfaced. Content an agent writes while completing work the user queued or approved is the
+    // outcome of that reviewed item and does not count as a new write.
+    const CONTENT_EVENTS = new Set(["card.created", "card.updated"]);
+    const ACTION_EVENTS = new Set(["card.dismissed", "action.approved", "work.queued", "cleanup.queued", "voice.intent_queued", "voice.instruction_submitted", "card.reaction_recorded", "card.block_edited", "card.returned_to_review"]);
+    const lastWrite = new Map<string, number>();
+    const lastAction = new Map<string, number>();
+    // Routine group proposals are ordered against the batch through the same ledger: timestamps can tie within a
+    // millisecond, but events cannot.
+    const lastProposal = new Map<string, number>();
+    let batchRecordedAt = -1;
+    (await this.store.readEvents(feedId)).forEach((event, index) => {
+      if (event.type === "sweep.batch_recorded" && isRecord(event.detail) && event.detail.batchId === batch.id) batchRecordedAt = index;
+      if (event.type === "routine_action.proposed" && isRecord(event.detail) && typeof event.detail.groupId === "string") lastProposal.set(event.detail.groupId, index);
+      if (event.type === "reading.preference_recorded" && isRecord(event.detail) && isRecord(event.detail.beforeCardUpdatedAt)) {
+        for (const memberId of Object.keys(event.detail.beforeCardUpdatedAt)) lastAction.set(memberId, index);
+        return;
+      }
+      if (!event.cardId) return;
+      if (CONTENT_EVENTS.has(event.type)) lastWrite.set(event.cardId, index);
+      else if (ACTION_EVENTS.has(event.type)) lastAction.set(event.cardId, index);
+    });
+    const proposedForThisSweep = (group: RoutineActionGroup): boolean => {
+      const proposal = lastProposal.get(group.id);
+      return proposal !== undefined && batchRecordedAt >= 0 ? proposal > batchRecordedAt : group.createdAt >= batch.createdAt;
     };
-    let routineNeeded = 0;
+    const actedOnCurrentVersion = (card: Card) => (lastAction.get(card.id) ?? -1) > (lastWrite.get(card.id) ?? -1);
+    const hiddenReason = (card: Card, run: SourceRun, forReview: boolean): string | undefined => {
+      const recordedAt = run.completedAt ?? "";
+      if (!card.sourceRunIds?.includes(run.id)) return `card ${card.id} does not list run ${run.id} in sourceRunIds`;
+      if (card.updatedAt < recordedAt) return `card ${card.id} was last written before this run was recorded`;
+      if (forReview && card.routineActionGroupId) return `card ${card.id} belongs to routine action group ${card.routineActionGroupId}, so it is not individually reviewable; a review judgment needs its own card`;
+      if (!forReview && card.routineActionGroupId) {
+        const group = feed.routineActions.find((candidate) => candidate.id === card.routineActionGroupId);
+        if (group && !proposedForThisSweep(group)) return `card ${card.id} belongs to routine action group ${group.id}, which was proposed before this sweep; propose a group for this sweep or resurface the card`;
+      }
+      if (card.sweep?.hidden) return `card ${card.id} is hidden by sweep feedback ${card.sweep.feedbackId}; upsert it again with status to_review_updated if it must be presented`;
+      if (card.status === "to_review_new" || card.status === "to_review_updated") {
+        return card.readyForPass <= currentPass ? undefined : `card ${card.id} is deferred to pass ${card.readyForPass} (current pass ${currentPass})`;
+      }
+      if (card.status === "done") {
+        if ((card.completedAt ?? "") < recordedAt) return `card ${card.id} was dismissed or completed before this run and has not been resurfaced (upsert it with status to_review_updated)`;
+        return actedOnCurrentVersion(card) ? undefined : `card ${card.id} was updated after the user dismissed or completed it, so its current content was never reviewed; upsert it with status to_review_updated`;
+      }
+      if (!workItems.some((work) => work.cardId === card.id && work.createdAt >= recordedAt)) return `card ${card.id} is ${card.status} from before this run with no new approval since`;
+      return actedOnCurrentVersion(card) ? undefined : `card ${card.id} was updated after it was approved, so its current content was never reviewed; upsert it with status to_review_updated`;
+    };
+    type Judged = { run: SourceRun; gap: SweepPresentationGap; review: boolean; cardId?: string };
+    const judged: Judged[] = [];
+    const runReports = new Map<string, SweepPresentationRun>();
     for (const run of runs) {
-      const decisions = run.judgments.flatMap((judgment) => isRecord(judgment) && typeof judgment.decision === "string" ? [judgment.decision] : []);
-      const reviews = decisions.filter((decision) => REVIEW_DECISIONS.has(decision)).length;
-      const routines = decisions.filter((decision) => decision === ROUTINE_DECISION).length;
-      const presented = cards.filter((card) => presentsRun(card, run)).length;
-      if (presented < reviews) {
-        throw new Error(
-          `Source run ${run.id} (${sourceDisplayName(run.sourceId)}) has ${reviews} review ${reviews === 1 ? "judgment" : "judgments"} but only ${presented} ${presented === 1 ? "card presents" : "cards present"} it. Upsert one card per review judgment with sourceRunIds including ${run.id}, in a review status for the current pass, before completing this work; Tend holds the source checkpoint until then.`,
-        );
-      }
-      routineNeeded += Math.max(0, routines - (presented - reviews));
+      runReports.set(run.id, { runId: run.id, sourceId: run.sourceId, checkpointHeld: run.pendingCheckpoint !== undefined, judgments: run.judgments.length, needingPresentation: 0, presented: 0 });
+      run.judgments.forEach((judgment, index) => {
+        if (!isRecord(judgment) || typeof judgment.decision !== "string") return;
+        const review = REVIEW_DECISIONS.has(judgment.decision);
+        if (!review && judgment.decision !== ROUTINE_DECISION) return;
+        runReports.get(run.id)!.needingPresentation += 1;
+        const cardId = typeof judgment.cardId === "string" ? judgment.cardId : undefined;
+        judged.push({ run, gap: { runId: run.id, sourceId: run.sourceId, judgment: index + 1, decision: judgment.decision, ...(cardId ? { cardId } : {}), reason: "" }, review, cardId });
+      });
     }
-    if (routineNeeded > 0) {
-      const earliestRecordedAt = runs.map((run) => run.completedAt ?? "").sort()[0] ?? "";
-      const routineItems = feed.routineActions
-        .filter((group) => group.status !== "stale" && group.status !== "failed" && group.createdAt >= earliestRecordedAt)
-        .reduce((total, group) => total + group.items.length, 0);
-      if (routineItems < routineNeeded) {
-        throw new Error(
-          `This sweep has ${routineNeeded} routine_action ${routineNeeded === 1 ? "judgment" : "judgments"} without a card, but routine action groups proposed since it was recorded hold only ${routineItems} ${routineItems === 1 ? "item" : "items"}. Propose the routine action group or upsert cards for them before completing this work; Tend holds the source checkpoints until then.`,
-        );
+    const missing: SweepPresentationGap[] = [];
+    // Every card a judgment names is reserved for exact matching across the whole batch, whether or not it
+    // presents its run yet, so the report lists all gaps at once and a named card never silently satisfies an
+    // unnamed judgment elsewhere. Sharing a card is explicit: every judgment it presents names it.
+    const reserved = new Set(judged.flatMap((item) => item.cardId ? [item.cardId] : []));
+    // Cards that presented a judgment (named or counted); a routine group item backed by one of them adds no capacity.
+    const presenting = new Set<string>();
+    for (const item of judged) {
+      if (item.cardId === undefined) continue;
+      const card = cardsById.get(item.cardId);
+      const reason = card ? hiddenReason(card, item.run, item.review) : `no card with id ${item.cardId} exists`;
+      if (reason) missing.push({ ...item.gap, reason });
+      else {
+        runReports.get(item.run.id)!.presented += 1;
+        presenting.add(item.cardId);
       }
     }
+    // Judgments without a cardId are matched by count, in batch order, over the run's presenting cards that no
+    // judgment reserved and no earlier match already used: a card counts once per batch unless judgments name it.
+    const routineWithoutCard: Judged[] = [];
+    for (const run of runs) {
+      const unnamed = judged.filter((item) => item.run === run && item.cardId === undefined);
+      const reviews = unnamed.filter((item) => item.review);
+      const routines = unnamed.filter((item) => !item.review);
+      const unreserved = cards.filter((card) => !reserved.has(card.id) && !presenting.has(card.id));
+      const reviewCards = unreserved.filter((card) => hiddenReason(card, run, true) === undefined);
+      const routineOnlyCards = unreserved.filter((card) => hiddenReason(card, run, false) === undefined && hiddenReason(card, run, true) !== undefined);
+      const reviewPool = reviewCards.length;
+      const reviewCovered = Math.min(reviewPool, reviews.length);
+      const routineCandidates = [...reviewCards.slice(reviewCovered), ...routineOnlyCards];
+      const routineCovered = Math.min(routineCandidates.length, routines.length);
+      for (const card of [...reviewCards.slice(0, reviewCovered), ...routineCandidates.slice(0, routineCovered)]) presenting.add(card.id);
+      runReports.get(run.id)!.presented += reviewCovered + routineCovered;
+      for (const item of reviews.slice(reviewCovered)) {
+        missing.push({ ...item.gap, reason: `no unclaimed card presents this review judgment (${reviewPool} available for ${reviews.length} review ${reviews.length === 1 ? "judgment" : "judgments"} without a cardId); add a cardId or upsert another card with sourceRunIds including ${run.id}` });
+      }
+      routineWithoutCard.push(...routines.slice(routineCovered));
+    }
+    // routine_action judgments without a card may be covered by items of routine action groups proposed since the
+    // sweep. Group items do not identify judgments, so this coverage is aggregate: when it falls short, every such
+    // judgment is listed rather than an invented subset.
+    // A group counts when it was proposed for this sweep, which its createdAt records: recording the batch marks
+    // earlier proposals stale, so a proposal for this sweep is created at or after the batch, and re-proposing a
+    // stale group under a reused id dates it from the re-proposal. Keying on the batch rather than the earliest
+    // run keeps a group created and approved between two runs from covering the later run's judgments. Status
+    // alone is not enough (an older approved group returns to `proposed` when its work is cancelled) and updatedAt
+    // is not used, since approval or completion of an older group refreshes it without presenting anything new.
+    const routineGroupItems = feed.routineActions
+      .filter((group) => group.status !== "stale" && group.status !== "failed" && proposedForThisSweep(group))
+      .reduce((total, group) => total + group.items.filter((item) => !item.cardId || !presenting.has(item.cardId)).length, 0);
+    const routineCoveredByGroups = Math.min(routineGroupItems, routineWithoutCard.length);
+    if (routineGroupItems < routineWithoutCard.length) {
+      for (const item of routineWithoutCard) {
+        missing.push({ ...item.gap, reason: `no card presents this routine_action judgment, and the ${routineWithoutCard.length} such ${routineWithoutCard.length === 1 ? "judgment" : "judgments"} in this sweep ${routineWithoutCard.length === 1 ? "exceeds" : "exceed"} the ${routineGroupItems} routine action group ${routineGroupItems === 1 ? "item" : "items"} proposed since it was recorded; add a cardId, upsert a card, or propose the group` });
+      }
+    }
+    const runOrder = new Map(runs.map((run, index) => [run.id, index]));
+    missing.sort((a, b) => (runOrder.get(a.runId)! - runOrder.get(b.runId)!) || (a.judgment - b.judgment));
+    const reports = [...runReports.values()];
+    const held = reports.filter((report) => report.checkpointHeld).length;
+    const needing = reports.reduce((total, report) => total + report.needingPresentation, 0);
+    const workId = batch.triggerWorkId ?? null;
+    // A run recorded for this work after the batch is neither presented nor superseded; the batch must be
+    // recorded again so its judgments are checked and its checkpoint commits with the others.
+    const unbatchedRuns = workId
+      ? (await this.store.listRuns(feedId))
+        .filter((run) => run.triggerWorkId === workId && run.pendingCheckpoint !== undefined && !batch.sourceRunIds.includes(run.id)
+          && !runs.some((included) => included.sourceId === run.sourceId && (included.checkpointSequence ?? 0) > (run.checkpointSequence ?? 0)))
+        .map((run) => ({ runId: run.id, sourceId: run.sourceId }))
+      : [];
+    const presentationReady = missing.length === 0 && unbatchedRuns.length === 0;
+    const status = held || unbatchedRuns.length ? "pending" : "committed";
+    const workStatus = workId ? workItems.find((work) => work.id === workId)?.status ?? null : null;
+    const completable = workStatus === "working" || workStatus === "queued";
+    const ready = presentationReady && (status === "committed" || completable);
+    const describe = (gap: SweepPresentationGap) => `run ${gap.runId} judgment ${gap.judgment} (${gap.decision}${gap.cardId ? `, cardId ${gap.cardId}` : ""}): ${gap.reason}`;
+    const unbatched = unbatchedRuns.length
+      ? `Source ${unbatchedRuns.length === 1 ? "run" : "runs"} ${unbatchedRuns.map((run) => `${run.runId} (${sourceDisplayName(run.sourceId)})`).join(", ")} recorded for this work after batch ${batch.id} ${unbatchedRuns.length === 1 ? "is" : "are"} not in it; record the batch again including ${unbatchedRuns.length === 1 ? "it" : "them"} (or a newer run for the same source). `
+      : "";
+    const gaps = `${unbatched}${missing.length ? `${missing.length} of ${needing} judgments are not presented yet: ${missing.slice(0, 3).map(describe).join("; ")}${missing.length > 3 ? `; and ${missing.length - 3} more` : ""}.` : ""}`.trim();
+    const checkpoints = `${held} held checkpoint${held === 1 ? "" : "s"}`;
+    let summary: string;
+    if (status === "committed") {
+      summary = `Batch ${batch.id} is committed; ${presentationReady ? `all ${needing} judgments that need presentation are presented.` : `${missing.length} of ${needing} judgments have no presenting card (informational).`}`;
+    } else if (!completable) {
+      // The owner can never complete, so say that first: presenting more cards will not commit these checkpoints.
+      summary = `Recollection work ${workId ?? "(none)"} is ${workStatus ?? "missing"} and cannot complete; request a new recollection to re-read from the ${checkpoints}. ${presentationReady ? `All ${needing} judgments that need presentation are presented.` : gaps}`;
+    } else if (!presentationReady) {
+      summary = gaps;
+    } else if (workStatus === "queued") {
+      summary = `All ${needing} judgments that need presentation are presented; claim work ${workId} again, then work:complete will commit the ${checkpoints}.`;
+    } else {
+      summary = `All ${needing} judgments that need presentation are presented; work:complete will commit the ${checkpoints}.`;
+    }
+    return { status, currentBatchId: batch.id, workId, workStatus, ready, runs: reports, missing, unbatchedRuns, routineGroupItems, routineCoveredByGroups, summary };
+  }
+
+  // Recollection work completes only once every judgment that needs presentation has it; that is when the
+  // checkpoints held on the batch's runs become the sources' live checkpoints, inside the same transaction.
+  // The whole batch is validated before anything is written so a refusal leaves both SQLite and the file mirrors untouched.
+  private async commitHeldSourceCheckpoints(feedId: string, batch: SweepBatch): Promise<void> {
+    const report = await this.presentationReport(feedId, batch);
+    if (!report.ready) {
+      throw new Error(`${report.summary} Tend holds the source checkpoints until then; run \`tend cli sweep:status --feed ${feedId}\` for the full list.`);
+    }
+    const runs = await Promise.all(batch.sourceRunIds.map((runId) => this.store.readRun(feedId, runId)));
     // The newest run per source (by recording sequence, then recorded time) owns that source's checkpoint;
     // earlier same-source runs in the batch are superseded.
     const recordingOrder = (a: SourceRun, b: SourceRun) => (a.checkpointSequence ?? 0) - (b.checkpointSequence ?? 0) || (a.completedAt ?? "").localeCompare(b.completedAt ?? "");
@@ -3810,6 +3989,17 @@ export class AttentionDomain {
     const committedAt = isoNow();
     const committed: string[] = [];
     const skipped: Array<{ runId: string; reason: string }> = [];
+    // Runs recorded for this work but left out of the batch were superseded by a newer run for their source
+    // (record-batch refuses any other omission); settle them so nothing stays held after the work completes.
+    if (batch.triggerWorkId) {
+      for (const run of await this.store.listRuns(feedId)) {
+        if (run.triggerWorkId !== batch.triggerWorkId || run.pendingCheckpoint === undefined || batch.sourceRunIds.includes(run.id)) continue;
+        skipped.push({ runId: run.id, reason: "superseded by a newer run for the same source, which the batch included" });
+        const settled: SourceRun = { ...run, checkpointCommittedAt: committedAt };
+        delete settled.pendingCheckpoint;
+        await this.store.writeRun(settled);
+      }
+    }
     for (const run of runs) {
       if (run.pendingCheckpoint === undefined) continue;
       if (newestBySource.get(run.sourceId) === run) {

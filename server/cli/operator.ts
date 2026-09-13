@@ -155,6 +155,9 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
           value("context"),
         );
         break;
+      case "sweep:status":
+        output = await domain.sweepPresentationStatus(required("feed"));
+        break;
       case "sweep:rejudge":
         output = await domain.recordSweepRejudgment(
           required("feed"),
@@ -312,11 +315,16 @@ export async function runOperatorCli(rawArgs: string[]): Promise<void> {
             claimed?.kind === "execute_approved_action"
               ? await store.readConfig(feedId)
               : undefined;
+          const sweepPresentation =
+            claimed?.intent === "recollect_sources"
+              ? await domain.sweepPresentationStatus(feedId)
+              : undefined;
           output = formatWorkClaimOutput(feedId, work, {
             card,
             feedConfig,
             routineActionGroup,
             sweepFeedback,
+            sweepPresentation,
           });
         }
         break;

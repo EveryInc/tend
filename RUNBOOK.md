@@ -161,6 +161,23 @@ treat broad natural-language dock input as a literal prompt edit.
 
 ## Collect
 
+### Finish an interrupted sweep
+
+A sweep recorded for claimed recollection work keeps its source checkpoints on the run records until
+`work:complete` succeeds, so an agent that dies after judging but before presenting loses nothing:
+the next sweep starts from the previous checkpoint. To finish the interrupted one instead, re-claim
+the work (the claim output carries `operatorGuidance.pendingPresentation`) or ask directly:
+
+```bash
+tend cli sweep:status --feed <feed-id>
+```
+
+It reports `ready` plus every judgment that is not presented yet, with the run, the judgment's
+position, its `cardId` when it named one, and the exact reason. Upsert the listed cards with
+`sourceRunIds` including the run (or propose the routine action group), re-run `sweep:status`, then
+`work:complete`. Judgments that name a `cardId` are checked against that exact card; judgments
+without one are matched by count.
+
 ### Compose meeting cards with independent readers
 
 The optional meeting-reading workflow uses ordinary feeds, source runs and cards. Follow

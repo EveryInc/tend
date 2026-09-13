@@ -1,4 +1,4 @@
-import type { Card, CardBlock, FeedConfig, ProposedAction, RoutineActionGroup, SweepFeedbackTrace, WorkClaimResult, WorkClaimedByReport, WorkItem, WorkItemView } from "../shared/types";
+import type { Card, CardBlock, FeedConfig, ProposedAction, RoutineActionGroup, SweepFeedbackTrace, SweepPresentationStatus, WorkClaimResult, WorkClaimedByReport, WorkItem, WorkItemView } from "../shared/types";
 import { actionEmailRecipients } from "../shared/emailRecipients";
 import { actionDigest, cleanupDigest, configuredApprovalAction, routineActionDigest } from "./workflow/approvals";
 
@@ -26,6 +26,8 @@ export interface ClaimedWorkOutput extends Omit<WorkItem, "emailDeliveryPreparat
     emailDeliveryRule?: string;
     readingCardRule?: string;
     readingFeedbackRule?: string;
+    /** For re-claimed recollection work whose batch is already recorded: what is still missing before work:complete. */
+    pendingPresentation?: SweepPresentationStatus;
   };
 }
 
@@ -34,6 +36,7 @@ export interface WorkClaimContext {
   feedConfig?: Pick<FeedConfig, "defaultCleanup">;
   routineActionGroup?: RoutineActionGroup;
   sweepFeedback?: Pick<SweepFeedbackTrace, "visibleCardIds">;
+  sweepPresentation?: SweepPresentationStatus;
 }
 
 export interface UserAuthorizationReceipt {
@@ -256,7 +259,16 @@ export function formatWorkClaimOutput(feedId: string, work: WorkClaimResult, con
   }
 
   if (work.intent === "recollect_sources") {
-    operatorGuidance.requiredWriteBack = "Record one or more source runs with `source:record-run --work <workId>`, then create a sweep batch with `sweep:record-batch --work <workId>`, then upsert one card (with sourceRunIds) per review judgment and present routine_action judgments as cards or a proposed routine action group before `work:complete`. Checkpoints recorded with --work advance only when completion succeeds; completion is refused until every judgment is presented.";
+    operatorGuidance.requiredWriteBack = "Record one or more source runs with `source:record-run --work <workId>`, giving every review or routine_action judgment a stable `cardId` (for example `gmail-<threadId>`) that you will reuse as the card id in `card:upsert`; then `sweep:record-batch --work <workId>`; then upsert one card per judgment with sourceRunIds including the run. Run `sweep:status --feed <feedId>` to see exactly what is still missing; `work:complete` is refused until it reports ready, and the source checkpoints advance only then. Judgments without a cardId are matched by count instead.";
+    const pending = context.sweepPresentation;
+    if (pending?.status === "pending" && pending.workId === work.id) {
+      operatorGuidance.completionPrerequisite = pending.unbatchedRuns.length
+        ? `Batch ${pending.currentBatchId} was recorded by this work, but ${pending.unbatchedRuns.map((run) => run.runId).join(", ")} recorded afterwards ${pending.unbatchedRuns.length === 1 ? "is" : "are"} not in it. Record the batch again with sweep:record-batch --work ${work.id} including ${pending.unbatchedRuns.length === 1 ? "it" : "them"} (or a newer run for the same source), then rerun sweep:status --feed ${feedId} for the fresh list of judgments to present, then work:complete.`
+        : pending.ready
+          ? `Batch ${pending.currentBatchId} recorded by this work is fully presented; finish with work:complete.`
+          : `Batch ${pending.currentBatchId} was already recorded by this work; present the judgments listed in pendingPresentation.missing, rerun sweep:status --feed ${feedId}, then work:complete. If a listed card cannot be updated (for example an immutable reading card), record a corrected source run that names a different cardId and record the batch again including it.`;
+      operatorGuidance.pendingPresentation = pending;
+    }
     operatorGuidance.sourceRunRule = feedId === "inbox"
       ? "For a full Gmail sweep, first paginate gmail_search_email_ids(query='', label_ids=['INBOX']). Treat that message-ID manifest as authoritative, direct-read every ID, and record an inboxEnumeration.messages entry mapping each messageId to its threadId. Its readThreadIds and carriedForwardThreadIds must then classify every resulting thread exactly once. gmail_search_emails results may enrich the run but cannot define the Inbox universe. Source recollection must complete with a new sweep batch recorded for this exact work item."
       : "Source recollection work must complete with a new sweep batch recorded for this exact work item.";

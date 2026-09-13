@@ -5,6 +5,12 @@ a promise of ongoing maintenance.
 
 ## Unreleased
 
+- Let sweep judgments name the card that will present them (`cardId`), so `work:complete` and the
+  new `tend cli sweep:status --feed <feed>` check each judged item against its exact card and report
+  precisely what is still missing; judgments without a `cardId` keep the count-based check. Re-claimed
+  recollection work carries the same list as `operatorGuidance.pendingPresentation`, and the judge
+  prompt, agent contract, skill, and runbook describe the convention. Advances the CLI contract to
+  `0.9`.
 - Hold source checkpoints recorded for claimed recollection work until `work:complete` succeeds,
   and refuse completion until every `review` judgment has a card and every `routine_action`
   judgment has a card or a proposed routine action group, so a sweep

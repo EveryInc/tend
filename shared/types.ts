@@ -653,6 +653,45 @@ export interface SourceRun {
   checkpointCommittedAt?: string;
 }
 
+/** One judgment of the current sweep that is not presented yet, with the exact reason. */
+export interface SweepPresentationGap {
+  runId: string;
+  sourceId: string;
+  /** 1-based position in the run's judgments array. */
+  judgment: number;
+  decision: string;
+  cardId?: string;
+  reason: string;
+}
+
+export interface SweepPresentationRun {
+  runId: string;
+  sourceId: string;
+  checkpointHeld: boolean;
+  judgments: number;
+  needingPresentation: number;
+  /** Judgments presented by cards (exact matches plus counted cards). Routine judgments covered by group items are reported batch-wide in `routineCoveredByGroups`. */
+  presented: number;
+}
+
+/** What `sweep:status` reports and what `work:complete` checks for recollection work. */
+export interface SweepPresentationStatus {
+  status: "idle" | "committed" | "pending";
+  currentBatchId: string | null;
+  workId: string | null;
+  workStatus: WorkStatus | null;
+  ready: boolean;
+  runs: SweepPresentationRun[];
+  missing: SweepPresentationGap[];
+  /** Held runs recorded for the batch's work that the batch neither includes nor supersedes; the batch must be recorded again. */
+  unbatchedRuns: Array<{ runId: string; sourceId: string }>;
+  /** Items of routine action groups proposed since the sweep, available to cover routine_action judgments without a card. */
+  routineGroupItems: number;
+  /** routine_action judgments without a card that those group items cover (aggregate, not attributable to a run). */
+  routineCoveredByGroups: number;
+  summary: string;
+}
+
 export interface AppFeedback {
   id: string;
   feedId: FeedId;
