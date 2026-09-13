@@ -608,6 +608,73 @@ test("a card counted for one run's unnamed judgment is not counted again for ano
   }
 });
 
+test("a card dismissed between the run and its refresh does not present the refreshed content", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    await domain.upsertCard(FEED, { id: "thread-r", title: "Old content", why: "Seen before.", blocks: [] });
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ thread: "thread-r" }], [{ decision: "review", cardId: "thread-r" }], { cursor: "race" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    // The user dismisses the old card after the run was recorded, then the agent refreshes it without resurfacing.
+    await domain.dismissCard(FEED, "thread-r");
+    await Bun.sleep(1_100);
+    await domain.upsertCard(FEED, { id: "thread-r", title: "New content", why: "A new message arrived.", blocks: [], sourceRunIds: [run] });
+    expect((await store.readCard(FEED, "thread-r")).status).toBe("done");
+    const status = await domain.sweepPresentationStatus(FEED);
+    expect(status.ready).toBe(false);
+    expect(status.missing[0].reason).toBe("card thread-r was updated after the user dismissed or completed it, so its current content was never reviewed; upsert it with status to_review_updated");
+    await domain.upsertCard(FEED, { id: "thread-r", title: "New content", why: "A new message arrived.", blocks: [], sourceRunIds: [run], status: "to_review_updated" });
+    expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true);
+    // A dismissal of the presented content still counts.
+    await domain.dismissCard(FEED, "thread-r");
+    expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true);
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a card hidden by sweep feedback does not present its judgment", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "review", cardId: "hidden-card" }], { cursor: "hidden" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    await domain.upsertCard(FEED, { id: "hidden-card", title: "Hidden", why: "Rejudged away.", blocks: [], sourceRunIds: [run] });
+    expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true);
+    const card = await store.readCard(FEED, "hidden-card");
+    await store.writeCard({ ...card, sweep: { rank: 0, hidden: true, feedbackId: "feedback-1" } });
+    const status = await domain.sweepPresentationStatus(FEED);
+    expect(status.ready).toBe(false);
+    expect(status.missing[0].reason).toContain("is hidden by sweep feedback feedback-1");
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("an older routine group approved after the run is not new coverage", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "older", label: "Older", summary: "Proposed before this sweep.",
+      proposedAction: { label: "Archive", instruction: "Archive these." },
+      items: [{ id: "i1", title: "One", reason: "Routine." }],
+    });
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "routine_action" }], { cursor: "approved-later" }, work.id);
+    // Approved (queued) after the run but before the batch, so recording the batch does not stale it.
+    await domain.approveRoutineActionGroup(FEED, "older");
+    expect((await store.readFeed(FEED)).routineActions.find((group) => group.id === "older")?.status).toBe("queued");
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    const status = await domain.sweepPresentationStatus(FEED);
+    expect(status).toMatchObject({ ready: false, routineGroupItems: 0 });
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("two judgments may deliberately share one cardId", async () => {
   const { root, runtime, store, domain } = await setup();
   try {
@@ -651,7 +718,7 @@ test("re-claiming an interrupted recollection returns what is still missing", as
     expect(reclaimed.id).toBe(work.id);
     const output = formatWorkClaimOutput(FEED, reclaimed, { sweepPresentation: await domain.sweepPresentationStatus(FEED) });
     if (!("operatorGuidance" in output)) throw new Error("Expected claim guidance.");
-    expect(output.operatorGuidance?.completionPrerequisite).toContain("do not record another");
+    expect(output.operatorGuidance?.completionPrerequisite).toContain("present the judgments listed in pendingPresentation.missing, rerun sweep:status");
     expect(output.operatorGuidance?.pendingPresentation?.missing.map((gap) => gap.cardId)).toEqual(["thread-x"]);
     expect(output.operatorGuidance?.requiredWriteBack).toContain("cardId");
     // A run recorded after the batch changes the instruction: re-record the batch first.
@@ -659,6 +726,7 @@ test("re-claiming an interrupted recollection returns what is still missing", as
     const lateOutput = formatWorkClaimOutput(FEED, reclaimed, { sweepPresentation: await domain.sweepPresentationStatus(FEED) });
     if (!("operatorGuidance" in lateOutput)) throw new Error("Expected claim guidance.");
     expect(lateOutput.operatorGuidance?.completionPrerequisite).toContain(`${late} recorded afterwards is not in it. Record the batch again with sweep:record-batch --work ${work.id}`);
+    expect(lateOutput.operatorGuidance?.completionPrerequisite).toContain("then rerun sweep:status");
     await domain.recordSweepBatch(FEED, [late], work.id); // supersedes run and its judgment moves out of the batch
     expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true);
     expect((await domain.completeWork(FEED, work.id, reclaimed.capabilityToken, { response: "Finished." })).status).toBe("completed");

@@ -263,10 +263,10 @@ export function formatWorkClaimOutput(feedId: string, work: WorkClaimResult, con
     const pending = context.sweepPresentation;
     if (pending?.status === "pending" && pending.workId === work.id) {
       operatorGuidance.completionPrerequisite = pending.unbatchedRuns.length
-        ? `Batch ${pending.currentBatchId} was recorded by this work, but ${pending.unbatchedRuns.map((run) => run.runId).join(", ")} recorded afterwards ${pending.unbatchedRuns.length === 1 ? "is" : "are"} not in it. Record the batch again with sweep:record-batch --work ${work.id} including ${pending.unbatchedRuns.length === 1 ? "it" : "them"} (or a newer run for the same source), present the judgments listed in pendingPresentation.missing, then work:complete.`
+        ? `Batch ${pending.currentBatchId} was recorded by this work, but ${pending.unbatchedRuns.map((run) => run.runId).join(", ")} recorded afterwards ${pending.unbatchedRuns.length === 1 ? "is" : "are"} not in it. Record the batch again with sweep:record-batch --work ${work.id} including ${pending.unbatchedRuns.length === 1 ? "it" : "them"} (or a newer run for the same source), then rerun sweep:status --feed ${feedId} for the fresh list of judgments to present, then work:complete.`
         : pending.ready
           ? `Batch ${pending.currentBatchId} recorded by this work is fully presented; finish with work:complete.`
-          : `Batch ${pending.currentBatchId} was already recorded by this work; do not record another. Present the judgments listed in pendingPresentation.missing, then work:complete.`;
+          : `Batch ${pending.currentBatchId} was already recorded by this work; present the judgments listed in pendingPresentation.missing, rerun sweep:status --feed ${feedId}, then work:complete. If a listed card cannot be updated (for example an immutable reading card), record a corrected source run that names a different cardId and record the batch again including it.`;
       operatorGuidance.pendingPresentation = pending;
     }
     operatorGuidance.sourceRunRule = feedId === "inbox"

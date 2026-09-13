@@ -3811,18 +3811,27 @@ export class AttentionDomain {
     const currentPass = feed.config.currentPass;
     // Why a card does not present a run (undefined when it does): it must be written for the run and be
     // visible for review now, or have been acted on since the run was recorded.
+    // An action on a card (dismissal, completion, approval) presents the card version that existed at the time.
+    // Timestamps in those paths are stamped a hair apart, so "no earlier than the card's latest write" allows a
+    // one-second tolerance; a card refreshed later than that must be resurfaced for review again.
+    const ACTED_ON_TOLERANCE_MS = 1_000;
+    const actedOnCurrentVersion = (actedAt: string, card: Card) => Date.parse(actedAt) + ACTED_ON_TOLERANCE_MS >= Date.parse(card.updatedAt);
     const hiddenReason = (card: Card, run: SourceRun, forReview: boolean): string | undefined => {
       const recordedAt = run.completedAt ?? "";
       if (!card.sourceRunIds?.includes(run.id)) return `card ${card.id} does not list run ${run.id} in sourceRunIds`;
       if (card.updatedAt < recordedAt) return `card ${card.id} was last written before this run was recorded`;
       if (forReview && card.routineActionGroupId) return `card ${card.id} belongs to routine action group ${card.routineActionGroupId}, so it is not individually reviewable; a review judgment needs its own card`;
+      if (card.sweep?.hidden) return `card ${card.id} is hidden by sweep feedback ${card.sweep.feedbackId}; upsert it again with status to_review_updated if it must be presented`;
       if (card.status === "to_review_new" || card.status === "to_review_updated") {
         return card.readyForPass <= currentPass ? undefined : `card ${card.id} is deferred to pass ${card.readyForPass} (current pass ${currentPass})`;
       }
       if (card.status === "done") {
-        return (card.completedAt ?? "") >= recordedAt ? undefined : `card ${card.id} was dismissed or completed before this run and has not been resurfaced (upsert it with status to_review_updated)`;
+        if ((card.completedAt ?? "") < recordedAt) return `card ${card.id} was dismissed or completed before this run and has not been resurfaced (upsert it with status to_review_updated)`;
+        return actedOnCurrentVersion(card.completedAt ?? "", card) ? undefined : `card ${card.id} was updated after the user dismissed or completed it, so its current content was never reviewed; upsert it with status to_review_updated`;
       }
-      return workItems.some((work) => work.cardId === card.id && work.createdAt >= recordedAt) ? undefined : `card ${card.id} is ${card.status} from before this run with no new approval since`;
+      const approvals = workItems.filter((work) => work.cardId === card.id && work.createdAt >= recordedAt);
+      if (!approvals.length) return `card ${card.id} is ${card.status} from before this run with no new approval since`;
+      return approvals.some((work) => actedOnCurrentVersion(work.createdAt, card)) ? undefined : `card ${card.id} was updated after it was approved, so its current content was never reviewed; upsert it with status to_review_updated`;
     };
     type Judged = { run: SourceRun; gap: SweepPresentationGap; review: boolean; cardId?: string };
     const judged: Judged[] = [];
@@ -3880,10 +3889,11 @@ export class AttentionDomain {
     // sweep. Group items do not identify judgments, so this coverage is aggregate: when it falls short, every such
     // judgment is listed rather than an invented subset.
     const earliestRecordedAt = runs.map((run) => run.completedAt ?? "").sort()[0] ?? "";
-    // A group counts when it was proposed (or re-proposed) since the sweep: recording the batch marks earlier
-    // proposals stale, so a live group with a fresh updatedAt is one for this sweep even if its id was reused.
+    // A group counts when it is a proposal for this sweep: still `proposed` (recording the batch marks earlier
+    // proposals stale, so a live proposal is this sweep's even under a reused id) or created since the sweep.
+    // updatedAt is not used: approval or completion of an older group refreshes it without presenting anything new.
     const routineGroupItems = feed.routineActions
-      .filter((group) => group.status !== "stale" && group.status !== "failed" && group.updatedAt >= earliestRecordedAt)
+      .filter((group) => group.status !== "stale" && group.status !== "failed" && (group.status === "proposed" || group.createdAt >= earliestRecordedAt))
       .reduce((total, group) => total + group.items.filter((item) => !item.cardId || !presenting.has(item.cardId)).length, 0);
     const routineCoveredByGroups = Math.min(routineGroupItems, routineWithoutCard.length);
     if (routineGroupItems < routineWithoutCard.length) {
