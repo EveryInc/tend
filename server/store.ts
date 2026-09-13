@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readdir, readFile, rename, rm, stat } from "node:fs/promises";
+import { appendFile, mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
 import type {
   AgentPresence,
@@ -50,6 +50,7 @@ import {
   threadBinding,
 } from "./templates";
 import { digest, isoNow, makeId, readJson, withMutationLock, writeJson, writeText } from "./util";
+import { withProcessLock } from "./processLock";
 import { groupReadingCards, isPassiveReadingCard, readingGroupKey, sameReadingMembers } from "../shared/readingGroups";
 import { defaultDictationCapability } from "./monologue";
 import { FileCardRepository, type CardRepository } from "./repositories/cards";
@@ -832,22 +833,8 @@ export class AttentionStore {
   }
 
   private async withAgentWakeLock<T>(callback: () => Promise<T>): Promise<T> {
-    // The domain currently serializes wake-producing mutations; keep this file lock for future non-serialized callers.
-    const lockPath = this.path(".agent-wake-lock");
-    for (let attempt = 0; attempt < 400; attempt += 1) {
-      try {
-        await mkdir(lockPath);
-        try {
-          return await callback();
-        } finally {
-          await rm(lockPath, { recursive: true, force: true });
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        await new Promise((resolve) => setTimeout(resolve, 15));
-      }
-    }
-    throw new Error("Timed out waiting for the agent wake lock.");
+    // The domain currently serializes wake-producing mutations; keep this cross-process lock for future non-serialized callers.
+    return withProcessLock(this.path(".agent-wake-lock"), callback, { busyMessage: "Timed out waiting for the agent wake lock." });
   }
 
   private agentPath(agent: AgentPresence["agent"], ...parts: string[]): string {
