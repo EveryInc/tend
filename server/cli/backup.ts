@@ -71,7 +71,8 @@ export async function backupImportCommand(sourcePath: string): Promise<void> {
   const stagedDb = path.join(stage, "attention.db");
   let preserveRollback = false;
   try {
-    await cp(sourceData, stagedData, { recursive: true, dereference: true });
+    // Lock artifacts are skipped before dereferencing: a dangling lock marker in a hand-copied backup must not abort the import.
+    await cp(sourceData, stagedData, { recursive: true, dereference: true, filter: (source) => !isLockArtifact(source) });
     await removeLockArtifacts(stagedData);
     if (existsSync(bundledDb)) {
       await cp(bundledDb, stagedDb);
