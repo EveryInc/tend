@@ -167,7 +167,7 @@ test("every review judgment needs its own card, and routine_action judgments nee
       .rejects.toThrow("2 of 3 judgments are not presented yet: run " + run + " judgment 2 (review): no unclaimed card presents this review judgment (1 available for 2 review judgments without a cardId)");
     await domain.upsertCard(FEED, { id: "the-other", title: "Two", why: "Covers the other review judgment.", blocks: [], sourceRunIds: [run] });
     await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." }))
-      .rejects.toThrow("judgment 3 (routine_action): no card or routine action group item presents this routine_action judgment (0 group items proposed since the sweep for 1 such judgment)");
+      .rejects.toThrow("judgment 3 (routine_action): no card presents this routine_action judgment, and the 1 such judgment in this sweep exceeds the 0 routine action group items proposed since it was recorded");
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
     await domain.upsertRoutineActionGroup(FEED, {
       id: "routine-fixture", label: "Archive newsletters", summary: "Three newsletters with the same obvious cleanup.",
@@ -272,7 +272,7 @@ test("a routine action group proposed before the sweep does not present its rout
     const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }, { b: 2 }], [{ decision: "routine_action" }, { decision: "routine_action" }], { cursor: "routine" }, work.id);
     await domain.recordSweepBatch(FEED, [run], work.id); // supersedes the earlier proposed group
     await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." }))
-      .rejects.toThrow("2 of 2 judgments are not presented yet: run " + run + " judgment 1 (routine_action): no card or routine action group item presents this routine_action judgment (0 group items proposed since the sweep for 2 such judgments)");
+      .rejects.toThrow("2 of 2 judgments are not presented yet: run " + run + " judgment 1 (routine_action): no card presents this routine_action judgment, and the 2 such judgments in this sweep exceed the 0 routine action group items proposed since it was recorded");
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual(before);
     await domain.upsertRoutineActionGroup(FEED, {
       id: "fresh-routine", label: "New batch", summary: "Proposed for this sweep.",
@@ -280,7 +280,7 @@ test("a routine action group proposed before the sweep does not present its rout
       items: [{ id: "new-1", title: "Digest", reason: "Routine." }],
     });
     await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." }))
-      .rejects.toThrow("1 of 2 judgments are not presented yet: run " + run + " judgment 2 (routine_action): no card or routine action group item presents this routine_action judgment (1 group item proposed since the sweep for 2 such judgments)");
+      .rejects.toThrow("2 of 2 judgments are not presented yet: run " + run + " judgment 1 (routine_action): no card presents this routine_action judgment, and the 2 such judgments in this sweep exceed the 1 routine action group item proposed since it was recorded");
     await domain.upsertRoutineActionGroup(FEED, {
       id: "fresh-routine", label: "New batch", summary: "Proposed for this sweep.",
       proposedAction: { label: "Archive", instruction: "Archive the listed items." },
@@ -388,6 +388,57 @@ for (const order of ["named-first", "unnamed-first"] as const) {
     }
   });
 }
+
+test("a named card that does not yet present its run is still reserved, so every gap is listed at once", async () => {
+  const { root, runtime, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const second = await domain.addSourceFromBrief(FEED, "Read the dispute ledger.");
+    const named = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "review", cardId: "shared" }], { cursor: "named" }, work.id);
+    const unnamed = await domain.recordSourceRun(FEED, second.id, [{ b: 2 }], [{ decision: "review" }], { cursor: "unnamed" }, work.id);
+    await domain.recordSweepBatch(FEED, [named, unnamed], work.id);
+    // The card exists but lists only the unnamed run: it must not count for that run's unnamed judgment either.
+    await domain.upsertCard(FEED, { id: "shared", title: "Shared", why: "Wrong provenance.", blocks: [], sourceRunIds: [unnamed] });
+    const status = await domain.sweepPresentationStatus(FEED);
+    expect(status.missing.map((gap) => [gap.runId, gap.judgment, gap.cardId ?? null])).toEqual([[named, 1, "shared"], [unnamed, 1, null]]);
+    expect(status.missing[0].reason).toBe(`card shared does not list run ${named} in sourceRunIds`);
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("readiness reflects the work's state, and the missing list follows batch order", async () => {
+  const { root, runtime, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }, { b: 2 }, { c: 3 }],
+      [{ decision: "review" }, { decision: "review", cardId: "named" }, { decision: "routine_action" }], { cursor: "ordered" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    let status = await domain.sweepPresentationStatus(FEED);
+    expect(status.missing.map((gap) => gap.judgment)).toEqual([1, 2, 3]);
+    await domain.upsertCard(FEED, { id: "named", title: "Named", why: "Exact.", blocks: [], sourceRunIds: [run] });
+    await domain.upsertCard(FEED, { id: "counted-1", title: "One", why: "Counted.", blocks: [], sourceRunIds: [run] });
+    await domain.upsertCard(FEED, { id: "counted-2", title: "Two", why: "Counted.", blocks: [], sourceRunIds: [run] });
+    status = await domain.sweepPresentationStatus(FEED);
+    expect(status).toMatchObject({ ready: true, workStatus: "working" });
+    expect(status.summary).toContain("work:complete will commit 1 held checkpoint");
+
+    await domain.releaseWork(FEED, work.id, work.capabilityToken);
+    status = await domain.sweepPresentationStatus(FEED);
+    expect(status).toMatchObject({ ready: true, workStatus: "queued" });
+    expect(status.summary).toContain(`claim work ${work.id} again`);
+
+    const reclaimed = await domain.claimWork(FEED, THREAD) as WorkItem;
+    await domain.failWork(FEED, work.id, reclaimed.capabilityToken, "Connector died.");
+    status = await domain.sweepPresentationStatus(FEED);
+    expect(status).toMatchObject({ ready: false, workStatus: "failed", missing: [] });
+    expect(status.summary).toContain("cannot complete; request a new recollection");
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 test("two judgments may deliberately share one cardId", async () => {
   const { root, runtime, store, domain } = await setup();

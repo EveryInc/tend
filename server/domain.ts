@@ -3811,75 +3811,84 @@ export class AttentionDomain {
       }
       return workItems.some((work) => work.cardId === card.id && work.createdAt >= recordedAt) ? undefined : `card ${card.id} is ${card.status} from before this run with no new approval since`;
     };
-    const missing: SweepPresentationGap[] = [];
-    const runReports: SweepPresentationRun[] = [];
-    const routineFallback: Array<{ gap: SweepPresentationGap; report: SweepPresentationRun }> = [];
-    // Pass 1: judgments that name a card are matched exactly, and the cards they claim are reserved across the
-    // whole batch, so a card named by one run's judgment never silently satisfies another run's unnamed one.
-    // Sharing a card is explicit: every judgment it presents names it.
-    const claimed = new Set<string>();
-    const counted = new Map<string, { review: SweepPresentationGap[]; routine: SweepPresentationGap[] }>();
+    type Judged = { run: SourceRun; gap: SweepPresentationGap; review: boolean; cardId?: string };
+    const judged: Judged[] = [];
+    const runReports = new Map<string, SweepPresentationRun>();
     for (const run of runs) {
-      const report: SweepPresentationRun = { runId: run.id, sourceId: run.sourceId, checkpointHeld: run.pendingCheckpoint !== undefined, judgments: run.judgments.length, needingPresentation: 0, presented: 0 };
-      const unnamed = { review: [] as SweepPresentationGap[], routine: [] as SweepPresentationGap[] };
+      runReports.set(run.id, { runId: run.id, sourceId: run.sourceId, checkpointHeld: run.pendingCheckpoint !== undefined, judgments: run.judgments.length, needingPresentation: 0, presented: 0 });
       run.judgments.forEach((judgment, index) => {
         if (!isRecord(judgment) || typeof judgment.decision !== "string") return;
-        const decision = judgment.decision;
-        const review = REVIEW_DECISIONS.has(decision);
-        if (!review && decision !== ROUTINE_DECISION) return;
-        report.needingPresentation += 1;
-        const gap: SweepPresentationGap = { runId: run.id, sourceId: run.sourceId, judgment: index + 1, decision, reason: "" };
+        const review = REVIEW_DECISIONS.has(judgment.decision);
+        if (!review && judgment.decision !== ROUTINE_DECISION) return;
+        runReports.get(run.id)!.needingPresentation += 1;
         const cardId = typeof judgment.cardId === "string" ? judgment.cardId : undefined;
-        if (cardId === undefined) {
-          (review ? unnamed.review : unnamed.routine).push(gap);
-          return;
-        }
-        const card = cardsById.get(cardId);
-        const reason = card ? hiddenReason(card, run) : `no card with id ${cardId} exists`;
-        if (reason) missing.push({ ...gap, cardId, reason });
-        else {
-          claimed.add(cardId);
-          report.presented += 1;
-        }
+        judged.push({ run, gap: { runId: run.id, sourceId: run.sourceId, judgment: index + 1, decision: judgment.decision, ...(cardId ? { cardId } : {}), reason: "" }, review, cardId });
       });
-      runReports.push(report);
-      counted.set(run.id, unnamed);
     }
-    // Pass 2: judgments without a cardId fall back to counting presenting cards that no exact match claimed.
+    const missing: SweepPresentationGap[] = [];
+    // Every card a judgment names is reserved for exact matching across the whole batch, whether or not it
+    // presents its run yet, so the report lists all gaps at once and a named card never silently satisfies an
+    // unnamed judgment elsewhere. Sharing a card is explicit: every judgment it presents names it.
+    const reserved = new Set(judged.flatMap((item) => item.cardId ? [item.cardId] : []));
+    for (const item of judged) {
+      if (item.cardId === undefined) continue;
+      const card = cardsById.get(item.cardId);
+      const reason = card ? hiddenReason(card, item.run) : `no card with id ${item.cardId} exists`;
+      if (reason) missing.push({ ...item.gap, reason });
+      else runReports.get(item.run.id)!.presented += 1;
+    }
+    // Judgments without a cardId are matched by count over the run's presenting cards that no judgment reserved.
+    const routineWithoutCard: Judged[] = [];
     for (const run of runs) {
-      const report = runReports.find((candidate) => candidate.runId === run.id)!;
-      const { review: countedReview, routine: countedRoutine } = counted.get(run.id)!;
-      const pool = cards.filter((card) => !claimed.has(card.id) && hiddenReason(card, run) === undefined).length;
-      const reviewCovered = Math.min(pool, countedReview.length);
-      report.presented += reviewCovered;
-      for (const gap of countedReview.slice(reviewCovered)) {
-        missing.push({ ...gap, reason: `no unclaimed card presents this review judgment (${pool} available for ${countedReview.length} review ${countedReview.length === 1 ? "judgment" : "judgments"} without a cardId); add a cardId or upsert another card with sourceRunIds including ${run.id}` });
+      const unnamed = judged.filter((item) => item.run === run && item.cardId === undefined);
+      const reviews = unnamed.filter((item) => item.review);
+      const routines = unnamed.filter((item) => !item.review);
+      const pool = cards.filter((card) => !reserved.has(card.id) && hiddenReason(card, run) === undefined).length;
+      const reviewCovered = Math.min(pool, reviews.length);
+      const routineCovered = Math.max(0, Math.min(pool - reviews.length, routines.length));
+      runReports.get(run.id)!.presented += reviewCovered + routineCovered;
+      for (const item of reviews.slice(reviewCovered)) {
+        missing.push({ ...item.gap, reason: `no unclaimed card presents this review judgment (${pool} available for ${reviews.length} review ${reviews.length === 1 ? "judgment" : "judgments"} without a cardId); add a cardId or upsert another card with sourceRunIds including ${run.id}` });
       }
-      const routineCovered = Math.max(0, Math.min(pool - countedReview.length, countedRoutine.length));
-      report.presented += routineCovered;
-      for (const gap of countedRoutine.slice(routineCovered)) routineFallback.push({ gap, report });
+      routineWithoutCard.push(...routines.slice(routineCovered));
     }
+    // routine_action judgments without a card may be covered by items of routine action groups proposed since the
+    // sweep. Group items do not identify judgments, so this coverage is aggregate: when it falls short, every such
+    // judgment is listed rather than an invented subset.
     const earliestRecordedAt = runs.map((run) => run.completedAt ?? "").sort()[0] ?? "";
     const routineGroupItems = feed.routineActions
       .filter((group) => group.status !== "stale" && group.status !== "failed" && group.createdAt >= earliestRecordedAt)
       .reduce((total, group) => total + group.items.length, 0);
-    routineFallback.forEach(({ gap, report }, index) => {
-      if (index < routineGroupItems) report.presented += 1;
-      else missing.push({ ...gap, reason: `no card or routine action group item presents this routine_action judgment (${routineGroupItems} group ${routineGroupItems === 1 ? "item" : "items"} proposed since the sweep for ${routineFallback.length} such ${routineFallback.length === 1 ? "judgment" : "judgments"}); add a cardId, upsert a card, or propose the group` });
-    });
-    const held = runReports.filter((report) => report.checkpointHeld).length;
-    const needing = runReports.reduce((total, report) => total + report.needingPresentation, 0);
-    const ready = missing.length === 0;
+    if (routineGroupItems < routineWithoutCard.length) {
+      for (const item of routineWithoutCard) {
+        missing.push({ ...item.gap, reason: `no card presents this routine_action judgment, and the ${routineWithoutCard.length} such ${routineWithoutCard.length === 1 ? "judgment" : "judgments"} in this sweep ${routineWithoutCard.length === 1 ? "exceeds" : "exceed"} the ${routineGroupItems} routine action group ${routineGroupItems === 1 ? "item" : "items"} proposed since it was recorded; add a cardId, upsert a card, or propose the group` });
+      }
+    }
+    const runOrder = new Map(runs.map((run, index) => [run.id, index]));
+    missing.sort((a, b) => (runOrder.get(a.runId)! - runOrder.get(b.runId)!) || (a.judgment - b.judgment));
+    const reports = [...runReports.values()];
+    const held = reports.filter((report) => report.checkpointHeld).length;
+    const needing = reports.reduce((total, report) => total + report.needingPresentation, 0);
+    const presentationReady = missing.length === 0;
     const status = held ? "pending" : "committed";
     const workId = batch.triggerWorkId ?? null;
-    const workStatus = workId ? (await this.store.readWorkItems(feedId)).find((work) => work.id === workId)?.status ?? null : null;
+    const workStatus = workId ? workItems.find((work) => work.id === workId)?.status ?? null : null;
+    const completable = workStatus === "working" || workStatus === "queued";
+    const ready = presentationReady && (status === "committed" || completable);
     const describe = (gap: SweepPresentationGap) => `run ${gap.runId} judgment ${gap.judgment} (${gap.decision}${gap.cardId ? `, cardId ${gap.cardId}` : ""}): ${gap.reason}`;
-    const summary = status === "committed"
-      ? `Batch ${batch.id} is committed; ${ready ? `all ${needing} judgments that need presentation are presented.` : `${missing.length} of ${needing} judgments have no presenting card (informational).`}`
-      : ready
-        ? `All ${needing} judgments that need presentation are presented; work:complete will commit ${held} held checkpoint${held === 1 ? "" : "s"}.`
-        : `${missing.length} of ${needing} judgments are not presented yet: ${missing.slice(0, 3).map(describe).join("; ")}${missing.length > 3 ? `; and ${missing.length - 3} more` : ""}.`;
-    return { status, currentBatchId: batch.id, workId, workStatus, ready, runs: runReports, missing, routineGroupItems, summary };
+    let summary: string;
+    if (status === "committed") {
+      summary = `Batch ${batch.id} is committed; ${presentationReady ? `all ${needing} judgments that need presentation are presented.` : `${missing.length} of ${needing} judgments have no presenting card (informational).`}`;
+    } else if (!presentationReady) {
+      summary = `${missing.length} of ${needing} judgments are not presented yet: ${missing.slice(0, 3).map(describe).join("; ")}${missing.length > 3 ? `; and ${missing.length - 3} more` : ""}.`;
+    } else if (workStatus === "working") {
+      summary = `All ${needing} judgments that need presentation are presented; work:complete will commit ${held} held checkpoint${held === 1 ? "" : "s"}.`;
+    } else if (workStatus === "queued") {
+      summary = `All ${needing} judgments that need presentation are presented; claim work ${workId} again, then work:complete will commit ${held} held checkpoint${held === 1 ? "" : "s"}.`;
+    } else {
+      summary = `All ${needing} judgments that need presentation are presented, but recollection work ${workId ?? "(none)"} is ${workStatus ?? "missing"} and cannot complete; request a new recollection to re-read from the held checkpoint${held === 1 ? "" : "s"}.`;
+    }
+    return { status, currentBatchId: batch.id, workId, workStatus, ready, runs: reports, missing, routineGroupItems, summary };
   }
 
   // Recollection work completes only once every judgment that needs presentation has it; that is when the
