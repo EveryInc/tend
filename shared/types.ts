@@ -670,6 +670,7 @@ export interface SweepPresentationRun {
   checkpointHeld: boolean;
   judgments: number;
   needingPresentation: number;
+  /** Judgments presented by cards (exact matches plus counted cards). Routine judgments covered by group items are reported batch-wide in `routineCoveredByGroups`. */
   presented: number;
 }
 
@@ -682,7 +683,10 @@ export interface SweepPresentationStatus {
   ready: boolean;
   runs: SweepPresentationRun[];
   missing: SweepPresentationGap[];
+  /** Items of routine action groups proposed since the sweep, available to cover routine_action judgments without a card. */
   routineGroupItems: number;
+  /** routine_action judgments without a card that those group items cover (aggregate, not attributable to a run). */
+  routineCoveredByGroups: number;
   summary: string;
 }
 

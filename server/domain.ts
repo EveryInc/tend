@@ -3784,7 +3784,7 @@ export class AttentionDomain {
     return this.store.serialize(async () => {
       const sweep = await this.store.readSweepState(feedId);
       if (!sweep.currentBatchId) {
-        return { status: "idle", currentBatchId: null, workId: null, workStatus: null, ready: true, runs: [], missing: [], routineGroupItems: 0, summary: "No sweep batch has been recorded for this feed." };
+        return { status: "idle", currentBatchId: null, workId: null, workStatus: null, ready: true, runs: [], missing: [], routineGroupItems: 0, routineCoveredByGroups: 0, summary: "No sweep batch has been recorded for this feed." };
       }
       return this.presentationReport(feedId, await this.store.readSweepBatch(feedId, sweep.currentBatchId));
     });
@@ -3859,6 +3859,7 @@ export class AttentionDomain {
     const routineGroupItems = feed.routineActions
       .filter((group) => group.status !== "stale" && group.status !== "failed" && group.createdAt >= earliestRecordedAt)
       .reduce((total, group) => total + group.items.length, 0);
+    const routineCoveredByGroups = Math.min(routineGroupItems, routineWithoutCard.length);
     if (routineGroupItems < routineWithoutCard.length) {
       for (const item of routineWithoutCard) {
         missing.push({ ...item.gap, reason: `no card presents this routine_action judgment, and the ${routineWithoutCard.length} such ${routineWithoutCard.length === 1 ? "judgment" : "judgments"} in this sweep ${routineWithoutCard.length === 1 ? "exceeds" : "exceed"} the ${routineGroupItems} routine action group ${routineGroupItems === 1 ? "item" : "items"} proposed since it was recorded; add a cardId, upsert a card, or propose the group` });
@@ -3876,19 +3877,22 @@ export class AttentionDomain {
     const completable = workStatus === "working" || workStatus === "queued";
     const ready = presentationReady && (status === "committed" || completable);
     const describe = (gap: SweepPresentationGap) => `run ${gap.runId} judgment ${gap.judgment} (${gap.decision}${gap.cardId ? `, cardId ${gap.cardId}` : ""}): ${gap.reason}`;
+    const gaps = `${missing.length} of ${needing} judgments are not presented yet: ${missing.slice(0, 3).map(describe).join("; ")}${missing.length > 3 ? `; and ${missing.length - 3} more` : ""}.`;
+    const checkpoints = `${held} held checkpoint${held === 1 ? "" : "s"}`;
     let summary: string;
     if (status === "committed") {
       summary = `Batch ${batch.id} is committed; ${presentationReady ? `all ${needing} judgments that need presentation are presented.` : `${missing.length} of ${needing} judgments have no presenting card (informational).`}`;
+    } else if (!completable) {
+      // The owner can never complete, so say that first: presenting more cards will not commit these checkpoints.
+      summary = `Recollection work ${workId ?? "(none)"} is ${workStatus ?? "missing"} and cannot complete; request a new recollection to re-read from the ${checkpoints}. ${presentationReady ? `All ${needing} judgments that need presentation are presented.` : gaps}`;
     } else if (!presentationReady) {
-      summary = `${missing.length} of ${needing} judgments are not presented yet: ${missing.slice(0, 3).map(describe).join("; ")}${missing.length > 3 ? `; and ${missing.length - 3} more` : ""}.`;
-    } else if (workStatus === "working") {
-      summary = `All ${needing} judgments that need presentation are presented; work:complete will commit ${held} held checkpoint${held === 1 ? "" : "s"}.`;
+      summary = gaps;
     } else if (workStatus === "queued") {
-      summary = `All ${needing} judgments that need presentation are presented; claim work ${workId} again, then work:complete will commit ${held} held checkpoint${held === 1 ? "" : "s"}.`;
+      summary = `All ${needing} judgments that need presentation are presented; claim work ${workId} again, then work:complete will commit the ${checkpoints}.`;
     } else {
-      summary = `All ${needing} judgments that need presentation are presented, but recollection work ${workId ?? "(none)"} is ${workStatus ?? "missing"} and cannot complete; request a new recollection to re-read from the held checkpoint${held === 1 ? "" : "s"}.`;
+      summary = `All ${needing} judgments that need presentation are presented; work:complete will commit the ${checkpoints}.`;
     }
-    return { status, currentBatchId: batch.id, workId, workStatus, ready, runs: reports, missing, routineGroupItems, summary };
+    return { status, currentBatchId: batch.id, workId, workStatus, ready, runs: reports, missing, routineGroupItems, routineCoveredByGroups, summary };
   }
 
   // Recollection work completes only once every judgment that needs presentation has it; that is when the

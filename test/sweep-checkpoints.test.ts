@@ -286,6 +286,9 @@ test("a routine action group proposed before the sweep does not present its rout
       proposedAction: { label: "Archive", instruction: "Archive the listed items." },
       items: [{ id: "new-1", title: "Digest", reason: "Routine." }, { id: "new-2", title: "Other digest", reason: "Routine." }],
     });
+    const covered = await domain.sweepPresentationStatus(FEED);
+    expect(covered).toMatchObject({ ready: true, routineGroupItems: 2, routineCoveredByGroups: 2 });
+    expect(covered.runs[0]).toMatchObject({ needingPresentation: 2, presented: 0 });
     expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "routine" });
   } finally {
@@ -389,24 +392,28 @@ for (const order of ["named-first", "unnamed-first"] as const) {
   });
 }
 
-test("a named card that does not yet present its run is still reserved, so every gap is listed at once", async () => {
-  const { root, runtime, domain } = await setup();
-  try {
-    const work = await claimRecollection(domain);
-    const second = await domain.addSourceFromBrief(FEED, "Read the dispute ledger.");
-    const named = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "review", cardId: "shared" }], { cursor: "named" }, work.id);
-    const unnamed = await domain.recordSourceRun(FEED, second.id, [{ b: 2 }], [{ decision: "review" }], { cursor: "unnamed" }, work.id);
-    await domain.recordSweepBatch(FEED, [named, unnamed], work.id);
-    // The card exists but lists only the unnamed run: it must not count for that run's unnamed judgment either.
-    await domain.upsertCard(FEED, { id: "shared", title: "Shared", why: "Wrong provenance.", blocks: [], sourceRunIds: [unnamed] });
-    const status = await domain.sweepPresentationStatus(FEED);
-    expect(status.missing.map((gap) => [gap.runId, gap.judgment, gap.cardId ?? null])).toEqual([[named, 1, "shared"], [unnamed, 1, null]]);
-    expect(status.missing[0].reason).toBe(`card shared does not list run ${named} in sourceRunIds`);
-  } finally {
-    runtime.sqlite.close();
-    await rm(root, { recursive: true, force: true });
-  }
-});
+for (const order of ["named-first", "unnamed-first"] as const) {
+  test(`a named card that does not yet present its run is still reserved, and gaps follow batch order (${order})`, async () => {
+    const { root, runtime, domain } = await setup();
+    try {
+      const work = await claimRecollection(domain);
+      const second = await domain.addSourceFromBrief(FEED, "Read the dispute ledger.");
+      const named = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "review", cardId: "shared" }], { cursor: "named" }, work.id);
+      const unnamed = await domain.recordSourceRun(FEED, second.id, [{ b: 2 }], [{ decision: "review" }], { cursor: "unnamed" }, work.id);
+      const batchOrder = order === "named-first" ? [named, unnamed] : [unnamed, named];
+      await domain.recordSweepBatch(FEED, batchOrder, work.id);
+      // The card exists but lists only the unnamed run: it must not count for that run's unnamed judgment either.
+      await domain.upsertCard(FEED, { id: "shared", title: "Shared", why: "Wrong provenance.", blocks: [], sourceRunIds: [unnamed] });
+      const status = await domain.sweepPresentationStatus(FEED);
+      expect(status.missing.map((gap) => gap.runId)).toEqual(batchOrder);
+      expect(status.missing.find((gap) => gap.runId === named)).toMatchObject({ judgment: 1, cardId: "shared", reason: `card shared does not list run ${named} in sourceRunIds` });
+      expect(status.missing.find((gap) => gap.runId === unnamed)?.cardId).toBeUndefined();
+    } finally {
+      runtime.sqlite.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("readiness reflects the work's state, and the missing list follows batch order", async () => {
   const { root, runtime, domain } = await setup();
@@ -422,7 +429,7 @@ test("readiness reflects the work's state, and the missing list follows batch or
     await domain.upsertCard(FEED, { id: "counted-2", title: "Two", why: "Counted.", blocks: [], sourceRunIds: [run] });
     status = await domain.sweepPresentationStatus(FEED);
     expect(status).toMatchObject({ ready: true, workStatus: "working" });
-    expect(status.summary).toContain("work:complete will commit 1 held checkpoint");
+    expect(status.summary).toContain("work:complete will commit the 1 held checkpoint");
 
     await domain.releaseWork(FEED, work.id, work.capabilityToken);
     status = await domain.sweepPresentationStatus(FEED);
@@ -433,7 +440,25 @@ test("readiness reflects the work's state, and the missing list follows batch or
     await domain.failWork(FEED, work.id, reclaimed.capabilityToken, "Connector died.");
     status = await domain.sweepPresentationStatus(FEED);
     expect(status).toMatchObject({ ready: false, workStatus: "failed", missing: [] });
-    expect(status.summary).toContain("cannot complete; request a new recollection");
+    expect(status.summary.startsWith(`Recollection work ${work.id} is failed and cannot complete`)).toBe(true);
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a failed owner is reported before the gap list", async () => {
+  const { root, runtime, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "review", cardId: "never-made" }], { cursor: "failed" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    await domain.failWork(FEED, work.id, work.capabilityToken, "Died before presenting.");
+    const status = await domain.sweepPresentationStatus(FEED);
+    expect(status).toMatchObject({ status: "pending", ready: false, workStatus: "failed" });
+    expect(status.missing).toHaveLength(1);
+    expect(status.summary.startsWith(`Recollection work ${work.id} is failed and cannot complete; request a new recollection`)).toBe(true);
+    expect(status.summary).toContain("1 of 1 judgments are not presented yet");
   } finally {
     runtime.sqlite.close();
     await rm(root, { recursive: true, force: true });
