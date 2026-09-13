@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { withProcessLock } from "./processLock";
 
 export const isoNow = () => new Date().toISOString();
 export const makeId = (prefix: string) => `${prefix}_${randomUUID()}`;
@@ -15,23 +16,7 @@ export function safeIdentifier(value: string, label: string): string {
 }
 
 export async function withMutationLock<T>(dataDir: string, callback: () => Promise<T>): Promise<T> {
-  await mkdir(dataDir, { recursive: true });
-  const lockPath = join(dataDir, ".mutation-lock");
-  for (let attempt = 0; attempt < 400; attempt += 1) {
-    try {
-      await mkdir(lockPath);
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      if (attempt === 399) throw new Error("Timed out waiting for the filesystem mutation lock.");
-      await new Promise((resolve) => setTimeout(resolve, 15));
-    }
-  }
-  try {
-    return await callback();
-  } finally {
-    await rm(lockPath, { recursive: true, force: true });
-  }
+  return withProcessLock(join(dataDir, ".mutation-lock"), callback);
 }
 
 export async function readJson<T>(path: string): Promise<T> {
