@@ -664,11 +664,14 @@ test("an older routine group approved after the run is not new coverage", async 
     const work = await claimRecollection(domain);
     const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "routine_action" }], { cursor: "approved-later" }, work.id);
     // Approved (queued) after the run but before the batch, so recording the batch does not stale it.
-    await domain.approveRoutineActionGroup(FEED, "older");
+    const approval = await domain.approveRoutineActionGroup(FEED, "older");
     expect((await store.readFeed(FEED)).routineActions.find((group) => group.id === "older")?.status).toBe("queued");
     await domain.recordSweepBatch(FEED, [run], work.id);
-    const status = await domain.sweepPresentationStatus(FEED);
-    expect(status).toMatchObject({ ready: false, routineGroupItems: 0 });
+    expect(await domain.sweepPresentationStatus(FEED)).toMatchObject({ ready: false, routineGroupItems: 0 });
+    // Cancelling its work returns the older group to `proposed`; it is still not this sweep's proposal.
+    await domain.cancelQueuedWork(FEED, approval.id);
+    expect((await store.readFeed(FEED)).routineActions.find((group) => group.id === "older")?.status).toBe("proposed");
+    expect(await domain.sweepPresentationStatus(FEED)).toMatchObject({ ready: false, routineGroupItems: 0 });
   } finally {
     runtime.sqlite.close();
     await rm(root, { recursive: true, force: true });

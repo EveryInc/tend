@@ -3890,11 +3890,12 @@ export class AttentionDomain {
     // sweep. Group items do not identify judgments, so this coverage is aggregate: when it falls short, every such
     // judgment is listed rather than an invented subset.
     const earliestRecordedAt = runs.map((run) => run.completedAt ?? "").sort()[0] ?? "";
-    // A group counts when it is a proposal for this sweep: still `proposed` (recording the batch marks earlier
-    // proposals stale, so a live proposal is this sweep's even under a reused id) or created since the sweep.
-    // updatedAt is not used: approval or completion of an older group refreshes it without presenting anything new.
+    // A group counts when it was proposed for this sweep, which its createdAt records: recording the batch marks
+    // earlier proposals stale, and re-proposing a stale group under a reused id dates it from the re-proposal.
+    // Status alone is not enough (an older approved group returns to `proposed` when its work is cancelled) and
+    // updatedAt is not used, since approval or completion of an older group refreshes it without presenting anything new.
     const routineGroupItems = feed.routineActions
-      .filter((group) => group.status !== "stale" && group.status !== "failed" && (group.status === "proposed" || group.createdAt >= earliestRecordedAt))
+      .filter((group) => group.status !== "stale" && group.status !== "failed" && group.createdAt >= earliestRecordedAt)
       .reduce((total, group) => total + group.items.filter((item) => !item.cardId || !presenting.has(item.cardId)).length, 0);
     const routineCoveredByGroups = Math.min(routineGroupItems, routineWithoutCard.length);
     if (routineGroupItems < routineWithoutCard.length) {
