@@ -3811,13 +3811,19 @@ export class AttentionDomain {
     const workItems = await this.store.readWorkItems(feedId);
     const runs = await Promise.all(batch.sourceRunIds.map((runId) => this.store.readRun(feedId, runId)));
     const currentPass = feed.config.currentPass;
-    // Why a card does not present a run (undefined when it does): it must be written for the run and be
-    // visible for review now, or have been acted on since the run was recorded.
-    // An action on a card (dismissal, completion, approval) presents the card version that existed at the time.
-    // Timestamps in those paths are stamped a hair apart, so "no earlier than the card's latest write" allows a
-    // one-second tolerance; a card refreshed later than that must be resurfaced for review again.
-    const ACTED_ON_TOLERANCE_MS = 1_000;
-    const actedOnCurrentVersion = (actedAt: string, card: Card) => Date.parse(actedAt) + ACTED_ON_TOLERANCE_MS >= Date.parse(card.updatedAt);
+    // An action on a card (dismissal, approval) presents the card version that existed at the time. The feed
+    // event ledger is strictly ordered, so a card was acted on in its current version exactly when its latest
+    // action event comes after its latest content-write event; a card refreshed afterwards must be resurfaced.
+    const CONTENT_EVENTS = new Set(["card.created", "card.updated"]);
+    const ACTION_EVENTS = new Set(["card.dismissed", "action.approved"]);
+    const lastWrite = new Map<string, number>();
+    const lastAction = new Map<string, number>();
+    (await this.store.readEvents(feedId)).forEach((event, index) => {
+      if (!event.cardId) return;
+      if (CONTENT_EVENTS.has(event.type)) lastWrite.set(event.cardId, index);
+      else if (ACTION_EVENTS.has(event.type)) lastAction.set(event.cardId, index);
+    });
+    const actedOnCurrentVersion = (card: Card) => (lastAction.get(card.id) ?? -1) > (lastWrite.get(card.id) ?? -1);
     const hiddenReason = (card: Card, run: SourceRun, forReview: boolean): string | undefined => {
       const recordedAt = run.completedAt ?? "";
       if (!card.sourceRunIds?.includes(run.id)) return `card ${card.id} does not list run ${run.id} in sourceRunIds`;
@@ -3829,11 +3835,10 @@ export class AttentionDomain {
       }
       if (card.status === "done") {
         if ((card.completedAt ?? "") < recordedAt) return `card ${card.id} was dismissed or completed before this run and has not been resurfaced (upsert it with status to_review_updated)`;
-        return actedOnCurrentVersion(card.completedAt ?? "", card) ? undefined : `card ${card.id} was updated after the user dismissed or completed it, so its current content was never reviewed; upsert it with status to_review_updated`;
+        return actedOnCurrentVersion(card) ? undefined : `card ${card.id} was updated after the user dismissed or completed it, so its current content was never reviewed; upsert it with status to_review_updated`;
       }
-      const approvals = workItems.filter((work) => work.cardId === card.id && work.createdAt >= recordedAt);
-      if (!approvals.length) return `card ${card.id} is ${card.status} from before this run with no new approval since`;
-      return approvals.some((work) => actedOnCurrentVersion(work.createdAt, card)) ? undefined : `card ${card.id} was updated after it was approved, so its current content was never reviewed; upsert it with status to_review_updated`;
+      if (!workItems.some((work) => work.cardId === card.id && work.createdAt >= recordedAt)) return `card ${card.id} is ${card.status} from before this run with no new approval since`;
+      return actedOnCurrentVersion(card) ? undefined : `card ${card.id} was updated after it was approved, so its current content was never reviewed; upsert it with status to_review_updated`;
     };
     type Judged = { run: SourceRun; gap: SweepPresentationGap; review: boolean; cardId?: string };
     const judged: Judged[] = [];

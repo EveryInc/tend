@@ -617,7 +617,6 @@ test("a card dismissed between the run and its refresh does not present the refr
     await domain.recordSweepBatch(FEED, [run], work.id);
     // The user dismisses the old card after the run was recorded, then the agent refreshes it without resurfacing.
     await domain.dismissCard(FEED, "thread-r");
-    await Bun.sleep(1_100);
     await domain.upsertCard(FEED, { id: "thread-r", title: "New content", why: "A new message arrived.", blocks: [], sourceRunIds: [run] });
     expect((await store.readCard(FEED, "thread-r")).status).toBe("done");
     const status = await domain.sweepPresentationStatus(FEED);
@@ -628,6 +627,34 @@ test("a card dismissed between the run and its refresh does not present the refr
     // A dismissal of the presented content still counts.
     await domain.dismissCard(FEED, "thread-r");
     expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true);
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a card refreshed after its approval does not present the refreshed content", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "review", cardId: "approve-me" }], { cursor: "approval" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    await domain.upsertCard(FEED, {
+      id: "approve-me", title: "Approve me", why: "Has an approvable action.", sourceRunIds: [run],
+      blocks: [{ id: "draft", type: "editable_text", value: "Draft.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the draft.", artifactBlockId: "draft", externalMutation: true }],
+    });
+    await domain.runCardAction(FEED, "approve-me", "send");
+    expect((await store.readCard(FEED, "approve-me")).status).toBe("queued");
+    expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true); // approved after presentation
+    await domain.upsertCard(FEED, {
+      id: "approve-me", title: "Approve me", why: "Refreshed after approval.", sourceRunIds: [run],
+      blocks: [{ id: "draft", type: "editable_text", value: "Changed draft.", editable: true }],
+      actions: [{ id: "send", label: "Send", behavior: "approve_action", instruction: "Send the draft.", artifactBlockId: "draft", externalMutation: true }],
+    });
+    const status = await domain.sweepPresentationStatus(FEED);
+    expect(status.ready).toBe(false);
+    expect(status.missing[0].reason).toBe("card approve-me was updated after it was approved, so its current content was never reviewed; upsert it with status to_review_updated");
   } finally {
     runtime.sqlite.close();
     await rm(root, { recursive: true, force: true });
