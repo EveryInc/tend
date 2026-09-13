@@ -675,6 +675,33 @@ test("an older routine group approved after the run is not new coverage", async 
   }
 });
 
+test("a re-proposed group that the user approves before completion keeps counting", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "weekly", label: "Weekly", summary: "Last sweep's proposal.",
+      proposedAction: { label: "Archive", instruction: "Archive the digests." },
+      items: [{ id: "old", title: "Old digest", reason: "Routine." }],
+    });
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "routine_action" }], { cursor: "revived" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id); // stales the earlier proposal
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "weekly", label: "Weekly", summary: "This sweep's proposal under the same id.",
+      proposedAction: { label: "Archive", instruction: "Archive the digests." },
+      items: [{ id: "new", title: "New digest", reason: "Routine." }],
+    });
+    expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true);
+    await domain.approveRoutineActionGroup(FEED, "weekly");
+    expect((await store.readFeed(FEED)).routineActions.find((group) => group.id === "weekly")?.status).toBe("queued");
+    expect(await domain.sweepPresentationStatus(FEED)).toMatchObject({ ready: true, routineGroupItems: 1 });
+    expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("two judgments may deliberately share one cardId", async () => {
   const { root, runtime, store, domain } = await setup();
   try {

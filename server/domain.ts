@@ -2150,7 +2150,8 @@ export class AttentionDomain {
         proposedAction: input.proposedAction,
         items: input.items.map((item) => ({ ...item, id: item.id.trim(), title: item.title.trim(), reason: item.reason.trim() })),
         status: "proposed",
-        createdAt: existing?.createdAt ?? now,
+        // Reviving a stale or failed group under its old id is a new proposal cycle, so it dates from now.
+        createdAt: existing && existing.status !== "stale" && existing.status !== "failed" ? existing.createdAt : now,
         updatedAt: now,
       };
       for (const item of group.items) {
