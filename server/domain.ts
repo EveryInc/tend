@@ -3821,7 +3821,13 @@ export class AttentionDomain {
     const ACTION_EVENTS = new Set(["card.dismissed", "action.approved", "work.queued", "cleanup.queued", "voice.intent_queued", "voice.instruction_submitted", "card.reaction_recorded", "card.block_edited", "card.returned_to_review"]);
     const lastWrite = new Map<string, number>();
     const lastAction = new Map<string, number>();
+    // Routine group proposals are ordered against the batch through the same ledger: timestamps can tie within a
+    // millisecond, but events cannot.
+    const lastProposal = new Map<string, number>();
+    let batchRecordedAt = -1;
     (await this.store.readEvents(feedId)).forEach((event, index) => {
+      if (event.type === "sweep.batch_recorded" && isRecord(event.detail) && event.detail.batchId === batch.id) batchRecordedAt = index;
+      if (event.type === "routine_action.proposed" && isRecord(event.detail) && typeof event.detail.groupId === "string") lastProposal.set(event.detail.groupId, index);
       if (event.type === "reading.preference_recorded" && isRecord(event.detail) && isRecord(event.detail.beforeCardUpdatedAt)) {
         for (const memberId of Object.keys(event.detail.beforeCardUpdatedAt)) lastAction.set(memberId, index);
         return;
@@ -3830,6 +3836,10 @@ export class AttentionDomain {
       if (CONTENT_EVENTS.has(event.type)) lastWrite.set(event.cardId, index);
       else if (ACTION_EVENTS.has(event.type)) lastAction.set(event.cardId, index);
     });
+    const proposedForThisSweep = (group: RoutineActionGroup): boolean => {
+      const proposal = lastProposal.get(group.id);
+      return proposal !== undefined && batchRecordedAt >= 0 ? proposal > batchRecordedAt : group.createdAt >= batch.createdAt;
+    };
     const actedOnCurrentVersion = (card: Card) => (lastAction.get(card.id) ?? -1) > (lastWrite.get(card.id) ?? -1);
     const hiddenReason = (card: Card, run: SourceRun, forReview: boolean): string | undefined => {
       const recordedAt = run.completedAt ?? "";
@@ -3838,7 +3848,7 @@ export class AttentionDomain {
       if (forReview && card.routineActionGroupId) return `card ${card.id} belongs to routine action group ${card.routineActionGroupId}, so it is not individually reviewable; a review judgment needs its own card`;
       if (!forReview && card.routineActionGroupId) {
         const group = feed.routineActions.find((candidate) => candidate.id === card.routineActionGroupId);
-        if (group && group.createdAt < batch.createdAt) return `card ${card.id} belongs to routine action group ${group.id}, which was proposed before this sweep; propose a group for this sweep or resurface the card`;
+        if (group && !proposedForThisSweep(group)) return `card ${card.id} belongs to routine action group ${group.id}, which was proposed before this sweep; propose a group for this sweep or resurface the card`;
       }
       if (card.sweep?.hidden) return `card ${card.id} is hidden by sweep feedback ${card.sweep.feedbackId}; upsert it again with status to_review_updated if it must be presented`;
       if (card.status === "to_review_new" || card.status === "to_review_updated") {
@@ -3913,7 +3923,7 @@ export class AttentionDomain {
     // alone is not enough (an older approved group returns to `proposed` when its work is cancelled) and updatedAt
     // is not used, since approval or completion of an older group refreshes it without presenting anything new.
     const routineGroupItems = feed.routineActions
-      .filter((group) => group.status !== "stale" && group.status !== "failed" && group.createdAt >= batch.createdAt)
+      .filter((group) => group.status !== "stale" && group.status !== "failed" && proposedForThisSweep(group))
       .reduce((total, group) => total + group.items.filter((item) => !item.cardId || !presenting.has(item.cardId)).length, 0);
     const routineCoveredByGroups = Math.min(routineGroupItems, routineWithoutCard.length);
     if (routineGroupItems < routineWithoutCard.length) {

@@ -708,6 +708,28 @@ test("a group created and approved between two runs does not cover the later run
   }
 });
 
+test("a group proposed just before the batch does not count even if their timestamps tie", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "routine_action" }], { cursor: "tie" }, work.id);
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "just-before", label: "Before", summary: "Proposed before the batch.",
+      proposedAction: { label: "Archive", instruction: "Archive these." },
+      items: [{ id: "i1", title: "One", reason: "Routine." }],
+    });
+    await domain.approveRoutineActionGroup(FEED, "just-before"); // queued, so recording the batch does not stale it
+    const batchId = await domain.recordSweepBatch(FEED, [run], work.id);
+    const batch = await store.readSweepBatch(FEED, batchId);
+    const group = (await store.readFeed(FEED)).routineActions.find((candidate) => candidate.id === "just-before")!;
+    await store.writeRoutineActionGroup({ ...group, createdAt: batch.createdAt }); // force the timestamp tie
+    expect(await domain.sweepPresentationStatus(FEED)).toMatchObject({ ready: false, routineGroupItems: 0 });
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("a voice instruction on a card counts as reviewing it", async () => {
   const { root, runtime, store, domain } = await setup();
   try {
