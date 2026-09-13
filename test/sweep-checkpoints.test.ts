@@ -526,6 +526,38 @@ test("a batch must include every held run recorded for its work unless a newer r
     await domain.recordSweepBatch(FEED, [b, aAgain], work.id); // the newer run for the same source supersedes the first
     expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
     expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "a2" });
+    const superseded = await store.readRun(FEED, a);
+    expect(superseded.pendingCheckpoint).toBeUndefined();
+    expect(typeof superseded.checkpointCommittedAt).toBe("string");
+    const event = (await store.readEvents(FEED)).find((item) => item.type === "sweep.checkpoints_committed");
+    expect(event?.detail).toMatchObject({ skipped: expect.arrayContaining([{ runId: a, reason: "superseded by a newer run for the same source, which the batch included" }]) });
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a card that already presents a judgment adds no routine group capacity", async () => {
+  const { root, runtime, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }, { b: 2 }], [{ decision: "routine_action", cardId: "x" }, { decision: "routine_action" }], { cursor: "double" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    await domain.upsertCard(FEED, { id: "x", title: "X", why: "Presents judgment 1.", blocks: [], sourceRunIds: [run] });
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "one-item", label: "Batch", summary: "Only card x.",
+      proposedAction: { label: "Archive", instruction: "Archive these." },
+      items: [{ id: "item-x", cardId: "x", title: "X", reason: "Routine." }],
+    });
+    const status = await domain.sweepPresentationStatus(FEED);
+    expect(status).toMatchObject({ ready: false, routineGroupItems: 0, routineCoveredByGroups: 0 });
+    expect(status.missing.map((gap) => gap.judgment)).toEqual([2]);
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "one-item", label: "Batch", summary: "Card x plus a card-less item for judgment 2.",
+      proposedAction: { label: "Archive", instruction: "Archive these." },
+      items: [{ id: "item-x", cardId: "x", title: "X", reason: "Routine." }, { id: "item-2", title: "Other", reason: "Routine." }],
+    });
+    expect(await domain.sweepPresentationStatus(FEED)).toMatchObject({ ready: true, routineGroupItems: 1, routineCoveredByGroups: 1 });
   } finally {
     runtime.sqlite.close();
     await rm(root, { recursive: true, force: true });

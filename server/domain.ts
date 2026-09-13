@@ -3843,12 +3843,17 @@ export class AttentionDomain {
     // presents its run yet, so the report lists all gaps at once and a named card never silently satisfies an
     // unnamed judgment elsewhere. Sharing a card is explicit: every judgment it presents names it.
     const reserved = new Set(judged.flatMap((item) => item.cardId ? [item.cardId] : []));
+    // Cards that presented a judgment (named or counted); a routine group item backed by one of them adds no capacity.
+    const presenting = new Set<string>();
     for (const item of judged) {
       if (item.cardId === undefined) continue;
       const card = cardsById.get(item.cardId);
       const reason = card ? hiddenReason(card, item.run, item.review) : `no card with id ${item.cardId} exists`;
       if (reason) missing.push({ ...item.gap, reason });
-      else runReports.get(item.run.id)!.presented += 1;
+      else {
+        runReports.get(item.run.id)!.presented += 1;
+        presenting.add(item.cardId);
+      }
     }
     // Judgments without a cardId are matched by count over the run's presenting cards that no judgment reserved.
     const routineWithoutCard: Judged[] = [];
@@ -3857,10 +3862,13 @@ export class AttentionDomain {
       const reviews = unnamed.filter((item) => item.review);
       const routines = unnamed.filter((item) => !item.review);
       const unreserved = cards.filter((card) => !reserved.has(card.id));
-      const reviewPool = unreserved.filter((card) => hiddenReason(card, run, true) === undefined).length;
-      const routinePool = unreserved.filter((card) => hiddenReason(card, run, false) === undefined).length;
+      const reviewCards = unreserved.filter((card) => hiddenReason(card, run, true) === undefined);
+      const routineOnlyCards = unreserved.filter((card) => hiddenReason(card, run, false) === undefined && hiddenReason(card, run, true) !== undefined);
+      const reviewPool = reviewCards.length;
       const reviewCovered = Math.min(reviewPool, reviews.length);
-      const routineCovered = Math.max(0, Math.min(routinePool - reviewCovered, routines.length));
+      const routineCandidates = [...reviewCards.slice(reviewCovered), ...routineOnlyCards];
+      const routineCovered = Math.min(routineCandidates.length, routines.length);
+      for (const card of [...reviewCards.slice(0, reviewCovered), ...routineCandidates.slice(0, routineCovered)]) presenting.add(card.id);
       runReports.get(run.id)!.presented += reviewCovered + routineCovered;
       for (const item of reviews.slice(reviewCovered)) {
         missing.push({ ...item.gap, reason: `no unclaimed card presents this review judgment (${reviewPool} available for ${reviews.length} review ${reviews.length === 1 ? "judgment" : "judgments"} without a cardId); add a cardId or upsert another card with sourceRunIds including ${run.id}` });
@@ -3875,7 +3883,7 @@ export class AttentionDomain {
     // proposals stale, so a live group with a fresh updatedAt is one for this sweep even if its id was reused.
     const routineGroupItems = feed.routineActions
       .filter((group) => group.status !== "stale" && group.status !== "failed" && group.updatedAt >= earliestRecordedAt)
-      .reduce((total, group) => total + group.items.length, 0);
+      .reduce((total, group) => total + group.items.filter((item) => !item.cardId || !presenting.has(item.cardId)).length, 0);
     const routineCoveredByGroups = Math.min(routineGroupItems, routineWithoutCard.length);
     if (routineGroupItems < routineWithoutCard.length) {
       for (const item of routineWithoutCard) {
@@ -3929,6 +3937,17 @@ export class AttentionDomain {
     const committedAt = isoNow();
     const committed: string[] = [];
     const skipped: Array<{ runId: string; reason: string }> = [];
+    // Runs recorded for this work but left out of the batch were superseded by a newer run for their source
+    // (record-batch refuses any other omission); settle them so nothing stays held after the work completes.
+    if (batch.triggerWorkId) {
+      for (const run of await this.store.listRuns(feedId)) {
+        if (run.triggerWorkId !== batch.triggerWorkId || run.pendingCheckpoint === undefined || batch.sourceRunIds.includes(run.id)) continue;
+        skipped.push({ runId: run.id, reason: "superseded by a newer run for the same source, which the batch included" });
+        const settled: SourceRun = { ...run, checkpointCommittedAt: committedAt };
+        delete settled.pendingCheckpoint;
+        await this.store.writeRun(settled);
+      }
+    }
     for (const run of runs) {
       if (run.pendingCheckpoint === undefined) continue;
       if (newestBySource.get(run.sourceId) === run) {
