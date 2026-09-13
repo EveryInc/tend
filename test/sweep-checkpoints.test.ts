@@ -465,6 +465,73 @@ test("a failed owner is reported before the gap list", async () => {
   }
 });
 
+test("a review card pulled into a proposed routine group no longer presents its judgment", async () => {
+  const { root, runtime, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "review", cardId: "x" }], { cursor: "grouped" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id);
+    await domain.upsertCard(FEED, { id: "x", title: "X", why: "Reviewable.", blocks: [], sourceRunIds: [run] });
+    expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true);
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "group-with-x", label: "Batch", summary: "Contains the review card.",
+      proposedAction: { label: "Archive", instruction: "Archive these." },
+      items: [{ id: "item-x", cardId: "x", title: "X", reason: "Routine." }],
+    });
+    const status = await domain.sweepPresentationStatus(FEED);
+    expect(status.ready).toBe(false);
+    expect(status.missing[0].reason).toBe("card x belongs to routine action group group-with-x, so it is not individually reviewable; a review judgment needs its own card");
+    await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).rejects.toThrow("not individually reviewable");
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a routine action group re-proposed under a reused id counts for the new sweep", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "weekly-digests", label: "Digests", summary: "Last sweep's group.",
+      proposedAction: { label: "Archive", instruction: "Archive the digests." },
+      items: [{ id: "old", title: "Old digest", reason: "Routine." }],
+    });
+    const work = await claimRecollection(domain);
+    const run = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "routine_action" }], { cursor: "reused" }, work.id);
+    await domain.recordSweepBatch(FEED, [run], work.id); // supersedes the earlier proposal
+    expect((await store.readFeed(FEED)).routineActions.find((group) => group.id === "weekly-digests")?.status).toBe("stale");
+    expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(false);
+    await domain.upsertRoutineActionGroup(FEED, {
+      id: "weekly-digests", label: "Digests", summary: "This sweep's group, same id.",
+      proposedAction: { label: "Archive", instruction: "Archive the digests." },
+      items: [{ id: "new", title: "New digest", reason: "Routine." }],
+    });
+    expect(await domain.sweepPresentationStatus(FEED)).toMatchObject({ ready: true, routineGroupItems: 1, routineCoveredByGroups: 1 });
+    expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a batch must include every held run recorded for its work unless a newer run for that source supersedes it", async () => {
+  const { root, runtime, store, domain } = await setup();
+  try {
+    const work = await claimRecollection(domain);
+    const second = await domain.addSourceFromBrief(FEED, "Read the dispute ledger.");
+    const a = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "review", cardId: "a-card" }], { cursor: "a" }, work.id);
+    const b = await domain.recordSourceRun(FEED, second.id, [{ b: 1 }], [{ decision: "suppress" }], { cursor: "b" }, work.id);
+    await expect(domain.recordSweepBatch(FEED, [b], work.id)).rejects.toThrow(`Source run ${a} (Company Attention) recorded for this recollection is missing from the batch`);
+    const aAgain = await domain.recordSourceRun(FEED, SOURCE, [{ a: 2 }], [{ decision: "suppress" }], { cursor: "a2" }, work.id);
+    await domain.recordSweepBatch(FEED, [b, aAgain], work.id); // the newer run for the same source supersedes the first
+    expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
+    expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "a2" });
+  } finally {
+    runtime.sqlite.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("two judgments may deliberately share one cardId", async () => {
   const { root, runtime, store, domain } = await setup();
   try {

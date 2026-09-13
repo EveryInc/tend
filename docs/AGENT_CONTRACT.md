@@ -75,15 +75,17 @@ For `recollect_sources` work:
   `{"decision":"review","cardId":"gmail-18c2f0a1","reason":"..."}`; `suppress` judgments need no
   card. Two judgments may share one `cardId` when one card deliberately presents both. Judgments
   without a `cardId` still work and are matched by count instead of by id.
-- Record the resulting sweep with `tend cli sweep:record-batch --work <work>`.
+- Record the resulting sweep with `tend cli sweep:record-batch --work <work>`. The batch must include
+  every run recorded for the work (or a newer run for the same source that supersedes it).
 - Upsert one card per judgment with `sourceRunIds` including its run, then run
   `tend cli sweep:status --feed <feed>`; it reports `ready` and lists every judgment that is not
   presented yet with the exact reason (no such card, card does not list the run, card hidden).
 - Complete the work only when `sweep:status` reports `ready`. Checkpoints recorded with `--work`
   are held on the run until `work:complete` succeeds, and completion is refused with the same list
-  otherwise. A card presents a judgment only if it is visible for review in the current pass or was
-  acted on since the run; `routine_action` judgments without a card may also be covered by items of
-  a routine action group proposed since the sweep. If the work never completes, the next sweep
+  otherwise. A card presents a `review` judgment only if it is individually reviewable (not part of a
+  routine action group) in the current pass, or was acted on since the run; `routine_action`
+  judgments without a card may also be covered by items of a routine action group proposed since
+  the sweep. If the work never completes, the next sweep
   starts from the previous checkpoint and re-reads those items; a held checkpoint is not written
   over one that changed after the run was recorded. Re-claiming such work returns
   `operatorGuidance.pendingPresentation` with the same list.

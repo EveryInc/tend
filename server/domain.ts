@@ -3765,6 +3765,18 @@ export class AttentionDomain {
         }
       }
       if (researchQuestions.size > 1) throw new Error("One sweep may originate only one On Your Mind research question.");
+      if (triggerWork) {
+        // Every run recorded for this work that still holds a checkpoint must be in the batch, or be superseded
+        // there by a newer run for the same source; otherwise its judged items would be neither presented nor re-read.
+        const included = await Promise.all(sourceRunIds.map((runId) => this.store.readRun(feedId, runId)));
+        const leftOut = (await this.store.listRuns(feedId)).filter((run) =>
+          run.triggerWorkId === triggerWork.id && run.pendingCheckpoint !== undefined && !sourceRunIds.includes(run.id)
+          && !included.some((candidate) => candidate.sourceId === run.sourceId && (candidate.checkpointSequence ?? 0) > (run.checkpointSequence ?? 0)),
+        );
+        if (leftOut.length) {
+          throw new Error(`Source ${leftOut.length === 1 ? "run" : "runs"} ${leftOut.map((run) => `${run.id} (${sourceDisplayName(run.sourceId)})`).join(", ")} recorded for this recollection ${leftOut.length === 1 ? "is" : "are"} missing from the batch. Include ${leftOut.length === 1 ? "it" : "them"}, or record a newer run for the same source and include that.`);
+        }
+      }
       const batchId = makeId("batch");
       const supersededRoutineGroups = await this.staleProposedRoutineActionGroups(feedId, `Superseded by newer sweep batch ${batchId}.`);
       await this.store.writeSweepBatch({ id: batchId, feedId, sourceRunIds, ...(normalizedContextUpdateId ? { contextUpdateId: normalizedContextUpdateId } : {}), ...(triggerWorkId ? { triggerWorkId } : {}), createdAt: isoNow() });
@@ -3799,10 +3811,11 @@ export class AttentionDomain {
     const currentPass = feed.config.currentPass;
     // Why a card does not present a run (undefined when it does): it must be written for the run and be
     // visible for review now, or have been acted on since the run was recorded.
-    const hiddenReason = (card: Card, run: SourceRun): string | undefined => {
+    const hiddenReason = (card: Card, run: SourceRun, forReview: boolean): string | undefined => {
       const recordedAt = run.completedAt ?? "";
       if (!card.sourceRunIds?.includes(run.id)) return `card ${card.id} does not list run ${run.id} in sourceRunIds`;
       if (card.updatedAt < recordedAt) return `card ${card.id} was last written before this run was recorded`;
+      if (forReview && card.routineActionGroupId) return `card ${card.id} belongs to routine action group ${card.routineActionGroupId}, so it is not individually reviewable; a review judgment needs its own card`;
       if (card.status === "to_review_new" || card.status === "to_review_updated") {
         return card.readyForPass <= currentPass ? undefined : `card ${card.id} is deferred to pass ${card.readyForPass} (current pass ${currentPass})`;
       }
@@ -3833,7 +3846,7 @@ export class AttentionDomain {
     for (const item of judged) {
       if (item.cardId === undefined) continue;
       const card = cardsById.get(item.cardId);
-      const reason = card ? hiddenReason(card, item.run) : `no card with id ${item.cardId} exists`;
+      const reason = card ? hiddenReason(card, item.run, item.review) : `no card with id ${item.cardId} exists`;
       if (reason) missing.push({ ...item.gap, reason });
       else runReports.get(item.run.id)!.presented += 1;
     }
@@ -3843,12 +3856,14 @@ export class AttentionDomain {
       const unnamed = judged.filter((item) => item.run === run && item.cardId === undefined);
       const reviews = unnamed.filter((item) => item.review);
       const routines = unnamed.filter((item) => !item.review);
-      const pool = cards.filter((card) => !reserved.has(card.id) && hiddenReason(card, run) === undefined).length;
-      const reviewCovered = Math.min(pool, reviews.length);
-      const routineCovered = Math.max(0, Math.min(pool - reviews.length, routines.length));
+      const unreserved = cards.filter((card) => !reserved.has(card.id));
+      const reviewPool = unreserved.filter((card) => hiddenReason(card, run, true) === undefined).length;
+      const routinePool = unreserved.filter((card) => hiddenReason(card, run, false) === undefined).length;
+      const reviewCovered = Math.min(reviewPool, reviews.length);
+      const routineCovered = Math.max(0, Math.min(routinePool - reviewCovered, routines.length));
       runReports.get(run.id)!.presented += reviewCovered + routineCovered;
       for (const item of reviews.slice(reviewCovered)) {
-        missing.push({ ...item.gap, reason: `no unclaimed card presents this review judgment (${pool} available for ${reviews.length} review ${reviews.length === 1 ? "judgment" : "judgments"} without a cardId); add a cardId or upsert another card with sourceRunIds including ${run.id}` });
+        missing.push({ ...item.gap, reason: `no unclaimed card presents this review judgment (${reviewPool} available for ${reviews.length} review ${reviews.length === 1 ? "judgment" : "judgments"} without a cardId); add a cardId or upsert another card with sourceRunIds including ${run.id}` });
       }
       routineWithoutCard.push(...routines.slice(routineCovered));
     }
@@ -3856,8 +3871,10 @@ export class AttentionDomain {
     // sweep. Group items do not identify judgments, so this coverage is aggregate: when it falls short, every such
     // judgment is listed rather than an invented subset.
     const earliestRecordedAt = runs.map((run) => run.completedAt ?? "").sort()[0] ?? "";
+    // A group counts when it was proposed (or re-proposed) since the sweep: recording the batch marks earlier
+    // proposals stale, so a live group with a fresh updatedAt is one for this sweep even if its id was reused.
     const routineGroupItems = feed.routineActions
-      .filter((group) => group.status !== "stale" && group.status !== "failed" && group.createdAt >= earliestRecordedAt)
+      .filter((group) => group.status !== "stale" && group.status !== "failed" && group.updatedAt >= earliestRecordedAt)
       .reduce((total, group) => total + group.items.length, 0);
     const routineCoveredByGroups = Math.min(routineGroupItems, routineWithoutCard.length);
     if (routineGroupItems < routineWithoutCard.length) {
