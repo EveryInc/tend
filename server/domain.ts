@@ -3814,11 +3814,14 @@ export class AttentionDomain {
     const missing: SweepPresentationGap[] = [];
     const runReports: SweepPresentationRun[] = [];
     const routineFallback: Array<{ gap: SweepPresentationGap; report: SweepPresentationRun }> = [];
+    // Pass 1: judgments that name a card are matched exactly, and the cards they claim are reserved across the
+    // whole batch, so a card named by one run's judgment never silently satisfies another run's unnamed one.
+    // Sharing a card is explicit: every judgment it presents names it.
+    const claimed = new Set<string>();
+    const counted = new Map<string, { review: SweepPresentationGap[]; routine: SweepPresentationGap[] }>();
     for (const run of runs) {
-      const claimed = new Set<string>();
-      const countedReview: SweepPresentationGap[] = [];
-      const countedRoutine: SweepPresentationGap[] = [];
       const report: SweepPresentationRun = { runId: run.id, sourceId: run.sourceId, checkpointHeld: run.pendingCheckpoint !== undefined, judgments: run.judgments.length, needingPresentation: 0, presented: 0 };
+      const unnamed = { review: [] as SweepPresentationGap[], routine: [] as SweepPresentationGap[] };
       run.judgments.forEach((judgment, index) => {
         if (!isRecord(judgment) || typeof judgment.decision !== "string") return;
         const decision = judgment.decision;
@@ -3828,7 +3831,7 @@ export class AttentionDomain {
         const gap: SweepPresentationGap = { runId: run.id, sourceId: run.sourceId, judgment: index + 1, decision, reason: "" };
         const cardId = typeof judgment.cardId === "string" ? judgment.cardId : undefined;
         if (cardId === undefined) {
-          (review ? countedReview : countedRoutine).push(gap);
+          (review ? unnamed.review : unnamed.routine).push(gap);
           return;
         }
         const card = cardsById.get(cardId);
@@ -3839,7 +3842,13 @@ export class AttentionDomain {
           report.presented += 1;
         }
       });
-      // Judgments without a cardId fall back to counting presenting cards that no exact match claimed.
+      runReports.push(report);
+      counted.set(run.id, unnamed);
+    }
+    // Pass 2: judgments without a cardId fall back to counting presenting cards that no exact match claimed.
+    for (const run of runs) {
+      const report = runReports.find((candidate) => candidate.runId === run.id)!;
+      const { review: countedReview, routine: countedRoutine } = counted.get(run.id)!;
       const pool = cards.filter((card) => !claimed.has(card.id) && hiddenReason(card, run) === undefined).length;
       const reviewCovered = Math.min(pool, countedReview.length);
       report.presented += reviewCovered;
@@ -3849,7 +3858,6 @@ export class AttentionDomain {
       const routineCovered = Math.max(0, Math.min(pool - countedReview.length, countedRoutine.length));
       report.presented += routineCovered;
       for (const gap of countedRoutine.slice(routineCovered)) routineFallback.push({ gap, report });
-      runReports.push(report);
     }
     const earliestRecordedAt = runs.map((run) => run.completedAt ?? "").sort()[0] ?? "";
     const routineGroupItems = feed.routineActions

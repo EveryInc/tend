@@ -359,6 +359,36 @@ test("a card claimed by an exact match does not also count for a judgment withou
   }
 });
 
+for (const order of ["named-first", "unnamed-first"] as const) {
+  test(`a card named by one run's judgment is not counted for another run's unnamed judgment (${order})`, async () => {
+    const { root, runtime, store, domain } = await setup();
+    try {
+      const work = await claimRecollection(domain);
+      const second = await domain.addSourceFromBrief(FEED, "Read the dispute ledger.");
+      const named = await domain.recordSourceRun(FEED, SOURCE, [{ a: 1 }], [{ decision: "review", cardId: "shared" }], { cursor: "named" }, work.id);
+      const unnamed = await domain.recordSourceRun(FEED, second.id, [{ b: 2 }], [{ decision: "review" }], { cursor: "unnamed" }, work.id);
+      await domain.recordSweepBatch(FEED, order === "named-first" ? [named, unnamed] : [unnamed, named], work.id);
+      await domain.upsertCard(FEED, { id: "shared", title: "Shared", why: "Lists both runs but is named by only one judgment.", blocks: [], sourceRunIds: [named, unnamed] });
+      const status = await domain.sweepPresentationStatus(FEED);
+      expect(status.ready).toBe(false);
+      expect(status.missing.map((gap) => [gap.runId, gap.judgment, gap.cardId])).toEqual([[unnamed, 1, undefined]]);
+      await expect(domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).rejects.toThrow("1 of 2 judgments are not presented yet");
+      // Naming the same card from the second judgment makes the sharing explicit.
+      await domain.upsertCard(FEED, { id: "shared", title: "Shared", why: "Same card, now named by both.", blocks: [], sourceRunIds: [named, unnamed] });
+      const rerecorded = await domain.recordSourceRun(FEED, second.id, [{ b: 2 }], [{ decision: "review", cardId: "shared" }], { cursor: "unnamed" }, work.id);
+      await domain.recordSweepBatch(FEED, [named, rerecorded], work.id);
+      await domain.upsertCard(FEED, { id: "shared", title: "Shared", why: "Same card, now named by both.", blocks: [], sourceRunIds: [named, rerecorded] });
+      expect((await domain.sweepPresentationStatus(FEED)).ready).toBe(true);
+      expect((await domain.completeWork(FEED, work.id, work.capabilityToken, { response: "Done." })).status).toBe("completed");
+      expect(await store.readSourceCheckpoint(FEED, SOURCE)).toEqual({ cursor: "named" });
+      expect(await store.readSourceCheckpoint(FEED, second.id)).toEqual({ cursor: "unnamed" });
+    } finally {
+      runtime.sqlite.close();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("two judgments may deliberately share one cardId", async () => {
   const { root, runtime, store, domain } = await setup();
   try {
