@@ -70,15 +70,23 @@ For `recollect_sources` work:
   ["INBOX"])`. Its checkpoint's `inboxEnumeration.messages` must map every authoritative
   `messageId` to its direct-read `threadId`; every resulting conversation must appear exactly once
   in `readThreadIds` or `carriedForwardThreadIds` before recording the batch.
+- Give every `review` or `routine_action` judgment a stable, file-safe `cardId` and reuse that
+  exact id in `card:upsert`. A judgment looks like
+  `{"decision":"review","cardId":"gmail-18c2f0a1","reason":"..."}`; `suppress` judgments need no
+  card. Two judgments may share one `cardId` when one card deliberately presents both. Judgments
+  without a `cardId` still work and are matched by count instead of by id.
 - Record the resulting sweep with `tend cli sweep:record-batch --work <work>`.
-- Complete the work only after the source run and sweep batch are written back.
-- Checkpoints recorded with `--work` are held on the run until `work:complete` succeeds, and
-  completion is refused until every `review` judgment in a run has its own card whose
-  `sourceRunIds` lists that run and that is visible for review in the current pass (or was acted
-  on since the run), and every `routine_action` judgment is presented by such a card or by an
-  item of a routine action group proposed since the sweep. If the work never completes,
-  the next sweep starts from the previous checkpoint and re-reads those items; a held checkpoint is
-  not written over one that changed after the run was recorded.
+- Upsert one card per judgment with `sourceRunIds` including its run, then run
+  `tend cli sweep:status --feed <feed>`; it reports `ready` and lists every judgment that is not
+  presented yet with the exact reason (no such card, card does not list the run, card hidden).
+- Complete the work only when `sweep:status` reports `ready`. Checkpoints recorded with `--work`
+  are held on the run until `work:complete` succeeds, and completion is refused with the same list
+  otherwise. A card presents a judgment only if it is visible for review in the current pass or was
+  acted on since the run; `routine_action` judgments without a card may also be covered by items of
+  a routine action group proposed since the sweep. If the work never completes, the next sweep
+  starts from the previous checkpoint and re-reads those items; a held checkpoint is not written
+  over one that changed after the run was recorded. Re-claiming such work returns
+  `operatorGuidance.pendingPresentation` with the same list.
 
 ## Core Commands
 
@@ -103,6 +111,7 @@ Run `tend cli help` for the full command surface. Core feed-runner commands are:
 | Remove source | `tend cli source:remove --feed <feed> --source <source>` |
 | Record source run | `tend cli source:record-run --feed <feed> --source <source> (--snapshots <json> \| --snapshots-file <path>) (--judgments <json> \| --judgments-file <path>) (--checkpoint <json> \| --checkpoint-file <path>) [--context-use-file <path>]` |
 | Record sweep batch | `tend cli sweep:record-batch --feed <feed> --runs <json-array> [--context <mind-update-id>]` |
+| Check what the current sweep still needs before completing | `tend cli sweep:status --feed <feed>` |
 | Record sweep rejudgment | `tend cli sweep:rejudge --feed <feed> --feedback <id> --ordered-cards <json-array> --removed-cards <json-array>` |
 | Upsert card | `tend cli card:upsert --feed <feed> --card <json>` |
 | Run configured readers on frozen input | `tend cli readers:run --feed <feed> --run <run> --packet-file <path> --readers-file <path>` |

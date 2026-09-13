@@ -29,6 +29,7 @@ describe("CLI contract", () => {
     expect(commandNames).toContain("work:complete");
     expect(commandNames).toContain("work:reconcile-approved");
     expect(commandNames).toContain("source:record-run");
+    expect(commandNames).toContain("sweep:status");
     expect(commandNames).toContain("card:upsert");
     expect(commandNames).toContain("card:dismiss");
     expect(commandNames).toContain("card:cleanup-source");
@@ -43,7 +44,7 @@ describe("CLI contract", () => {
   });
 
   test("exposes native readers and exact-version feedback without edition commands", () => {
-    expect(CLI_CONTRACT_VERSION).toBe("0.8");
+    expect(CLI_CONTRACT_VERSION).toBe("0.9");
     expect(CLI_COMMANDS).toContain("readers:run --feed <id> --run <source-run-id> --packet-file <path> --readers-file <path> [--prompt-sha256 <hash>]");
     expect(CLI_COMMANDS).toContain("readers:status --feed <id> --run <source-run-id>");
     expect(CLI_COMMANDS).toContain("readers:output --feed <id> --run <source-run-id> --reader <id>");
@@ -218,6 +219,14 @@ describe("CLI contract", () => {
       const runId = JSON.parse(recorded.stdout) as string;
       const store = new AttentionStore(path.join(home, "data"));
       expect(await store.readRun("company-attention", runId)).toMatchObject({ snapshots: 1, judgments: [] });
+      const idle = await run(["sweep:status", "--feed", "company-attention"]);
+      expect(idle.code).toBe(0);
+      expect(JSON.parse(idle.stdout)).toMatchObject({ status: "idle", ready: true, missing: [] });
+      const batch = await run(["sweep:record-batch", "--feed", "company-attention", "--runs", JSON.stringify([runId])]);
+      expect(batch.code).toBe(0);
+      const committed = await run(["sweep:status", "--feed", "company-attention"]);
+      expect(committed.code).toBe(0);
+      expect(JSON.parse(committed.stdout)).toMatchObject({ status: "committed", currentBatchId: JSON.parse(batch.stdout), ready: true, missing: [], runs: [{ runId, checkpointHeld: false, judgments: 0, needingPresentation: 0, presented: 0 }] });
       const saved = JSON.parse(await readFile(store.feedPath("company-attention", "raw", runId, "company-attention", "snapshot-1.json"), "utf8"));
       expect(saved).toEqual(snapshots[0]);
       const missing = await run(["readers:run", "--feed", "company-attention", "--run", runId, "--packet-file", "unused.txt"]);

@@ -653,6 +653,39 @@ export interface SourceRun {
   checkpointCommittedAt?: string;
 }
 
+/** One judgment of the current sweep that is not presented yet, with the exact reason. */
+export interface SweepPresentationGap {
+  runId: string;
+  sourceId: string;
+  /** 1-based position in the run's judgments array. */
+  judgment: number;
+  decision: string;
+  cardId?: string;
+  reason: string;
+}
+
+export interface SweepPresentationRun {
+  runId: string;
+  sourceId: string;
+  checkpointHeld: boolean;
+  judgments: number;
+  needingPresentation: number;
+  presented: number;
+}
+
+/** What `sweep:status` reports and what `work:complete` checks for recollection work. */
+export interface SweepPresentationStatus {
+  status: "idle" | "committed" | "pending";
+  currentBatchId: string | null;
+  workId: string | null;
+  workStatus: WorkStatus | null;
+  ready: boolean;
+  runs: SweepPresentationRun[];
+  missing: SweepPresentationGap[];
+  routineGroupItems: number;
+  summary: string;
+}
+
 export interface AppFeedback {
   id: string;
   feedId: FeedId;

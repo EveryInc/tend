@@ -22,6 +22,9 @@ Before composing full cards, choose a disposition for each source item: \`review
 deserve individual attention, \`routine_action\` for a conservative batch with the same obvious
 cleanup, or \`suppress\` for items that should stay out of the sweep. Routine actions remain proposed
 until the user approves the exact visible group. Never hide ambiguity inside a routine-action batch.
+Give every \`review\` or \`routine_action\` judgment a stable \`cardId\` (for example \`gmail-<threadId>\`) and
+reuse that exact id in \`card:upsert\`; Tend verifies each judged item was presented before the source
+checkpoint advances.
 `;
 
 export const COMPOSE_CARD_PROMPT = `# Compose card prompt
