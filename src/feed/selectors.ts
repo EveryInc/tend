@@ -1,5 +1,5 @@
 import type { Tab } from "../app/types";
-import { groupReadingCards, isPassiveReadingCard, sameReadingMembers, type ReadingCardGroup } from "../../shared/readingGroups";
+import { groupReadingCards, isPassiveReadingCard, readingProgressMember, sameReadingMembers, type ReadingCardGroup } from "../../shared/readingGroups";
 import type { ReadingGroupMember, ReadingPreferenceState, ReadingProgressState } from "../../shared/types";
 import type { Card, CardAction, FeedView, RoutineActionGroup, WorkItemView } from "../types";
 import { safeConfiguredCardActions } from "../../shared/cardActions";
@@ -10,8 +10,8 @@ export function visibleCards(feed: FeedView, tab: Tab): Card[] {
     const readIds = new Set(groupReadingCards(feed.cards, feed.readingComparisons)
       .filter((group) => currentReadingProgress(group, feed.readingProgress)?.read)
       .flatMap((group) => group.cards.map((card) => card.id)));
-    return feed.cards.filter((card) => card.reading && !card.routineActionGroupId
-      && (card.status === "done" || readIds.has(card.id))
+    return feed.cards.filter((card) => !card.routineActionGroupId
+      && ((Boolean(card.reading) && card.status === "done") || readIds.has(card.id))
       && !["queued", "working", "approved_blocked"].includes(card.status));
   }
   if (tab === "review") {
@@ -79,7 +79,10 @@ export function currentReadingProgress(group: ReadingCardGroup, progress?: FeedV
 }
 
 export function readingMembers(group: ReadingCardGroup): ReadingGroupMember[] {
-  return group.cards.flatMap((card) => card.reading ? [{ cardId: card.id, contentRevision: card.reading.contentRevision }] : []);
+  return group.cards.flatMap((card) => {
+    const member = readingProgressMember(card);
+    return member ? [member] : [];
+  });
 }
 
 export function currentReadingPreference(group: ReadingCardGroup, preferences?: FeedView["readingPreferences"]): ReadingPreferenceState | undefined {
@@ -112,6 +115,15 @@ export function visibleFeedWork(feed: FeedView, tab: Tab): WorkItemView[] {
 
 export function countFor(feed: FeedView, tab: Tab): number {
   return visibleCardGroups(feed, tab).length + visibleRoutineActions(feed, tab).length + visibleFeedWork(feed, tab).length;
+}
+
+export function streamReviewCounts(feed: FeedView): { unread: number; toReview: number } {
+  const groups = visibleCardGroups(feed, "review");
+  const unread = groups.filter((group) => group.cards.every(isPassiveReadingCard)).length;
+  return {
+    unread,
+    toReview: groups.length - unread + visibleRoutineActions(feed, "review").length + visibleFeedWork(feed, "review").length,
+  };
 }
 
 export function visibleCardActions(card: Card): CardAction[] {

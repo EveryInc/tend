@@ -1,5 +1,5 @@
 import { Component, useEffect, useRef, useState, type ReactNode } from "react";
-import type { ReadingCardGroup } from "../../shared/readingGroups";
+import { readingProgressMember, type ReadingCardGroup } from "../../shared/readingGroups";
 import type { Card, ReadingGroupMember, ReadingProgressState } from "../../shared/types";
 import { ApiError, post } from "../app/api";
 import { emptyReadingExposure, READING_INPUT_WINDOW_MS, sampleReadingExposure } from "../state/readingExposure";
@@ -93,6 +93,7 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
 }) {
   const root = useRef<HTMLDivElement>(null);
   useReadingEngagement(root, card, engagementSessionId);
+  const cardMember = readingProgressMember(card);
   const viewed = useRef(new Map<string, ReadingGroupMember>());
   const inFlight = useRef(false);
   const retryRequest = useRef<ProgressRequest | null>(null);
@@ -118,8 +119,9 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
     if (inFlight.current || workBusy) return;
     if (read && (!enabledRef.current || savedReadKey.current === currentKey)) return;
     const current = latest.current;
-    if (!current.card.reading) return;
-    if (explicit && read) viewed.current.set(current.card.id, { cardId: current.card.id, contentRevision: current.card.reading.contentRevision });
+    const currentMember = readingProgressMember(current.card);
+    if (!currentMember) return;
+    if (explicit && read) viewed.current.set(current.card.id, currentMember);
     const request = (retryRequest.current?.read === read ? retryRequest.current : null) ?? {
       clientEventId: crypto.randomUUID(), groupId: current.group.id, members: readingMembers(current.group),
       viewedMembers: read ? [...viewed.current.values()] : current.progress?.viewedMembers ?? [], read,
@@ -151,22 +153,22 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
   sendRef.current = send;
 
   useEffect(() => {
-    if (!canRead || paused || !card.reading || history) return;
+    if (!canRead || paused || !cardMember || history) return;
     let exposure = emptyReadingExposure();
     let lastForwardInput = -Infinity;
     let previousY = window.scrollY;
     let touchY: number | undefined;
+    let selecting: { kind: "pointer"; pointerId: number } | { kind: "keyboard" } | undefined;
     let disposed = false;
     const sample = (scrolled = false) => {
       const element = root.current;
       if (!element || disposed || inFlight.current) return;
-      const face = element.querySelector<HTMLElement>(".reading-face");
+      const faces = [...element.querySelectorAll<HTMLElement>(".reading-face")];
       const head = element.querySelector<HTMLElement>(".card-head");
-      if (!face || !head) return;
+      if (!faces.length || !head) return;
       const now = performance.now();
-      const rect = element.getBoundingClientRect();
       const start = head.getBoundingClientRect().top;
-      const end = face.getBoundingClientRect().bottom;
+      const end = Math.max(...faces.map((face) => face.getBoundingClientRect().bottom));
       const top = (document.querySelector(".tabs")?.getBoundingClientRect().bottom ?? 102) + 8;
       const dockTop = document.querySelector(".dock")?.getBoundingClientRect().top ?? window.innerHeight - 100;
       const noticeTop = document.querySelector(".reading-undo")?.getBoundingClientRect().top ?? window.innerHeight;
@@ -174,41 +176,80 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
       const visible = Math.max(0, Math.min(end, bottom) - Math.max(start, top));
       const meaningful = visible >= Math.min((end - start) * 0.65, (bottom - top) * 0.6);
       const currentY = window.scrollY;
-      const forwardScroll = scrolled && now > suppressScrollUntil && currentY > previousY + 1 && now - lastForwardInput <= READING_INPUT_WINDOW_MS;
+      const atPageEnd = currentY + window.innerHeight >= document.documentElement.scrollHeight - 2;
+      const forwardScroll = scrolled
+        && now > suppressScrollUntil
+        && (currentY > previousY + 1 || atPageEnd)
+        && now - lastForwardInput <= READING_INPUT_WINDOW_MS;
       if (scrolled) previousY = currentY;
       // Clicking a version button leaves it focused; subsequent deliberate scrolling must still
       // work. Editors, selected text, open author popovers and pending mutations remain protected.
       const editing = document.activeElement?.matches("input, textarea, select, [contenteditable='true']");
       const interacting = Boolean(element.querySelector("[aria-busy='true'], .reading-identity-popover"));
       const result = sampleReadingExposure(exposure, {
-        now, foreground: document.visibilityState === "visible" && document.hasFocus() && !editing && !interacting && window.getSelection()?.isCollapsed !== false, meaningful,
+        now, foreground: document.visibilityState === "visible" && document.hasFocus() && !editing && !interacting, paused: Boolean(selecting), meaningful,
         sawStart: start >= top - 8 && start < bottom,
         sawEnd: end <= bottom + 8 && end > top,
-        passed: rect.bottom <= top,
+        passed: end <= top,
         forwardScroll,
       });
       exposure = result.state;
-      if (exposure.qualified) viewed.current.set(card.id, { cardId: card.id, contentRevision: card.reading!.contentRevision });
+      if (exposure.qualified) viewed.current.set(card.id, cardMember);
       if (result.markRead) void sendRef.current(true);
     };
-    const onWheel = (event: WheelEvent) => { if (event.isTrusted && event.deltaY > 0) lastForwardInput = performance.now(); };
+    const sampleForwardAttempt = () => window.requestAnimationFrame(() => sample(true));
+    const onWheel = (event: WheelEvent) => {
+      if (event.isTrusted && event.deltaY > 0) {
+        lastForwardInput = performance.now();
+        sampleForwardAttempt();
+      }
+    };
     const onKey = (event: KeyboardEvent) => {
       if (!event.isTrusted || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
       if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
-      if (["ArrowDown", "PageDown", " "].includes(event.key)) lastForwardInput = performance.now();
+      if (["ArrowDown", "PageDown", " "].includes(event.key)) {
+        lastForwardInput = performance.now();
+        sampleForwardAttempt();
+      }
     };
     const onTouchStart = (event: TouchEvent) => { touchY = event.touches[0]?.clientY; };
     const onTouchMove = (event: TouchEvent) => {
       const next = event.touches[0]?.clientY;
-      if (event.isTrusted && next !== undefined && touchY !== undefined && next < touchY) lastForwardInput = performance.now();
+      if (event.isTrusted && next !== undefined && touchY !== undefined && next < touchY) {
+        lastForwardInput = performance.now();
+        sampleForwardAttempt();
+      }
       touchY = next;
     };
+    const onPointerDown = (event: PointerEvent) => {
+      const element = root.current;
+      if (event.isTrusted && event.pointerType !== "touch" && element && event.target instanceof Node && element.contains(event.target)) {
+        selecting = { kind: "pointer", pointerId: event.pointerId };
+      }
+    };
+    const onPointerUp = (event: PointerEvent) => {
+      if (selecting?.kind === "pointer" && selecting.pointerId === event.pointerId) selecting = undefined;
+    };
+    const onSelectionKeyDown = (event: KeyboardEvent) => {
+      if (!event.isTrusted || (!event.shiftKey && event.key !== "Shift")) return;
+      const element = root.current;
+      const selection = window.getSelection();
+      if (element && selection?.anchorNode && element.contains(selection.anchorNode)) selecting = { kind: "keyboard" };
+    };
+    const onSelectionKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Shift" && selecting?.kind === "keyboard") selecting = undefined;
+    };
     const onScroll = () => sample(true);
-    const reset = () => { exposure = emptyReadingExposure(); lastForwardInput = -Infinity; };
+    const reset = () => { exposure = emptyReadingExposure(); lastForwardInput = -Infinity; selecting = undefined; };
     window.addEventListener("wheel", onWheel, { passive: true });
     window.addEventListener("keydown", onKey);
     window.addEventListener("touchstart", onTouchStart, { passive: true });
     window.addEventListener("touchmove", onTouchMove, { passive: true });
+    window.addEventListener("pointerdown", onPointerDown, { passive: true });
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    window.addEventListener("keydown", onSelectionKeyDown);
+    window.addEventListener("keyup", onSelectionKeyUp);
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("blur", reset);
     document.addEventListener("visibilitychange", reset);
@@ -220,11 +261,16 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
       window.removeEventListener("keydown", onKey);
       window.removeEventListener("touchstart", onTouchStart);
       window.removeEventListener("touchmove", onTouchMove);
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+      window.removeEventListener("keydown", onSelectionKeyDown);
+      window.removeEventListener("keyup", onSelectionKeyUp);
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("blur", reset);
       document.removeEventListener("visibilitychange", reset);
     };
-  }, [canRead, paused, card.id, card.reading?.contentRevision, history, membersKey, attentionKey, progress?.eventId]);
+  }, [canRead, paused, card.id, cardMember?.contentRevision, history, membersKey, attentionKey, progress?.eventId]);
 
   const readingState = (enabled || history) && !workBusy ? read ? "read" : reviewed ? "reviewed" : "unread" : "unread";
   return <div ref={root} data-reading-slot={group.id} data-reading-state={readingState} tabIndex={-1} className={`reading-stream-slot${readingState !== "unread" ? " is-complete" : ""}`}>

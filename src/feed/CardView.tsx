@@ -124,7 +124,7 @@ function videoEmbedUrl(href: string): string | null {
   return null;
 }
 
-function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: string; block: CardBlock; onChanged: () => void }) {
+function Block({ feedId, cardId, block, onChanged, readingFace = false }: { feedId: string; cardId: string; block: CardBlock; onChanged: () => void; readingFace?: boolean }) {
   const [value, setValue] = useState(block.value ?? "");
   useEffect(() => setValue(block.value ?? ""), [block.value]);
 
@@ -293,7 +293,7 @@ function Block({ feedId, cardId, block, onChanged }: { feedId: string; cardId: s
       </details>
     );
   }
-  return <section className={`block block-${block.type}`}>{block.label && <h3>{block.label}</h3>}<p><FormattedText text={block.text} /></p></section>;
+  return <section className={`block block-${block.type}${readingFace ? " reading-face" : ""}`}>{block.label && <h3>{block.label}</h3>}<p><FormattedText text={block.text} /></p></section>;
 }
 
 function QueuedNoteEditor({ work, onChanged }: { work: WorkItemView; onChanged: () => void }) {
@@ -547,10 +547,17 @@ export function CardView({
           <h2>{card.title}</h2>
         </div>
       </header>
-      <p className="why"><FormattedText text={card.why} /></p>
+      <p className={`why${card.readingPresentation ? " reading-face" : ""}`}><FormattedText text={card.why} /></p>
       <ContextInfluenceReceipt card={card} />
       <div className="blocks">
-        {card.blocks.map((block) => <Block key={block.id} feedId={card.feedId} cardId={card.id} block={block} onChanged={onChanged} />)}
+        {card.blocks.map((block) => <Block
+          key={block.id}
+          feedId={card.feedId}
+          cardId={card.id}
+          block={block}
+          onChanged={onChanged}
+          readingFace={Boolean(card.readingPresentation && block.type === "rich_text")}
+        />)}
       </div>
       {queuedNote && <QueuedNoteEditor work={queuedNote} onChanged={onChanged} />}
       <CardHistory card={card} />

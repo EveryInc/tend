@@ -23,7 +23,7 @@ import { AttentionStore } from "../server/store";
 import { digest } from "../server/util";
 import type { Card, CardReading, EmailDeliveryReadback, LegacyEmailDeliveryReadback, LegacyPreparedEmailDelivery, PreparedEmailDelivery, ReadingPreferenceInput, WorkClaimedByReport, WorkItem } from "../shared/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
-import { visibleCardGroups } from "../src/feed/selectors";
+import { readingMembers, visibleCardGroups } from "../src/feed/selectors";
 import { readClaudeWakeLines } from "./support/agents";
 
 const roots: string[] = [];
@@ -508,9 +508,105 @@ describe("descriptive reading engagement", () => {
     await expect(domain.recordReadingEngagement("company-attention", card.id, { ...input, clientEventId: "new-stale-click", contentRevision: "0".repeat(64) })).rejects.toMatchObject({ code: "stale_content" });
     expect((await store.readEvents("company-attention")).filter((event) => event.type === "reading.engagement_recorded")).toHaveLength(1);
   });
+
+  test("records provider-neutral engagement for a legacy informational card without inventing reader provenance", async () => {
+    const { store, domain } = await setup();
+    const card = await domain.upsertCard("company-attention", {
+      id: "legacy-ordinary-engagement", title: "An older informational card", why: "A concrete observation with no action.",
+      blocks: [{ id: "source", type: "evidence", items: ["Fixture source"] }], sourceRunIds: undefined,
+    });
+    expect(card.reading).toBeUndefined();
+    expect(card.readingPresentation).toBeUndefined();
+    const projected = (await store.readFeed("company-attention")).cards.find((item) => item.id === card.id)!;
+    expect(projected.readingPresentation?.mode).toBe("passive");
+    expect(projected.readingPresentation?.contentRevision).toMatch(/^[a-f0-9]{64}$/);
+    const contentRevision = projected.readingPresentation!.contentRevision;
+    await domain.recordReadingEngagement("company-attention", card.id, {
+      clientEventId: "ordinary-dwell", sessionId: "ordinary-visit", contentRevision, type: "dwell", dwellMs: 2250,
+    });
+    await domain.recordReadingEngagement("company-attention", card.id, {
+      clientEventId: "ordinary-selection", sessionId: "ordinary-visit", contentRevision, type: "selection", selectionChars: 18,
+    });
+    expect(await domain.readingEngagement("company-attention", card.id)).toEqual({
+      metric: "foreground_visible_ms",
+      cards: [{ cardId: card.id, contentRevision, dwellMs: 2250, clicks: {}, selections: 1, lastEngagedAt: expect.any(String) }],
+    });
+    expect((await store.readCard("company-attention", card.id)).reading).toBeUndefined();
+    expect((await store.readCard("company-attention", card.id)).readingPresentation).toBeUndefined();
+    expect((await store.readEvents("company-attention")).some((event) => {
+      const detail = event.detail as Record<string, unknown> | undefined;
+      return event.cardId === card.id && (detail?.runId !== undefined || detail?.readerId !== undefined || detail?.requestedModel !== undefined);
+    })).toBe(false);
+  });
 });
 
 describe("neutral reading stream progress", () => {
+  test("projects pre-feature informational cards into durable neutral progress without rewriting them", async () => {
+    const { root, store, domain } = await setup();
+    const legacy = await domain.upsertCard("company-attention", {
+      id: "legacy-evidence-only", title: "An older observation", why: "This predates passive reading metadata.",
+      blocks: [{ id: "evidence", type: "evidence", items: ["Older source"] }],
+    });
+    const followup = await domain.upsertCard("company-attention", {
+      id: "legacy-rich-followup", title: "An older follow-up", why: "This combines several non-editable blocks.",
+      blocks: [
+        { id: "detail", type: "rich_text", text: "A bounded follow-up." },
+        { id: "evidence", type: "evidence", items: ["Older source"] },
+        { id: "receipt", type: "receipt", label: "Observed", text: "No action requested." },
+      ],
+    });
+    expect((await store.readCard("company-attention", legacy.id)).readingPresentation).toBeUndefined();
+    await domain.setReadingMode("company-attention", { mode: "stream" });
+    let feed = await store.readFeed("company-attention");
+    const projected = [legacy.id, followup.id].map((id) => feed.cards.find((card) => card.id === id)!);
+    expect(projected.every((card) => !card.reading && card.readingPresentation?.mode === "passive")).toBe(true);
+    for (const card of projected) {
+      const group = groupReadingCards(feed.cards).find((item) => item.id === `card:${card.id}`)!;
+      const members = readingMembers(group);
+      await domain.recordReadingProgress("company-attention", {
+        clientEventId: `read-${card.id}`, groupId: group.id, members, viewedMembers: members, read: true,
+        expectedCardUpdatedAt: { [card.id]: card.updatedAt },
+      });
+    }
+    feed = await store.readFeed("company-attention");
+    expect(Object.values(feed.readingProgress ?? {}).filter((progress) => progress.read)).toHaveLength(2);
+    expect(feed.readingReactions).toEqual({});
+    expect(feed.readingPreferences).toEqual({});
+    const reopened = new AttentionStore(root);
+    await reopened.init();
+    expect(Object.values((await reopened.readFeed("company-attention")).readingProgress ?? {}).filter((progress) => progress.read)).toHaveLength(2);
+    expect((await reopened.readCard("company-attention", legacy.id)).readingPresentation).toBeUndefined();
+
+    await domain.upsertCard("company-attention", { ...legacy, title: "A materially revised observation" });
+    const changed = await store.readFeed("company-attention");
+    expect(changed.readingProgress?.[`card:${legacy.id}`]).toBeUndefined();
+    expect(changed.readingProgress?.[`card:${followup.id}`]?.read).toBe(true);
+  });
+
+  test("keeps genuine actions and editable drafts outside passive progress", async () => {
+    const { store, domain } = await setup();
+    await domain.setReadingMode("company-attention", { mode: "stream" });
+    const action = await domain.upsertCard("company-attention", {
+      id: "explicit-action", title: "A real action", why: "Sending requires explicit approval.", blocks: [],
+      proposedAction: { label: "Send", instruction: "Send only after exact approval.", externalMutation: true },
+    });
+    const editable = await domain.upsertCard("company-attention", {
+      id: "editable-preparation", title: "A draft", why: "Editing is not passive reading.",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Not approved.", editable: true }],
+    });
+    const feed = await store.readFeed("company-attention");
+    for (const card of [action, editable]) {
+      expect(feed.cards.find((item) => item.id === card.id)?.readingPresentation).toBeUndefined();
+      const member = { cardId: card.id, contentRevision: "a".repeat(64) };
+      await expect(domain.recordReadingProgress("company-attention", {
+        clientEventId: `crafted-${card.id}`, groupId: `card:${card.id}`, members: [member], viewedMembers: [member], read: true,
+        expectedCardUpdatedAt: { [card.id]: card.updatedAt },
+      })).rejects.toMatchObject({ code: "card_busy" });
+      expect((await store.readCard("company-attention", card.id)).status).toBe("to_review_new");
+    }
+    expect((await store.readEvents("company-attention")).filter((event) => event.type === "reading.progress_recorded")).toHaveLength(0);
+  });
+
   test("is opt-in, idempotent, and preserves cards, work, sources, and explicit taste", async () => {
     const { store, domain } = await setup();
     const { card, alternative, request } = await readingGroupFixture(store, domain);
@@ -598,7 +694,7 @@ describe("neutral reading stream progress", () => {
       { ...input, expectedCardUpdatedAt: { [card.id]: 123 } }, { ...input, expectedCardUpdatedAt: { [card.id]: card.updatedAt, extra: card.updatedAt } }]) {
       await expect(domain.recordReadingProgress("company-attention", invalid)).rejects.toMatchObject({ code: "invalid_progress", status: 400 });
     }
-    await expect(domain.recordReadingProgress("company-attention", { ...input, groupId: "card:company-source-confirmation" })).rejects.toMatchObject({ code: "not_found" });
+    await expect(domain.recordReadingProgress("company-attention", { ...input, groupId: "card:company-source-confirmation" })).rejects.toMatchObject({ code: "card_busy" });
     const stale = [{ ...members[0], contentRevision: "a".repeat(64) }];
     await expect(domain.recordReadingProgress("company-attention", { ...input, members: stale, viewedMembers: stale })).rejects.toMatchObject({ code: "stale_members" });
     await domain.recordReadingProgress("company-attention", input);

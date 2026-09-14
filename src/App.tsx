@@ -7,7 +7,7 @@ import type { AttentionScreen, Inspector, Tab, WorkspaceTab } from "./app/types"
 import { CardView } from "./feed/CardView";
 import { RoutineActionGroupView } from "./feed/RoutineActionGroupView";
 import { NativeApprovals } from "./feed/NativeApprovals";
-import { countFor, currentReadingPreference, currentReadingProgress, retainReadingSessionGroups, selectedGroupCard, visibleCardActions, visibleCardGroups, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
+import { countFor, currentReadingPreference, currentReadingProgress, retainReadingSessionGroups, selectedGroupCard, streamReviewCounts, visibleCardActions, visibleCardGroups, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
 import { ReadingStreamCard, ReadingStreamControls, ReadingStreamViewport, type ReadingUndo } from "./feed/ReadingStream";
 import { isPassiveReadingCard } from "../shared/readingGroups";
 import { Dock } from "./shell/Dock";
@@ -604,8 +604,13 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const feedWork = visibleFeedWork(feed, tab);
   const parkedClaudeWork = tab === "queued" ? parkedClaudeWorkItems(feed, claudeLiveness) : [];
   const readingMode = feed.config.readingMode ?? "review";
-  const hasReading = feed.cards.some((card) => card.reading);
+  const hasReading = feed.cards.some((card) => card.readingPresentation || card.reading);
   const hasReadHistory = hasReading && (readingMode === "stream" || Object.keys(feed.readingProgress ?? {}).length > 0);
+  const streamCounts = streamReviewCounts(feed);
+  const streamCountLabel = [
+    streamCounts.unread || !streamCounts.toReview ? `${streamCounts.unread} unread` : "",
+    streamCounts.toReview ? `${streamCounts.toReview} to review` : "",
+  ].filter(Boolean).join(" · ");
   return withRealtime(
     <>
       <TopBar state={state} onMind={openMind} onFeed={changeFeed} onInspector={setInspector} onWorkspace={openWorkspace} />
@@ -613,7 +618,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
         {(["review", ...(hasReadHistory ? ["read"] : []), "queued", "working", "done"] as Tab[]).map((item) => (
           <button key={item} className={tab === item ? "active" : ""} onClick={() => setTab(item)}>
             {item === "review" ? readingMode === "stream" ? "Feed" : "To review" : item === "read" ? "Read history" : item === "queued" ? queuedTabLabel : item === "working" ? "Working" : "Done"}
-            <span>{countFor(feed, item)}{item === "review" && readingMode === "stream" ? " unread" : ""}</span>
+            <span>{item === "review" && readingMode === "stream" ? streamCountLabel : countFor(feed, item)}</span>
           </button>
         ))}
         <button className="tab-quiet" onClick={() => openWorkspace("feed")}>Prompts & sources</button>
@@ -657,7 +662,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
           </Fragment>
         ))}
         </ReadingStreamViewport>
-        {readingMode === "stream" && tab === "review" && cards.some((card) => card.reading) && <section className="reading-stream-end" aria-label="End of reading feed">
+        {readingMode === "stream" && tab === "review" && cardGroups.some((group) => group.cards.every(isPassiveReadingCard)) && <section className="reading-stream-end" aria-label="End of reading feed">
           <h2>That’s everything for now.</h2>
           <p>You can scroll back to read cards and add feedback. Next visit starts with unread cards; everything stays in Read history.</p>
         </section>}

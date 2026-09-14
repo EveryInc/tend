@@ -9,7 +9,7 @@ import { CardView } from "../src/feed/CardView";
 import { ReadingStreamCard, ReadingStreamControls } from "../src/feed/ReadingStream";
 import { engagementClickTarget } from "../src/state/readingEngagement";
 import App from "../src/App";
-import { countFor, currentReadingPreference, readingMembers, retainReadingSessionGroups, selectedGroupCard, visibleCardActions, visibleCardGroups } from "../src/feed/selectors";
+import { countFor, currentReadingPreference, readingMembers, retainReadingSessionGroups, selectedGroupCard, streamReviewCounts, visibleCardActions, visibleCardGroups } from "../src/feed/selectors";
 import { groupReadingCards } from "../shared/readingGroups";
 import { Dock } from "../src/shell/Dock";
 import { SourceRunHistory } from "../src/workspace/PromptWorkspace";
@@ -323,6 +323,14 @@ function readingCard(overrides: Partial<Card> = {}): Card {
   };
 }
 
+function ordinaryPassiveCard(overrides: Partial<Card> = {}): Card {
+  return readingCard({
+    id: "fixture-ordinary", reading: undefined,
+    readingPresentation: { mode: "passive", contentRevision: "a".repeat(64) },
+    ...overrides,
+  });
+}
+
 function readingView(card = readingCard(), props: Partial<ComponentProps<typeof CardView>> = {}) {
   return <CardView card={card} active={false} onActivate={() => {}} onChanged={() => {}} onAction={() => {}} onReturnToReview={() => {}} onReadingFeedback={() => {}} {...props} />;
 }
@@ -387,6 +395,71 @@ test("reading mode is an explicit choice and manual read records only the select
   await waitFor(() => expect(requests).toHaveLength(1));
   expect(requests[0]).toEqual({ clientEventId: expect.any(String), groupId: group.id, members: readingMembers(group), viewedMembers: [{ cardId: selected.id, contentRevision: selected.reading!.contentRevision }], read: true, expectedCardUpdatedAt: Object.fromEntries(group.cards.map((member) => [member.id, member.updatedAt])) });
   expect(requests[0]).not.toHaveProperty("reaction");
+});
+
+test("an older ordinary informational card uses revision-bound progress and muted same-session styling", async () => {
+  const card = ordinaryPassiveCard({
+    blocks: [
+      { id: "answer", type: "rich_text", text: "The substantive expanded answer must be read." },
+      { id: "source", type: "evidence", label: "Evidence", items: ["Optional source detail"] },
+      { id: "receipt", type: "receipt", label: "Receipt", text: "Optional audit detail" },
+    ],
+  });
+  const group = groupReadingCards([card])[0];
+  const requests: Array<Record<string, unknown>> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input) === "/api/session") return Response.json({ mutationToken: "fixture-token" });
+    const body = JSON.parse(String(init?.body));
+    requests.push(body);
+    return Response.json({ progress: { ...body, eventId: "ordinary-read", at: "2026-09-14T12:00:00Z" } });
+  }) as typeof fetch;
+  const wrapper = (progress?: ReadingProgressState) => <ReadingStreamCard group={group} card={card} enabled history={false} progress={progress} busy={false} onRead={() => {}} onChanged={() => {}}>
+    {readingView(card, { readingGroup: group })}
+  </ReadingStreamCard>;
+  const ui = render(wrapper());
+  const readingFaces = [...ui.container.querySelectorAll(".attention-card .reading-face")];
+  expect(readingFaces.map((element) => element.textContent)).toEqual([
+    expect.stringContaining("An exact short face"),
+    expect.stringContaining("The substantive expanded answer must be read."),
+  ]);
+  expect(ui.getByText("Optional source detail").closest(".reading-face")).toBeNull();
+  expect(ui.getByText("Optional audit detail").closest(".reading-face")).toBeNull();
+  fireEvent.click(ui.getByRole("button", { name: "Mark read" }));
+  await waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0]).toMatchObject({
+    groupId: `card:${card.id}`,
+    members: [{ cardId: card.id, contentRevision: card.readingPresentation!.contentRevision }],
+    viewedMembers: [{ cardId: card.id, contentRevision: card.readingPresentation!.contentRevision }],
+    read: true,
+  });
+  ui.rerender(wrapper({ ...requests[0], eventId: "ordinary-read", at: "2026-09-14T12:00:00Z" } as unknown as ReadingProgressState));
+  expect(ui.container.querySelector("[data-reading-slot]")?.classList.contains("is-complete")).toBe(true);
+  expect(ui.container.querySelector("[data-reading-slot] > .attention-card")).toBeTruthy();
+  expect(ui.getByRole("button", { name: "Mark unread" })).toBeTruthy();
+});
+
+test("stream counts distinguish truly unread cards from genuine action review", () => {
+  const unread = [ordinaryPassiveCard({ id: "ordinary-one" }), readingCard({ id: "native-one" })];
+  const read = ordinaryPassiveCard({ id: "ordinary-read", readingPresentation: { mode: "passive", contentRevision: "b".repeat(64) } });
+  const send = ordinaryPassiveCard({
+    id: "explicit-send", readingPresentation: undefined,
+    proposedAction: { label: "Send", instruction: "Send only after exact approval.", externalMutation: true },
+  });
+  const editable = ordinaryPassiveCard({
+    id: "editable-draft", readingPresentation: undefined,
+    blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "Not approved.", editable: true }],
+  });
+  const feed = readingWorkspace([...unread, read, send, editable]).active;
+  const readGroup = groupReadingCards(feed.cards).find((group) => group.id === `card:${read.id}`)!;
+  feed.readingProgress = { [readGroup.id]: {
+    groupId: readGroup.id, members: readingMembers(readGroup), viewedMembers: readingMembers(readGroup),
+    read: true, eventId: "read", at: "2026-09-14T12:00:00Z",
+  } };
+  expect(streamReviewCounts(feed)).toEqual({ unread: 2, toReview: 2 });
+  expect(visibleCardGroups(feed, "read").map((group) => group.id)).toContain(readGroup.id);
+  expect(visibleCardGroups(feed, "review").map((group) => group.id)).toEqual(expect.arrayContaining([
+    `card:${send.id}`, `card:${editable.id}`,
+  ]));
 });
 
 test("a retained visit resolves fresh groups while dropping deleted, hidden, and active-work cards", () => {
@@ -544,6 +617,36 @@ test("a neutrally read card keeps its place and feedback target; Undo restores u
     await waitFor(() => expect(ui.container.querySelector(".reading-undo") === null).toBe(true));
     expect(requests[3]).toMatchObject({ read: false, expectedEventId: "progress-3" });
   } finally { mounted.close(); sessionStorage.clear(); }
+});
+
+test("an ordinary-only feed exposes stream controls and honest unread counts", async () => {
+  sessionStorage.clear();
+  globalThis.EventSource = class { addEventListener() {} close() {} } as unknown as typeof EventSource;
+  const cards = [
+    ordinaryPassiveCard({ id: "older-ordinary-one", title: "Older ordinary one" }),
+    ordinaryPassiveCard({ id: "older-ordinary-two", title: "Older ordinary two" }),
+  ];
+  const state = readingWorkspace(cards);
+  state.active.config.readingMode = "stream";
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/session") return Response.json({ mutationToken: "fixture-token" });
+    if (url.startsWith("/api/state?")) return Response.json(state);
+    if (url.endsWith("/native-approvals")) return Response.json([]);
+    const body = JSON.parse(String(init?.body ?? "{}"));
+    if (url === "/api/voice/target-change") return Response.json(body.target);
+    throw new Error(`Unexpected fixture request: ${url}`);
+  }) as typeof fetch;
+  const mounted = await mountReadingApp(cards[0].feedId);
+  try {
+    await waitFor(() => expect(mounted.ui.getByRole("heading", { name: cards[0].title })).toBeTruthy());
+    expect(mounted.ui.getByLabelText("Reading cards")).toBeTruthy();
+    expect(mounted.ui.container.querySelector(".tabs button")?.textContent).toBe("Feed2 unread");
+    expect(mounted.ui.getAllByRole("button", { name: "Mark read" })).toHaveLength(2);
+  } finally {
+    mounted.close();
+    sessionStorage.clear();
+  }
 });
 
 test("reading author details support hover, keyboard focus, Escape and touch-style clicks", () => {

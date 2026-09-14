@@ -5,6 +5,10 @@ a promise of ongoing maintenance.
 
 ## Unreleased
 
+- Give older informational cards the same revision-bound neutral reading progress as native reading
+  cards, without changing their workflow status or inventing reader provenance. Feed badges now
+  distinguish unread material from cards that still need an explicit action, and read cards remain
+  muted and reachable for feedback during the current visit.
 - Bind every approved email delivery to a canonical display-name-bearing RFC From header, require
   authoritative connector readback of the delivered header, and reject bare, wrong, unknown, or
   header-injected sender identities without changing existing action approvals. Advances the CLI

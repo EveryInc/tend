@@ -33,6 +33,32 @@ describe("conservative reading exposure", () => {
     expect(state.visibleMs).toBe(0);
   });
 
+  test("an active selection pauses without erasing exposure, then a later forward pass completes", () => {
+    const qualified = dwell();
+    const paused = sampleReadingExposure(qualified, {
+      now: 2_500, ...visible, paused: true, passed: true, forwardScroll: true,
+    });
+    expect(paused.markRead).toBe(false);
+    expect(paused.state.qualified).toBe(true);
+    expect(paused.state.visibleMs).toBe(qualified.visibleMs);
+    expect(sampleReadingExposure(paused.state, {
+      now: 2_750, ...visible, meaningful: false, passed: true, forwardScroll: true,
+    }).markRead).toBe(true);
+  });
+
+  test("selection pauses partial dwell while a true foreground loss still resets it", () => {
+    let state = emptyReadingExposure();
+    for (let now = 0; now <= 1_500; now += 250) state = sampleReadingExposure(state, { now, ...visible }).state;
+    const beforePause = state.visibleMs;
+    state = sampleReadingExposure(state, { now: 1_750, ...visible, paused: true }).state;
+    state = sampleReadingExposure(state, { now: 2_000, ...visible, paused: true }).state;
+    state = sampleReadingExposure(state, { now: 2_250, ...visible }).state;
+    expect(state.visibleMs).toBe(beforePause);
+    for (let now = 2_500; now <= 3_250; now += 250) state = sampleReadingExposure(state, { now, ...visible }).state;
+    expect(state.qualified).toBe(true);
+    expect(sampleReadingExposure(state, { now: 3_500, ...visible, foreground: false }).state).toEqual(emptyReadingExposure());
+  });
+
   test("a tall face can qualify in parts, but a headline alone cannot", () => {
     let state = dwell({ sawEnd: false });
     expect(state.qualified).toBe(false);

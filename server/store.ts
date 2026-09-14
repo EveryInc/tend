@@ -51,7 +51,7 @@ import {
 } from "./templates";
 import { digest, isoNow, makeId, readJson, withMutationLock, writeJson, writeText } from "./util";
 import { withProcessLock } from "./processLock";
-import { groupReadingCards, isPassiveReadingCard, readingGroupKey, sameReadingMembers } from "../shared/readingGroups";
+import { canPresentAsPassiveReading, groupReadingCards, isPassiveReadingCard, readingGroupKey, readingProgressMember, sameReadingMembers } from "../shared/readingGroups";
 import { defaultDictationCapability } from "./monologue";
 import { FileCardRepository, type CardRepository } from "./repositories/cards";
 import { FileFeedEventRepository, type FeedEventRepository } from "./repositories/feedEvents";
@@ -93,6 +93,30 @@ export function readingContentRevision(card: Pick<Card, "title" | "why" | "eyebr
   return digest(canonicalReadingValue({
     title: card.title, body: card.why, sourceLabel: card.eyebrow, blocks: card.blocks, reading,
   }));
+}
+
+export function passiveReadingContentRevision(card: Pick<Card, "title" | "why" | "eyebrow" | "blocks" | "contextInfluence" | "sourceRunIds">): string {
+  return digest(canonicalReadingValue({
+    title: card.title,
+    body: card.why,
+    sourceLabel: card.eyebrow,
+    blocks: card.blocks,
+    contextInfluence: card.contextInfluence,
+    sourceRunIds: card.sourceRunIds,
+  }));
+}
+
+/** Add a read-progress identity to the API projection without rewriting the stored legacy card. */
+export function projectReadingPresentation(card: Card): Card {
+  if (!canPresentAsPassiveReading(card)) {
+    delete card.readingPresentation;
+    return card;
+  }
+  card.readingPresentation = {
+    mode: "passive",
+    contentRevision: card.reading?.contentRevision ?? passiveReadingContentRevision(card),
+  };
+  return card;
 }
 
 /** Explicit ratings can archive versions without reopening the already-read topic. */
@@ -426,6 +450,7 @@ export class AttentionStore {
       this.readDrainState(feedId),
     ]);
     cards.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    cards.forEach(projectReadingPresentation);
     runs.sort((a, b) => (a.completedAt ?? "").localeCompare(b.completedAt ?? "") || a.id.localeCompare(b.id));
     routineActions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     work.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -436,7 +461,8 @@ export class AttentionStore {
     const readingComparisons = new Map<string, ReadingComparison>();
     const reactionSequences = new Map<string, number>();
     const preferenceSequences = new Map<string, number>();
-    if (readingCards.size) {
+    const readingPresentationCards = cards.filter((card) => card.readingPresentation);
+    if (readingCards.size || readingPresentationCards.length) {
       const events = await this.readEvents(feedId);
       for (const event of events) {
         if (event.type !== "reading.comparison_linked" || !event.detail || typeof event.detail !== "object") continue;
@@ -501,12 +527,15 @@ export class AttentionStore {
       for (const group of groupReadingCards(cards, [...readingComparisons.values()])) {
         const event = progressEvents.get(group.id);
         if (!event || group.cards.some((card) => !isPassiveReadingCard(card)
-          || card.reading!.contentRevision !== readingContentRevision(card))
+          || (card.reading && card.reading.contentRevision !== readingContentRevision(card)))
           || work.some((item) => group.cards.some((card) => card.id === item.cardId) && ["queued", "working", "approved_blocked"].includes(item.status))) continue;
         const detail = event.detail as ReadingProgressInput & { attentionRevisions?: Record<string, string> };
-        const current = group.cards.map((card) => ({ cardId: card.id, contentRevision: card.reading!.contentRevision }));
+        const current = group.cards.flatMap((card) => {
+          const member = readingProgressMember(card);
+          return member ? [member] : [];
+        });
         // Select the latest event first. A new variant or revision must never revive an older matching read.
-        if (!sameReadingMembers(current, detail.members) || !sameReadingMembers(detail.viewedMembers, detail.viewedMembers)
+        if (current.length !== group.cards.length || !sameReadingMembers(current, detail.members) || !sameReadingMembers(detail.viewedMembers, detail.viewedMembers)
           || detail.viewedMembers.some((viewed) => !current.some((member) => member.cardId === viewed.cardId && member.contentRevision === viewed.contentRevision))) continue;
         // Voice work and return-to-review retain content revisions. Once a later attention cycle
         // starts, this receipt stays invalid even when that work completes, fails, or is cancelled.
@@ -528,7 +557,7 @@ export class AttentionStore {
       sweep,
       drain,
       readyNextPass: cards.filter((card) => card.status === "to_review_updated" && card.readyForPass > config.currentPass).length,
-      ...(readingCards.size ? { readingReactions, readingPreferences, readingProgress, readingComparisons: [...readingComparisons.values()] } : {}),
+      ...(readingCards.size || readingPresentationCards.length ? { readingReactions, readingPreferences, readingProgress, readingComparisons: [...readingComparisons.values()] } : {}),
     };
   }
 
