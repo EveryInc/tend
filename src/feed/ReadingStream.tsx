@@ -182,14 +182,14 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
         && (currentY > previousY + 1 || atPageEnd)
         && now - lastForwardInput <= READING_INPUT_WINDOW_MS;
       if (scrolled) previousY = currentY;
-      // Clicking a version button leaves it focused; subsequent deliberate scrolling must still
-      // work. Editors, selected text, open author popovers and pending mutations remain protected.
-      const editing = document.activeElement?.matches("input, textarea, select, [contenteditable='true']");
+      // The Dock intentionally keeps its textarea focused after feedback. A trusted wheel or touch
+      // pass must still work without blurring it or losing a draft.
       const interacting = Boolean(element.querySelector("[aria-busy='true'], .reading-identity-popover"));
+      const trustedForwardInput = now - lastForwardInput <= READING_INPUT_WINDOW_MS;
       const result = sampleReadingExposure(exposure, {
-        now, foreground: document.visibilityState === "visible" && document.hasFocus() && !editing && !interacting, paused: Boolean(selecting), meaningful,
-        sawStart: start >= top - 8 && start < bottom,
-        sawEnd: end <= bottom + 8 && end > top,
+        foreground: document.visibilityState === "visible",
+        paused: Boolean(selecting) || interacting || (!document.hasFocus() && !trustedForwardInput),
+        meaningful,
         passed: end <= top,
         forwardScroll,
       });
@@ -201,6 +201,7 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
     const onWheel = (event: WheelEvent) => {
       if (event.isTrusted && event.deltaY > 0) {
         lastForwardInput = performance.now();
+        sample();
         sampleForwardAttempt();
       }
     };
@@ -209,6 +210,7 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
       if (event.target instanceof Element && event.target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false'])")) return;
       if (["ArrowDown", "PageDown", " "].includes(event.key)) {
         lastForwardInput = performance.now();
+        sample();
         sampleForwardAttempt();
       }
     };
@@ -217,6 +219,7 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
       const next = event.touches[0]?.clientY;
       if (event.isTrusted && next !== undefined && touchY !== undefined && next < touchY) {
         lastForwardInput = performance.now();
+        sample();
         sampleForwardAttempt();
       }
       touchY = next;
@@ -253,6 +256,7 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("blur", reset);
     document.addEventListener("visibilitychange", reset);
+    sample();
     const timer = window.setInterval(sample, 250);
     return () => {
       disposed = true;
