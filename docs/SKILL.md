@@ -11,7 +11,7 @@ Use this skill when a Codex Desktop thread is connected to a local Tend feed.
 - List queued work before using Gmail, GitHub, Slack, browser, filesystem, or other local connectors.
 - Claim work before acting on a queued instruction.
 - For approved external mutations, call `tend cli action:verify` immediately before the connector mutation. If `work:claim` includes `operatorGuidance.userAuthorization.riskConfirmation`, that in-app receipt is the user's risk confirmation for the named recipients while the verified digest still matches.
-- For approved email, send only the exact `emailDelivery` returned by `action:verify`, read the delivered MIME back, and provide a matching `emailDeliveryReadback` through `--result-file`. Tend rejects text-only or changed delivery. Direct connector calls outside Tend are outside this gate.
+- For approved email, use `fromAddress` only to select the authenticated account, set the complete RFC From header to the exact display-name-bearing `fromHeader`, and send only the other exact `emailDelivery` fields returned by `action:verify`. Read the delivered MIME and actual From header back, report the latter as `deliveredFromHeader`, and provide a matching `emailDeliveryReadback` through `--result-file`. Tend rejects a bare or wrong sender identity, text-only MIME, or changed delivery. Direct connector calls outside Tend are outside this gate.
 - Complete, fail, block, retry, or cancel claimed work through `tend cli`.
 - Refresh sources only after the queue is drained, unless the claimed work explicitly asks for collection.
 - Read the prompt-safe On Your Mind context before collecting sources. Treat it as temporary
@@ -86,7 +86,11 @@ tend cli work:complete --feed <feed-id> --work <work-id> --token <token> --resul
 When `work:claim` includes `completionCleanup`, the action click authorizes that predictable cleanup too. Perform it in the same workflow and provide the `postAction` receipt; do not require a separate Archive click. If the main action succeeds but cleanup fails, complete with cleanup status `blocked`; Tend preserves the successful action so cleanup can be retried without repeating it. Then use `work:reconcile-approved` with a completed cleanup receipt. Use `work:fail`, `work:block`, `work:retry`, or `work:cancel` when the main action itself does not succeed.
 
 For email, the result file must also contain `emailDeliveryReadback`. Report the connector's actual
-delivered sender, recipients, MIME parts, and attachment metadata; retain the verified version,
-approval digest, and payload digest, then add `source: "connector_readback"`, `providerMessageId`,
-and `readAt`. Never synthesize this receipt from the proposed draft.
+delivered From header as `deliveredFromHeader` plus its recipients, MIME parts, and attachment
+metadata; retain the verified version, `fromAddress`, `fromHeader`, approval digest, and payload
+digest, then add `source: "connector_readback"`, `providerMessageId`, and `readAt`. Never synthesize
+this receipt from the proposed draft.
+For a pre-gate v1 send whose provider receipt is already stored and only cleanup remains, do not
+retry or resend. Read the same provider message and add its actual `deliveredFromHeader` to the v1
+receipt passed to `work:reconcile-approved`; the provider id and old payload must remain exact.
 Run `tend cli help` for the full command surface.

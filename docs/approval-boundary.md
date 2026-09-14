@@ -33,6 +33,29 @@ the approval digest; this change does not remove quoted content from what the us
 
 The parser is a display and confirmation aid, not an email transport or authorization parser.
 Operators must put the actual outbound destinations in the action instruction or leading envelope.
+
+## Sender Identity Gate
+
+For an approved email, `action:verify` returns two different sender fields. `fromAddress` selects
+the already verified connector account. `fromHeader` is the complete approval-bound RFC From header,
+including the canonical display name, and is part of the delivery payload digest. For Dan's mailbox
+that header is `Dan Shipper <dan@every.to>`. An operator must set both rather than treating the bare
+mailbox as a complete header.
+
+Completion requires a connector readback with the actual delivered From header in
+`deliveredFromHeader`. Tend parses that value and rejects a missing or bare header, a wrong display
+name or address, control characters, and any drift from the approval-bound delivery. A quoted but
+equivalent display name remains valid. Unknown mailboxes fail closed instead of borrowing Dan's
+identity or deriving a name from the local part; operators can configure their own mapping with
+`ATTENTION_EMAIL_SENDER_IDENTITIES`.
+
+This is both a pre-send payload requirement and a post-send completion gate, but it is not a
+connector wrapper. A connector called outside Tend can still ignore these fields, and Tend cannot
+undo a message after delivery. Provider readback prevents that message from being recorded as a
+successful Tend completion when the operator reports the readback honestly; the current connector
+boundary does not give Tend a signed receipt or server-owned Gmail fetch, so Tend cannot
+cryptographically attest that provenance. Direct connector calls remain outside the mechanical
+gate.
 Unknown destinations must be resolved from authoritative context before execution, never inferred
 from arbitrary addresses in the body. Conflicting action and envelope recipients require review.
 

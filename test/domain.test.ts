@@ -20,7 +20,8 @@ import { FileWorkItemRepository, MirroredWorkItemRepository } from "../server/re
 import { FileWorkspaceFeedRepository, MirroredWorkspaceFeedRepository } from "../server/repositories/workspaceFeeds";
 import { LocalSqliteStore } from "../server/sqlite";
 import { AttentionStore } from "../server/store";
-import type { Card, CardReading, EmailDeliveryReadback, PreparedEmailDelivery, ReadingPreferenceInput, WorkClaimedByReport, WorkItem } from "../shared/types";
+import { digest } from "../server/util";
+import type { Card, CardReading, EmailDeliveryReadback, LegacyEmailDeliveryReadback, LegacyPreparedEmailDelivery, PreparedEmailDelivery, ReadingPreferenceInput, WorkClaimedByReport, WorkItem } from "../shared/types";
 import { closestTarget, preferredTarget } from "../src/state/voiceTarget";
 import { visibleCardGroups } from "../src/feed/selectors";
 import { readClaudeWakeLines } from "./support/agents";
@@ -94,6 +95,7 @@ function deliveredEmail(delivery: PreparedEmailDelivery | undefined, providerMes
     source: "connector_readback",
     providerMessageId,
     readAt: "2026-09-12T12:01:00.000Z",
+    deliveredFromHeader: delivery.fromHeader,
   };
 }
 
@@ -1013,6 +1015,9 @@ describe("feed thread operator handshake", () => {
     expect(output.operatorGuidance.postActionRule).toContain('"postAction"');
     expect(output.operatorGuidance.emailDeliveryRule).toContain("EMAIL SEND GATE");
     expect(output.operatorGuidance.emailDeliveryRule).toContain("multipart/alternative");
+    expect(output.operatorGuidance.emailDeliveryRule).toContain("fromAddress only");
+    expect(output.operatorGuidance.emailDeliveryRule).toContain("fromHeader");
+    expect(output.operatorGuidance.emailDeliveryRule).toContain("deliveredFromHeader");
     expect(output.operatorGuidance.emailDeliveryRule).toContain("direct connector call outside Tend is outside this gate");
     expect(output.operatorGuidance.userAuthorization.statement).toContain("final approval within Tend");
     expect(output.operatorGuidance.userAuthorization.statement).toContain("does not attest connector authorization or override a connector denial");
@@ -1173,6 +1178,8 @@ describe("auto-drain prompt", () => {
     expect(prompt).toContain("action:verify");
     expect(prompt).toContain("EMAIL SEND GATE");
     expect(prompt).toContain("exact multipart/alternative payload");
+    expect(prompt).toContain("display-name-bearing fromHeader");
+    expect(prompt).toContain("deliveredFromHeader");
     expect(prompt).toContain("Direct connector calls outside Tend remain outside this gate");
   });
 });
@@ -2591,6 +2598,7 @@ describe("approval, learning, and heartbeat safety", () => {
     const verified = await domain.verifyApprovedAction("inbox", work.id, claimed.capabilityToken, "DAN@EVERY.TO");
     expect(verified.verifiedMailbox).toBe("dan@every.to");
     expect(verified.emailDelivery?.payload.mime_type).toBe("multipart/alternative");
+    expect(verified.emailDelivery?.fromHeader).toBe("Dan Shipper <dan@every.to>");
     const verificationEvent = (await store.readEvents("inbox")).find((event) => event.type === "action.verified" && event.workId === work.id);
     expect(verificationEvent?.detail).toMatchObject({
       emailPayloadDigest: verified.emailDelivery?.payloadDigest,
@@ -2606,6 +2614,10 @@ describe("approval, learning, and heartbeat safety", () => {
       response: "Sent.",
       emailDeliveryReadback: { ...deliveredEmail(verified.emailDelivery), recipients: ["changed@example.test"] },
     })).rejects.toThrow("does not match");
+    await expect(domain.completeWork("inbox", work.id, claimed.capabilityToken, {
+      response: "Sent.",
+      emailDeliveryReadback: { ...deliveredEmail(verified.emailDelivery), deliveredFromHeader: "dan@every.to" },
+    })).rejects.toThrow("display name and address");
     expect((await domain.completeWork("inbox", work.id, claimed.capabilityToken, {
       response: "Sent and archived.",
       emailDeliveryReadback: deliveredEmail(verified.emailDelivery),
@@ -2617,13 +2629,151 @@ describe("approval, learning, and heartbeat safety", () => {
     expect((await store.readWork("inbox", work.id)).emailDeliveryReceipt).toMatchObject({
       providerMessageId: "gmail-test-message",
       payloadDigest: verified.emailDelivery?.payloadDigest,
+      deliveredFromHeader: "Dan Shipper <dan@every.to>",
     });
     const completionEvent = (await store.readEvents("inbox")).find((event) => event.type === "work.completed" && event.workId === work.id);
     expect(completionEvent?.detail).toMatchObject({ emailDelivery: {
       providerMessageId: "gmail-test-message",
       payloadDigest: verified.emailDelivery?.payloadDigest,
+      fromHeader: "Dan Shipper <dan@every.to>",
+      deliveredFromHeader: "Dan Shipper <dan@every.to>",
     } });
     expect(JSON.stringify(completionEvent)).not.toContain("<p>Hello.</p>");
+  });
+
+  test("reverifies a legacy delivery preparation without requiring a new action approval", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    await domain.upsertCard("inbox", {
+      id: "legacy-email-delivery",
+      title: "Send this reply.",
+      why: "The action approval predates the named-sender delivery gate.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft reply", value: "Approved legacy body.", editable: true }],
+      actions: [
+        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply to reader@example.test.", artifactBlockId: "draft", externalMutation: true, variant: "primary" },
+      ],
+    });
+    const approved = await domain.runCardAction("inbox", "legacy-email-delivery", "send-reply");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    const firstVerification = await domain.verifyApprovedAction("inbox", approved.id, claimed.capabilityToken, "dan@every.to");
+    const stored = await store.readWork("inbox", approved.id);
+    const legacyPreparation = structuredClone(stored.emailDeliveryPreparation) as unknown as Record<string, unknown>;
+    legacyPreparation.version = 1;
+    delete legacyPreparation.fromHeader;
+    stored.emailDeliveryPreparation = legacyPreparation as unknown as PreparedEmailDelivery;
+    await store.writeWork(stored);
+
+    await expect(domain.completeWork("inbox", approved.id, claimed.capabilityToken, {
+      response: "Do not record a legacy delivery as complete.",
+      emailDeliveryReadback: deliveredEmail(firstVerification.emailDelivery),
+    })).rejects.toThrow("Rerun action:verify");
+    expect((await store.readWork("inbox", approved.id)).status).toBe("working");
+
+    const refreshed = await domain.verifyApprovedAction("inbox", approved.id, claimed.capabilityToken, "dan@every.to");
+    expect(refreshed.approvalDigest).toBe(approved.approvalDigest);
+    expect(refreshed.emailDelivery).toMatchObject({
+      version: 2,
+      fromAddress: "dan@every.to",
+      fromHeader: "Dan Shipper <dan@every.to>",
+    });
+  });
+
+  test("requires sender readback when reconciling an already-sent legacy delivery after blocked cleanup", async () => {
+    const { store, domain } = await setup();
+    await domain.bindFeed("inbox", "thread-inbox");
+    await domain.upsertCard("inbox", {
+      id: "legacy-delivery-cleanup",
+      title: "Finish cleanup for this sent reply.",
+      why: "The send completed before the named-sender gate, but cleanup was blocked.",
+      sourceMailbox: "dan@every.to",
+      blocks: [{ id: "draft", type: "editable_text", label: "Draft reply", value: "Already delivered body.", editable: true }],
+      actions: [
+        { id: "send-reply", label: "Send reply", behavior: "approve_action", instruction: "Send the exact currently approved reply to reader@example.test.", artifactBlockId: "draft", externalMutation: true, variant: "primary" },
+      ],
+    });
+    const approved = await domain.runCardAction("inbox", "legacy-delivery-cleanup", "send-reply");
+    const claimed = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
+    const verified = await domain.verifyApprovedAction("inbox", approved.id, claimed.capabilityToken, "dan@every.to");
+    if (!verified.emailDelivery) throw new Error("Expected a prepared email delivery.");
+    const legacyWithoutDigest = {
+      version: 1 as const,
+      approvalDigest: verified.emailDelivery.approvalDigest,
+      fromAddress: verified.emailDelivery.fromAddress,
+      recipients: structuredClone(verified.emailDelivery.recipients),
+      payload: structuredClone(verified.emailDelivery.payload),
+      attachments: structuredClone(verified.emailDelivery.attachments),
+    };
+    const legacyPreparation: LegacyPreparedEmailDelivery = {
+      ...legacyWithoutDigest,
+      payloadDigest: digest(legacyWithoutDigest),
+    };
+    const legacyReceipt: LegacyEmailDeliveryReadback = {
+      ...legacyPreparation,
+      source: "connector_readback",
+      providerMessageId: "already-sent-legacy-message",
+      readAt: "2026-09-11T12:01:00.000Z",
+    };
+    const stored = await store.readWork("inbox", approved.id);
+    stored.status = "approved_blocked";
+    stored.error = "The message was sent, but source cleanup was blocked.";
+    stored.emailDeliveryPreparation = legacyPreparation;
+    stored.emailDeliveryReceipt = legacyReceipt;
+    stored.postAction = {
+      cleanup: { status: "blocked", detail: "The source row remained visible." },
+      disposition: "review",
+    };
+    await store.writeWork(stored);
+    await store.writeCard({ ...await store.readCard("inbox", stored.cardId), status: "approved_blocked" });
+    const completedCleanup = {
+      cleanup: { status: "completed" as const, detail: "Fresh source read found no remaining row." },
+      disposition: "done" as const,
+    };
+
+    await expect(domain.reconcileApprovedWork("inbox", approved.id, claimed.capabilityToken, {
+      response: "Cleanup finished; do not resend.",
+      postAction: completedCleanup,
+    })).rejects.toThrow("fresh connector readback");
+    const corrupted = await store.readWork("inbox", approved.id);
+    corrupted.emailDeliveryReceipt = { ...legacyReceipt, deliveredFromHeader: "dan <dan@every.to>" };
+    await store.writeWork(corrupted);
+    await expect(domain.reconcileApprovedWork("inbox", approved.id, claimed.capabilityToken, {
+      response: "Cleanup finished; do not resend.",
+      postAction: completedCleanup,
+      emailDeliveryReadback: { ...legacyReceipt, deliveredFromHeader: "Dan Shipper <dan@every.to>" },
+    })).rejects.toThrow("must identify Dan Shipper");
+    for (const invalidReceipt of [
+      { ...legacyReceipt, payloadDigest: "tampered" },
+      { ...legacyReceipt, readAt: "not-a-timestamp" },
+    ]) {
+      corrupted.emailDeliveryReceipt = invalidReceipt;
+      await store.writeWork(corrupted);
+      await expect(domain.reconcileApprovedWork("inbox", approved.id, claimed.capabilityToken, {
+        response: "Cleanup finished; do not resend.",
+        postAction: completedCleanup,
+        emailDeliveryReadback: { ...legacyReceipt, deliveredFromHeader: "Dan Shipper <dan@every.to>" },
+      })).rejects.toThrow("Persisted legacy email delivery receipt");
+    }
+    corrupted.emailDeliveryReceipt = legacyReceipt;
+    await store.writeWork(corrupted);
+    await expect(domain.reconcileApprovedWork("inbox", approved.id, claimed.capabilityToken, {
+      response: "Cleanup finished; do not resend.",
+      postAction: completedCleanup,
+      emailDeliveryReadback: { ...legacyReceipt, deliveredFromHeader: "dan@every.to" },
+    })).rejects.toThrow("display name and address");
+
+    const reconciled = await domain.reconcileApprovedWork("inbox", approved.id, claimed.capabilityToken, {
+      response: "Cleanup finished for the already delivered message; nothing was resent.",
+      postAction: completedCleanup,
+      emailDeliveryReadback: { ...legacyReceipt, deliveredFromHeader: '"Dan Shipper" <dan@every.to>' },
+    });
+    expect(reconciled.status).toBe("completed");
+    expect(reconciled.approvalDigest).toBe(approved.approvalDigest);
+    expect(reconciled.emailDeliveryReceipt).toMatchObject({
+      version: 1,
+      providerMessageId: "already-sent-legacy-message",
+      deliveredFromHeader: '"Dan Shipper" <dan@every.to>',
+    });
   });
 
   test("keeps an approved blocked send out of review and retries only the unchanged snapshot", async () => {

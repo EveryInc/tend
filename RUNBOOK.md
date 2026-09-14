@@ -89,14 +89,29 @@ before acting:
 tend cli action:verify --feed <feed-id> --work <work-id> --token <capability-token>
 ```
 
-For an email action, verification returns `emailDelivery`. Send only that exact sender, recipient
-list, attachment list, and `multipart/alternative` payload. Then read the delivered MIME back from
-the connector and complete with `--result-file`. Build `emailDeliveryReadback` from the connector's
-actual delivered sender, recipients, MIME parts, and attachment metadata; retain the verified
-version, approval digest, and payload digest, then add `source: "connector_readback"`, the provider
-message id, and readback timestamp. Never synthesize it from the proposed draft. Tend rejects
-text-only MIME and any body, sender, recipient, attachment, or approval-digest mismatch. Direct
-connector calls outside Tend are not mechanically covered by this gate.
+For an email action, verification returns `emailDelivery`. Use `fromAddress` only to select the
+authenticated connector account. Set the complete RFC From header to the exact
+display-name-bearing `fromHeader`, then send only the returned recipient list, attachment list, and
+`multipart/alternative` payload. Read the delivered MIME and actual From header back from the
+connector and complete with `--result-file`. Build `emailDeliveryReadback` from the connector's
+actual delivered data, recording its From header as `deliveredFromHeader`; retain the verified
+version, `fromAddress`, `fromHeader`, approval digest, and payload digest, then add
+`source: "connector_readback"`, the provider message id, and readback timestamp. Never synthesize
+the actual header or receipt from the proposed draft. Tend rejects a bare or wrong sender identity,
+text-only MIME, and any body, recipient, attachment, or approval-digest mismatch. Direct connector
+calls outside Tend are not mechanically covered by this gate.
+
+Tend has a built-in canonical identity for `dan@every.to`. Other installations must set
+`ATTENTION_EMAIL_SENDER_IDENTITIES` to a JSON object such as
+`{"owner@example.com":"Owner Name"}`. Unknown mailboxes fail closed; Tend never guesses a display
+name. A changed identity requires a fresh `action:verify`, but does not change the user's existing
+action approval.
+
+If a pre-gate v1 send already has a persisted provider receipt and only its bundled cleanup remains,
+do not retry or resend it. Read that same provider message and pass the old receipt fields plus its
+actual `deliveredFromHeader` to `work:reconcile-approved`; Tend pins the provider message id and
+validates the old payload before allowing cleanup reconciliation. A v1 preparation without an
+already-sent receipt must rerun `action:verify` before any send.
 
 Repeat claim until it returns the idle handshake. An active claimed item also appears in `work:list`
 for its own lane and is replayed by `work:claim`, so restart recovery stays simple and visible.
