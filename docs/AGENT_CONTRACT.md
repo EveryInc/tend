@@ -40,7 +40,8 @@ the user wants an immediate sweep.
 - Claim work before connector-backed execution.
 - Upsert cards only after holding the relevant claim.
 - Call `action:verify` immediately before approved external mutations. When `work:claim` returns `operatorGuidance.userAuthorization.riskConfirmation`, treat that app click as the user's risk confirmation for the named recipients while the verified digest still matches.
-- For email, send only the approval-bound `emailDelivery` returned by `action:verify`. Read the delivered MIME back and complete through `--result-file` with an exact `emailDeliveryReadback`. Tend rejects text-only MIME and sender, recipient, body, attachment, or digest drift. Direct connector calls outside Tend remain outside this gate.
+- For email, use `fromAddress` only to select the authenticated account, set the complete RFC From header to the exact display-name-bearing `fromHeader`, and send only the other approval-bound `emailDelivery` fields returned by `action:verify`. Read the delivered MIME and actual From header back, report the latter as `deliveredFromHeader`, and complete through `--result-file` with an exact `emailDeliveryReadback`. Tend rejects a bare or wrong sender identity, text-only MIME, or recipient, body, attachment, or digest drift. Direct connector calls outside Tend remain outside this gate.
+- A pre-gate v1 send with a persisted provider receipt and blocked cleanup must not be resent. Read the same provider message and reconcile the old receipt with its actual `deliveredFromHeader`; a v1 preparation without an already-sent receipt must rerun `action:verify` before sending.
 - Complete, fail, block, retry, or cancel work through `tend cli`.
 - Refresh sources only after the queue is drained, unless the claimed work explicitly asks for source collection.
 - Read `context:for-feed` before a normal source collection. A fresh update may focus the feed's

@@ -28,14 +28,14 @@ async function setup(timeoutMs?: number) {
   const domain = new AttentionDomain(store);
   await domain.bindFeed("inbox", "thread-inbox");
   await domain.upsertCard("inbox", { id: "native-card", title: "Reply to the reader", why: "Test only.",
-    sourceMailbox: "owner@example.test",
+    sourceMailbox: "dan@every.to",
     blocks: [{ id: "draft", type: "editable_text", label: "Draft", value: "To: reader@example.test\n\nExact approved body.", editable: true }],
     actions: [{ id: "send", label: "Send reply", behavior: "approve_action", instruction: "Send the displayed draft to reader@example.test.",
       artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" }],
   });
   await domain.runCardAction("inbox", "native-card", "send");
   const work = await domain.claimWork("inbox", "thread-inbox") as WorkItem;
-  await domain.verifyApprovedAction("inbox", work.id, work.capabilityToken, "owner@example.test");
+  await domain.verifyApprovedAction("inbox", work.id, work.capabilityToken, "dan@every.to");
   const broker = new NativeApprovalBroker(store, () => {}, timeoutMs);
   fixtures.push({ root, broker });
   const app = apiRoutes({ root, artifactsDir: root, dataDir: root, domain, store, nativeApprovals: broker,

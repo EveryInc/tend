@@ -9,7 +9,7 @@ import type {
   CardReading,
   CardReadingInput,
   CardReaction,
-  EmailDeliveryReadback,
+  EmailDeliveryReadbackInput,
   ReadingCardSnapshot,
   ReadingComparison,
   ReadingComparisonInput,
@@ -41,6 +41,7 @@ import type {
   RoutineActionGroup,
   SourceRecipe,
   SourceRun,
+  StoredEmailDeliveryReadback,
   SweepBatch,
   SweepPresentationGap,
   SweepPresentationRun,
@@ -73,7 +74,7 @@ import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
 import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./util";
 import { actionDigest, cleanupDigest, configuredApprovalAction, legacyActionDigestWithoutSourceMailbox, requiredSourceMailbox, routineActionDigest, verifySourceMailbox } from "./workflow/approvals";
-import { prepareApprovedEmailDelivery, validateEmailDeliveryReadback } from "./workflow/emailDelivery";
+import { prepareApprovedEmailDelivery, validateEmailDeliveryReadback, validateLegacyEmailDeliveryIdentityReadback } from "./workflow/emailDelivery";
 import { queuedWork } from "./workflow/workItems";
 import { hasVoiceApprovalCandidate, matchExplicitVoiceApproval } from "./workflow/voiceApprovals";
 import { mobileActionConfirmation, projectMobileCard, projectMobileRoutineAction } from "./mobile/projection";
@@ -82,7 +83,7 @@ function appendHistory(card: Card, type: string, detail?: string): void {
   card.history.push({ at: isoNow(), type, detail });
 }
 
-function emailDeliveryAudit(receipt?: EmailDeliveryReadback): unknown {
+function emailDeliveryAudit(receipt?: StoredEmailDeliveryReadback): unknown {
   if (!receipt) return undefined;
   return {
     source: receipt.source,
@@ -91,6 +92,8 @@ function emailDeliveryAudit(receipt?: EmailDeliveryReadback): unknown {
     approvalDigest: receipt.approvalDigest,
     payloadDigest: receipt.payloadDigest,
     fromAddress: receipt.fromAddress,
+    ...(receipt.version === 2 ? { fromHeader: receipt.fromHeader } : {}),
+    ...(receipt.deliveredFromHeader ? { deliveredFromHeader: receipt.deliveredFromHeader } : {}),
     recipients: receipt.recipients,
     attachments: receipt.attachments,
   };
@@ -2670,7 +2673,7 @@ export class AttentionDomain {
     });
   }
 
-  async completeWork(feedId: string, workId: string, token: string, result: { response: string; blocks?: CardBlock[]; proposedAction?: ProposedAction; actions?: CardAction[]; done?: boolean; postAction?: PostActionCompletion; emailDeliveryReadback?: EmailDeliveryReadback }): Promise<WorkItem> {
+  async completeWork(feedId: string, workId: string, token: string, result: { response: string; blocks?: CardBlock[]; proposedAction?: ProposedAction; actions?: CardAction[]; done?: boolean; postAction?: PostActionCompletion; emailDeliveryReadback?: EmailDeliveryReadbackInput }): Promise<WorkItem> {
     if (result.blocks) validateCardBlocks(result.blocks);
     if (result.blocks) await verifyCardImages(this.artifactsDir, result.blocks);
     validateCardActions(result.actions);
@@ -2911,6 +2914,7 @@ export class AttentionDomain {
         detail: {
           verifiedMailbox: work.verifiedMailbox,
           emailPayloadDigest: work.emailDeliveryPreparation?.payloadDigest,
+          emailFromHeader: work.emailDeliveryPreparation?.version === 2 ? work.emailDeliveryPreparation.fromHeader : undefined,
           emailRecipients: work.emailDeliveryPreparation?.recipients,
         },
       });
@@ -2993,7 +2997,7 @@ export class AttentionDomain {
     });
   }
 
-  async reconcileApprovedWork(feedId: string, workId: string, token: string, result: { response: string; done?: boolean; postAction?: PostActionCompletion; emailDeliveryReadback?: EmailDeliveryReadback }): Promise<WorkItem> {
+  async reconcileApprovedWork(feedId: string, workId: string, token: string, result: { response: string; done?: boolean; postAction?: PostActionCompletion; emailDeliveryReadback?: EmailDeliveryReadbackInput }): Promise<WorkItem> {
     return this.store.serializeAtomic(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "approved_blocked" || work.kind !== "execute_approved_action" || !work.approvalDigest) {
@@ -3008,14 +3012,39 @@ export class AttentionDomain {
         if (!work.emailDeliveryPreparation) {
           throw new Error("Blocked email delivery is missing its approval-bound multipart payload. Retry the unchanged action and rerun action:verify.");
         }
-        if (result.emailDeliveryReadback) {
+        if (work.emailDeliveryPreparation.version === 1) {
+          if (!work.emailDeliveryReceipt || work.emailDeliveryReceipt.version !== 1) {
+            throw new Error("Legacy email reconciliation requires its persisted provider receipt; do not retry or resend the message.");
+          }
+          if (result.emailDeliveryReadback) {
+            work.emailDeliveryReceipt = validateLegacyEmailDeliveryIdentityReadback(
+              work.emailDeliveryPreparation,
+              work.emailDeliveryReceipt,
+              result.emailDeliveryReadback,
+            );
+          } else if (!work.emailDeliveryReceipt.deliveredFromHeader) {
+            throw new Error("Legacy email reconciliation requires a fresh connector readback of the already delivered message's actual From header; do not retry or resend it.");
+          } else {
+            work.emailDeliveryReceipt = validateLegacyEmailDeliveryIdentityReadback(
+              work.emailDeliveryPreparation,
+              work.emailDeliveryReceipt,
+              work.emailDeliveryReceipt,
+            );
+          }
+        } else if (result.emailDeliveryReadback) {
           const receipt = validateEmailDeliveryReadback(work.emailDeliveryPreparation, result.emailDeliveryReadback);
           if (work.emailDeliveryReceipt && work.emailDeliveryReceipt.providerMessageId !== receipt.providerMessageId) {
             throw new Error("Email delivery readback identifies a different provider message than the already verified send.");
           }
-          work.emailDeliveryReceipt ??= receipt;
-        } else if (!work.emailDeliveryReceipt) {
-          throw new Error("Email reconciliation requires a connector delivery readback for the exact verified payload.");
+          work.emailDeliveryReceipt = receipt;
+        } else {
+          if (!work.emailDeliveryReceipt || work.emailDeliveryReceipt.version !== 2) {
+            throw new Error("Email reconciliation requires a connector delivery readback for the exact verified payload.");
+          }
+          work.emailDeliveryReceipt = validateEmailDeliveryReadback(
+            work.emailDeliveryPreparation,
+            work.emailDeliveryReceipt,
+          );
         }
       }
       const completedAt = isoNow();

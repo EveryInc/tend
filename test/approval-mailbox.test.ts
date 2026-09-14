@@ -56,7 +56,7 @@ async function legacyApprovalFixture(label: string) {
     id: "legacy-mailbox-approval",
     title: "Send this exact reply",
     why: "The reviewed source still requests a reply.",
-    sourceMailbox: "dan@example.com",
+    sourceMailbox: "dan@every.to",
     sourceRunIds: [runId],
     blocks: [{ id: "draft", type: "editable_text" as const, label: "Draft", value: "Approved text.", editable: true }],
     actions: [{ id: "send", label: "Send reply", behavior: "approve_action" as const, instruction: "Send the exact reply to reader@example.com.", artifactBlockId: "draft", externalMutation: true, mailboxPolicy: "reply_from_source" as const }],
@@ -128,7 +128,7 @@ test("does not revive a legacy approval after a newer approval completed the act
   const newer = await domain.runCardAction("inbox", card.id, "send");
   const claimed = await domain.claimWork("inbox", "thread-inbox");
   if (!claimed || !("capabilityToken" in claimed) || claimed.id !== newer.id) throw new Error("Expected the newer action claim.");
-  const verified = await domain.verifyApprovedAction("inbox", newer.id, claimed.capabilityToken, "dan@example.com");
+  const verified = await domain.verifyApprovedAction("inbox", newer.id, claimed.capabilityToken, "dan@every.to");
   if (!verified.emailDelivery) throw new Error("Expected prepared email delivery.");
   await domain.completeWork("inbox", newer.id, claimed.capabilityToken, {
     response: "The newer approval completed.",
@@ -137,6 +137,7 @@ test("does not revive a legacy approval after a newer approval completed the act
       source: "connector_readback",
       providerMessageId: "newer-message",
       readAt: "2026-09-12T12:01:00.000Z",
+      deliveredFromHeader: verified.emailDelivery.fromHeader,
     },
     postAction: {
       cleanup: { status: "completed", detail: "The exact source row was archived." },

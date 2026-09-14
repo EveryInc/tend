@@ -5,6 +5,10 @@ a promise of ongoing maintenance.
 
 ## Unreleased
 
+- Bind every approved email delivery to a canonical display-name-bearing RFC From header, require
+  authoritative connector readback of the delivered header, and reject bare, wrong, unknown, or
+  header-injected sender identities without changing existing action approvals. Advances the CLI
+  contract to `0.10`.
 - Let sweep judgments name the card that will present them (`cardId`), so `work:complete` and the
   new `tend cli sweep:status --feed <feed>` check each judged item against its exact card and report
   precisely what is still missing; judgments without a `cardId` keep the count-based check. Re-claimed

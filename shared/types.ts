@@ -516,21 +516,48 @@ export interface EmailMimePayload {
   ];
 }
 
-export interface PreparedEmailDelivery {
-  version: 1;
+interface EmailDeliveryBase {
   approvalDigest: string;
   payloadDigest: string;
+  /** Authenticated connector account. This is not the complete RFC From header. */
   fromAddress: string;
   recipients: string[];
   payload: EmailMimePayload;
   attachments: EmailDeliveryAttachment[];
 }
 
-export interface EmailDeliveryReadback extends PreparedEmailDelivery {
+/** Persisted preparations from before the display-name sender gate. Never authorize a new send. */
+export interface LegacyPreparedEmailDelivery extends EmailDeliveryBase {
+  version: 1;
+}
+
+export interface PreparedEmailDelivery extends EmailDeliveryBase {
+  version: 2;
+  /** Approval-bound RFC From header, including the canonical display name. */
+  fromHeader: string;
+}
+
+export type StoredPreparedEmailDelivery = LegacyPreparedEmailDelivery | PreparedEmailDelivery;
+
+interface EmailDeliveryReadbackBase {
   source: "connector_readback";
   providerMessageId: string;
   readAt: string;
 }
+
+/** A v1 receipt may lack deliveredFromHeader until its already-sent message is reconciled. */
+export interface LegacyEmailDeliveryReadback extends LegacyPreparedEmailDelivery, EmailDeliveryReadbackBase {
+  deliveredFromHeader?: string;
+}
+
+export interface EmailDeliveryReadback extends PreparedEmailDelivery, EmailDeliveryReadbackBase {
+  /** Exact From header reported from provider readback, not the proposed draft. */
+  deliveredFromHeader: string;
+}
+
+export type VerifiedLegacyEmailDeliveryReadback = LegacyEmailDeliveryReadback & { deliveredFromHeader: string };
+export type EmailDeliveryReadbackInput = EmailDeliveryReadback | VerifiedLegacyEmailDeliveryReadback;
+export type StoredEmailDeliveryReadback = EmailDeliveryReadback | LegacyEmailDeliveryReadback;
 
 export interface WorkItem {
   id: string;
@@ -566,8 +593,8 @@ export interface WorkItem {
   verifiedAt?: string;
   verifiedApprovalDigest?: string;
   verifiedMailbox?: string;
-  emailDeliveryPreparation?: PreparedEmailDelivery;
-  emailDeliveryReceipt?: EmailDeliveryReadback;
+  emailDeliveryPreparation?: StoredPreparedEmailDelivery;
+  emailDeliveryReceipt?: StoredEmailDeliveryReadback;
   sourceMobileCommandId?: string;
 }
 
