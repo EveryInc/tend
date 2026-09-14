@@ -5,6 +5,8 @@ export const READING_INPUT_WINDOW_MS = 1_500;
 export interface ReadingExposureSample {
   now: number;
   foreground: boolean;
+  /** A local interaction pauses accumulation without discarding prior qualified exposure. */
+  paused?: boolean;
   meaningful: boolean;
   sawStart: boolean;
   sawEnd: boolean;
@@ -28,10 +30,13 @@ export function emptyReadingExposure(): ReadingExposure {
 /** Cap gaps so sleeping tabs and stalled timers cannot become reading time. */
 export function sampleReadingExposure(state: ReadingExposure, sample: ReadingExposureSample): { state: ReadingExposure; markRead: boolean } {
   if (!sample.foreground) return { state: emptyReadingExposure(), markRead: false };
+  if (sample.paused) {
+    return { state: { ...state, lastAt: sample.now, wasMeaningful: false }, markRead: false };
+  }
   const elapsed = state.lastAt === undefined ? 0 : sample.now - state.lastAt;
   const continuous = elapsed >= 0 && elapsed <= 600;
   const visibleMs = sample.meaningful
-    ? (continuous && state.wasMeaningful ? state.visibleMs + elapsed : 0)
+    ? (continuous ? state.visibleMs + (state.wasMeaningful ? elapsed : 0) : 0)
     : 0;
   const next = {
     visibleMs,

@@ -81,6 +81,26 @@ describe("native reader HTTP routes", () => {
     expect(summary.cards[0]).toMatchObject({ cardId: card.id, selections: 1, dwellMs: 0, clicks: {} });
   });
 
+  test("legacy informational engagement uses the same guarded route without native provenance", async () => {
+    const { app, domain, store, run, notifications } = await setup();
+    const card = await domain.upsertCard(run.feedId, {
+      id: "legacy-http-engagement", title: "An older informational card", why: "A concrete observation with no action.",
+      blocks: [{ id: "source", type: "evidence", items: ["Fixture source"] }],
+    });
+    const projected = (await store.readFeed(run.feedId)).cards.find((item) => item.id === card.id)!;
+    const contentRevision = projected.readingPresentation!.contentRevision;
+    const endpoint = `/api/feeds/${run.feedId}/cards/${card.id}/engagement`;
+    const input = { clientEventId: "legacy-http-dwell", sessionId: "legacy-visit", contentRevision, type: "dwell", dwellMs: 2250 };
+    expect((await app.request(endpoint, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) })).status).toBe(403);
+    expect((await app.request(endpoint, { method: "POST", headers: browserHeaders, body: JSON.stringify(input) })).status).toBe(200);
+    const summary = await (await app.request(`/api/feeds/${run.feedId}/reading-engagement?card=${card.id}`)).json();
+    expect(summary.cards).toEqual([{
+      cardId: card.id, contentRevision, dwellMs: 2250, clicks: {}, selections: 0, lastEngagedAt: expect.any(String),
+    }]);
+    expect(notifications).toHaveLength(0);
+    expect(await store.readWorkItems(run.feedId)).toEqual([]);
+  });
+
   test("a server bind failure cannot interrupt a recorded reader", async () => {
     const home = await mkdtemp(path.join(os.tmpdir(), "tend-reader-bind-"));
     const occupied = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response("occupied") });
@@ -237,7 +257,10 @@ describe("native reader HTTP routes", () => {
     expect((await unread.json()).progress.read).toBe(false);
     const feed = await store.readFeed(run.feedId);
     expect(feed.readingReactions).toEqual({});
-    expect(feed.cards.find((item) => item.id === card.id)).toEqual(card);
+    const projected = feed.cards.find((item) => item.id === card.id)!;
+    expect(projected.readingPresentation).toEqual({ mode: "passive", contentRevision: card.reading!.contentRevision });
+    expect(JSON.parse(JSON.stringify({ ...projected, readingPresentation: undefined })))
+      .toEqual(JSON.parse(JSON.stringify({ ...card, readingPresentation: undefined })));
     expect(feed.work).toEqual([]);
   });
 

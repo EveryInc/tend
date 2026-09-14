@@ -21,10 +21,21 @@ export function sameReadingMembers(left: ReadingGroupMember[], right: ReadingGro
     && right.every((member) => versions.get(member.cardId) === member.contentRevision);
 }
 
-/** Only passive reading cards may disappear on scroll; actions keep explicit review. */
-export function isPassiveReadingCard(card: Card): boolean {
-  return Boolean(card.reading) && card.kind === "attention" && !card.proposedAction
+export function readingProgressMember(card: Card): ReadingGroupMember | undefined {
+  const contentRevision = card.readingPresentation?.contentRevision ?? card.reading?.contentRevision;
+  return contentRevision ? { cardId: card.id, contentRevision } : undefined;
+}
+
+/** Shape-level safety boundary used by the server to project passive presentation for old cards. */
+export function canPresentAsPassiveReading(card: Card): boolean {
+  return card.kind === "attention" && !card.proposedAction
     && !(card.actions?.length) && !card.routineActionGroupId
+    && !card.blocks.some((block) => block.type === "editable_text" || block.editable);
+}
+
+/** Only revision-bound passive cards may disappear on scroll; actions keep explicit review. */
+export function isPassiveReadingCard(card: Card): boolean {
+  return Boolean(readingProgressMember(card)) && canPresentAsPassiveReading(card)
     && ["to_review_new", "to_review_updated", "done"].includes(card.status);
 }
 

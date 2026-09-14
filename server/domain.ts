@@ -66,10 +66,10 @@ import { importCardImage, validateCardImage, verifyCardImages } from "./imageAtt
 import { isReservedCardActionId, safeConfiguredCardActions } from "../shared/cardActions";
 import { containsFullEmail } from "../shared/emailThread";
 import type { ReaderDraft } from "../shared/readers";
-import { groupReadingCards, isPassiveReadingCard, readingGroupKey, sameReadingMembers } from "../shared/readingGroups";
+import { groupReadingCards, isPassiveReadingCard, readingGroupKey, readingProgressMember, sameReadingMembers } from "../shared/readingGroups";
 import { readReaderInputFingerprint, readReaderOutput } from "./readers";
 import { agentLabel, effectiveWorkLane } from "../shared/lanes";
-import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, readingAttentionRevision, readingContentRevision, snapshotReadingCard, workItemView } from "./store";
+import { agentPresenceLiveness, AttentionStore, FEED_PROMPT_NAMES, projectReadingPresentation, readingAttentionRevision, readingContentRevision, snapshotReadingCard, workItemView } from "./store";
 import { demoCards, feedConfig } from "./templates";
 import { detectMonologue } from "./monologue";
 import { digest, isoNow, makeId, makeToken, safeIdentifier, slugify } from "./util";
@@ -201,9 +201,9 @@ interface ReadingProgressEventDetail extends ReadingProgressInput {
 }
 
 type ReadingEngagementEventDetail = ReadingEngagementInput & {
-  runId: string;
-  readerId: string;
-  requestedModel: string;
+  runId?: string;
+  readerId?: string;
+  requestedModel?: string;
   actualModel?: string;
   metric: "foreground_visible_ms";
 };
@@ -3352,10 +3352,16 @@ export class AttentionDomain {
       }
       if (input.read && feed.config.readingMode !== "stream") throw new ReadingCardRequestError("Enable reading stream before marking cards read.", 409, "reading_mode_disabled");
       const group = groupReadingCards(feed.cards, feed.readingComparisons).find((group) => group.id === input.groupId);
-      if (!group || group.cards.some((card) => !card.reading)) throw new ReadingCardRequestError("Reading group not found.", 404, "not_found");
-      const members = group.cards.map((card) => ({ cardId: card.id, contentRevision: card.reading!.contentRevision }));
+      if (!group) throw new ReadingCardRequestError("Reading group not found.", 404, "not_found");
+      const members = group.cards.flatMap((card) => {
+        const member = readingProgressMember(card);
+        return member ? [member] : [];
+      });
+      if (members.length !== group.cards.length) {
+        throw new ReadingCardRequestError("This group is not passive reading material. Keep it in explicit review.", 409, "card_busy");
+      }
       if (!sameReadingMembers(members, input.members)) throw new ReadingCardRequestError("The reading group changed. Reload its exact current versions.", 409, "stale_members");
-      if (group.cards.some((card) => card.reading!.contentRevision !== readingContentRevision(card))) throw new ReadingCardRequestError("A reading card changed. Reload before marking it read.", 409, "stale_content");
+      if (group.cards.some((card) => card.reading && card.reading.contentRevision !== readingContentRevision(card))) throw new ReadingCardRequestError("A reading card changed. Reload before marking it read.", 409, "stale_content");
       if (input.expectedEventId !== undefined && latest?.id !== input.expectedEventId) throw new ReadingCardRequestError("Reading progress changed. Reload before undoing or replacing it.", 409, "stale_progress");
       if (input.read && !input.expectedEventId && feed.readingProgress?.[group.id]?.read === false) {
         throw new ReadingCardRequestError("This group was marked unread. Reload its current progress before marking it read again.", 409, "stale_progress");
@@ -3390,15 +3396,21 @@ export class AttentionDomain {
         }
         return { duplicate: true, event: existing };
       }
-      const card = await this.store.readCard(feedId, cardId);
-      if (!card.reading) throw new ReadingCardRequestError("Engagement is only recorded for reading cards.", 404, "not_found");
-      if (card.reading.contentRevision !== input.contentRevision || readingContentRevision(card) !== input.contentRevision) {
+      const card = projectReadingPresentation(await this.store.readCard(feedId, cardId));
+      const member = readingProgressMember(card);
+      if (!member || !isPassiveReadingCard(card)) throw new ReadingCardRequestError("Engagement is only recorded for passive reading cards.", 404, "not_found");
+      if (member.contentRevision !== input.contentRevision
+        || (card.reading && readingContentRevision(card) !== input.contentRevision)) {
         throw new ReadingCardRequestError("This card version changed; engagement was not reassigned to the new version.", 409, "stale_content");
       }
       const detail: ReadingEngagementEventDetail = {
-        ...input, runId: card.reading.runId, readerId: card.reading.readerId,
-        requestedModel: card.reading.writer.requestedModel,
-        ...(card.reading.writer.actualModel ? { actualModel: card.reading.writer.actualModel } : {}),
+        ...input,
+        ...(card.reading ? {
+          runId: card.reading.runId,
+          readerId: card.reading.readerId,
+          requestedModel: card.reading.writer.requestedModel,
+          ...(card.reading.writer.actualModel ? { actualModel: card.reading.writer.actualModel } : {}),
+        } : {}),
         metric: "foreground_visible_ms",
       };
       const event = await this.store.appendEvent({ feedId, cardId, type: "reading.engagement_recorded", detail });
@@ -3412,12 +3424,15 @@ export class AttentionDomain {
     for (const event of await this.store.readEvents(feedId)) {
       if (event.type !== "reading.engagement_recorded" || !event.cardId || (cardId && event.cardId !== cardId)) continue;
       const detail = event.detail as ReadingEngagementEventDetail | undefined;
-      if (!detail || typeof detail.runId !== "string" || typeof detail.readerId !== "string") continue;
+      if (!detail) continue;
       const { runId, readerId, requestedModel: _requested, actualModel: _actual, metric: _metric, ...input } = detail;
+      const hasNativeProvenance = typeof runId === "string" && typeof readerId === "string";
+      if ((runId !== undefined || readerId !== undefined) && !hasNativeProvenance) continue;
       try { validateReadingEngagement(input); } catch { continue; }
       const key = JSON.stringify([event.cardId, detail.contentRevision]);
       const summary: ReadingEngagementSummary = summaries.get(key) ?? {
-        cardId: event.cardId, contentRevision: detail.contentRevision, runId, readerId,
+        cardId: event.cardId, contentRevision: detail.contentRevision,
+        ...(hasNativeProvenance ? { runId, readerId } : {}),
         dwellMs: 0, clicks: {}, selections: 0, lastEngagedAt: event.at,
       };
       if (detail.type === "dwell") summary.dwellMs += detail.dwellMs;

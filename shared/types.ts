@@ -327,6 +327,12 @@ export interface CardReading {
   writer: ReaderReceipt;
 }
 
+/** Provider-neutral identity for passive read progress. It never implies reader provenance or taste. */
+export interface CardReadingPresentation {
+  mode: "passive";
+  contentRevision: string;
+}
+
 export type CardReadingInput = Pick<CardReading, "runId" | "readerId" | "draftId" | "topicKey" | "reviewEdit">;
 export type CardReaction = "like" | "not_for_me" | null;
 
@@ -370,8 +376,9 @@ export type ReadingEngagementInput = {
 export interface ReadingEngagementSummary {
   cardId: string;
   contentRevision: string;
-  runId: string;
-  readerId: string;
+  /** Present only for native reader cards; ordinary informational cards never invent provenance. */
+  runId?: string;
+  readerId?: string;
   dwellMs: number;
   clicks: Partial<Record<ReadingEngagementClickTarget, number>>;
   selections: number;
@@ -450,6 +457,7 @@ export interface Card {
   sourceRunIds?: string[];
   contextInfluence?: CardContextInfluence;
   reading?: CardReading;
+  readingPresentation?: CardReadingPresentation;
   blocks: CardBlock[];
   proposedAction?: ProposedAction;
   actions?: CardAction[];

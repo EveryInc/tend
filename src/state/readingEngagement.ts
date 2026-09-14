@@ -1,5 +1,6 @@
 import { useEffect, type RefObject } from "react";
 import type { Card, ReadingEngagementClickTarget, ReadingEngagementInput } from "../../shared/types";
+import { readingProgressMember } from "../../shared/readingGroups";
 import { post } from "../app/api";
 
 export const ENGAGEMENT_FLUSH_MS = 15_000;
@@ -24,7 +25,7 @@ export function engagementClickTarget(target: Element): ReadingEngagementClickTa
 
 /** Local, bounded telemetry tied to the exact displayed version; no text or URLs leave the card. */
 export function useReadingEngagement(root: RefObject<HTMLElement>, card: Card, sessionId?: string) {
-  const revision = card.reading?.contentRevision;
+  const revision = readingProgressMember(card)?.contentRevision;
   useEffect(() => {
     const element = root.current;
     if (!element || !revision || !sessionId) return;
