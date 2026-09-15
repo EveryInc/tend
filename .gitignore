@@ -5,4 +5,4 @@ data/
 .wrangler/
 *.log
 .DS_Store
-.worktrees/
+.worktrees
