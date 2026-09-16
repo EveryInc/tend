@@ -1,6 +1,6 @@
 import { Component, useEffect, useRef, useState, type ReactNode } from "react";
 import { readingProgressMember, type ReadingCardGroup } from "../../shared/readingGroups";
-import type { Card, ReadingGroupMember, ReadingProgressState } from "../../shared/types";
+import type { Card, ReadingGroupMember, ReadingPresentationAssignment, ReadingProgressState } from "../../shared/types";
 import { ApiError, post } from "../app/api";
 import { emptyReadingExposure, READING_INPUT_WINDOW_MS, sampleReadingExposure } from "../state/readingExposure";
 import { readingMembers } from "./selectors";
@@ -78,7 +78,7 @@ export class ReadingStreamViewport extends Component<ViewportProps> {
   }
 }
 
-export function ReadingStreamCard({ group, card, enabled, history, progress, busy: workBusy, onChanged, onRead, onUnread, children, engagementSessionId }: {
+export function ReadingStreamCard({ group, card, enabled, history, progress, busy: workBusy, onChanged, onRead, onUnread, children, engagementSessionId, assignment, onExposed }: {
   group: ReadingCardGroup;
   card: Card;
   enabled: boolean;
@@ -90,9 +90,13 @@ export function ReadingStreamCard({ group, card, enabled, history, progress, bus
   onUnread?: (previous: ReadingProgressState) => void;
   children: ReactNode;
   engagementSessionId?: string;
+  assignment?: ReadingPresentationAssignment;
+  onExposed?: (assignment: ReadingPresentationAssignment) => void;
 }) {
   const root = useRef<HTMLDivElement>(null);
-  useReadingEngagement(root, card, engagementSessionId);
+  useReadingEngagement(root, card, engagementSessionId, assignment ? {
+    assignment, members: readingMembers(group), position: group.cards.findIndex((member) => member.id === card.id), onExposed,
+  } : undefined);
   const cardMember = readingProgressMember(card);
   const viewed = useRef(new Map<string, ReadingGroupMember>());
   const inFlight = useRef(false);

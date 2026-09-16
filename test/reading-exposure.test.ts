@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { emptyReadingExposure, sampleReadingExposure } from "../src/state/readingExposure";
 import { engagementDwellDelta } from "../src/state/readingEngagement";
+import { createReadingAssignment, orderAssignedGroup, usableReadingAssignment } from "../src/state/readingAssignment";
+import type { Card } from "../shared/types";
 
 const visible = { foreground: true, meaningful: true, passed: false, forwardScroll: false };
 
@@ -70,4 +72,38 @@ test("engagement dwell counts foreground exposure but not first samples, hidden,
   expect(engagementDwellDelta(visible, { ...visible, at: 2_001 })).toBe(0);
   expect(engagementDwellDelta({ ...visible, at: 61_000 }, { ...visible, at: 61_250 })).toBe(0);
   expect(engagementDwellDelta({ ...visible, at: 61_000 }, { ...visible, at: 61_250, lastActivity: 61_100 })).toBe(250);
+});
+
+test("either reader can lead an unseen pair, and a seen assignment survives polling, reload and a late alternate", () => {
+  const card = (id: string): Card => ({ id, feedId: "fixture", kind: "attention", status: "to_review_new", title: id,
+    eyebrow: "Fixture", why: "Fixture observation", blocks: [], readyForPass: 1, history: [],
+    createdAt: "2026-09-16T12:00:00Z", updatedAt: "2026-09-16T12:00:00Z",
+    readingPresentation: { mode: "passive", contentRevision: id === "first" ? "a".repeat(64) : "b".repeat(64) } });
+  const first = card("first");
+  const second = card("second");
+  const singleton = { id: "fixture-group", cards: [first] };
+  const pair = { id: singleton.id, cards: [first, second] };
+  const left = createReadingAssignment(pair, { random: () => 0, id: "left" });
+  const right = createReadingAssignment(pair, { random: () => 0.99, id: "right" });
+  expect(left.firstCardId).toBe(first.id);
+  expect(right.firstCardId).toBe(second.id);
+  expect(left.reason).toBe("randomized_pair");
+  expect(orderAssignedGroup(pair, right).cards.map((item) => item.id)).toEqual([second.id, first.id]);
+  const reloaded = JSON.parse(JSON.stringify(right));
+  expect(usableReadingAssignment({ ...pair, cards: [second, first] }, reloaded)).toBe(true);
+  expect(orderAssignedGroup({ ...pair, cards: [second, first] }, reloaded).cards[0].id).toBe(second.id);
+  // Mounting an unseen singleton creates no saved assignment. A pair can still draw either reader.
+  expect(createReadingAssignment(pair, { random: () => 0.99 }).firstCardId).toBe(second.id);
+  const seenSingle = createReadingAssignment(singleton);
+  expect(usableReadingAssignment(pair, seenSingle)).toBe(true);
+  expect(orderAssignedGroup(pair, seenSingle).cards[0].id).toBe(first.id);
+  expect(seenSingle.reason).toBe("single_available");
+  expect(seenSingle.members).toHaveLength(1);
+  expect(createReadingAssignment(pair, { selectedId: first.id, random: () => 0.99 }).reason).toBe("restored_selection");
+  expect(createReadingAssignment(pair, { preferredId: second.id }).firstCardId).toBe(second.id);
+  expect(createReadingAssignment(pair, { previouslyReviewed: true }).reason).toBe("previously_reviewed");
+  expect(usableReadingAssignment({ ...pair, cards: [{ ...first, readingPresentation: { mode: "passive", contentRevision: "c".repeat(64) } }, second] }, left)).toBe(false);
+  expect(usableReadingAssignment(pair, null as never)).toBe(false);
+  expect(usableReadingAssignment(pair, { ...left, members: [null] } as never)).toBe(false);
+  expect(usableReadingAssignment(pair, { ...left, reason: "made-up" } as never)).toBe(false);
 });

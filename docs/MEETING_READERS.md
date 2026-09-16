@@ -324,6 +324,24 @@ version records the exact comparison without treating other versions as disliked
 handled cards remain muted in the current visit so you can scroll back and use the voice dock on the
 selected version; a fresh visit starts with unread cards. Review mode retains local archival.
 
+### Compare readers without always opening both versions
+
+For an unseen pair, Tend gives either version a 50/50 chance to appear first. The presentation order
+stays stable while you read, and is saved in that browser when a version receives meaningful
+foreground exposure. Mounting an offscreen singleton does not pin it: if the alternate arrives
+before you see it, the pair is still randomized. If you already saw the singleton, it stays first.
+Explicit selections, preferred versions and legacy saved selections remain respected; legacy
+selections and singletons are excluded from the randomized first-appearance counts.
+The old UI automatically saved selections for offscreen cards. Those legacy pins are inherited
+only with actual review or feedback evidence; new deliberate selections use a separate storage key.
+
+You can simply Like or mark Not for me on the version shown. Source run history reports those
+reactions among confirmed randomized first appearances, keeping unrated exposure visible. These
+are descriptive reactions to the first version shown, not a win over an unseen alternative.
+Preference records also show how many exact versions were confirmed viewed before the choice.
+Opening both is optional. Older feedback without impression records remains intact and does not
+acquire invented exposure history.
+
 ### Read without dismissing each card
 
 In the feed, set **Reading cards → Mark read as I scroll**. This is opt-in per feed; ordinary
@@ -393,7 +411,9 @@ tend cli reading:engagement --feed company-attention --card <card-id>
 
 `GET /api/feeds/:feed/reading-engagement` (optional `?card=<card-id>`) returns exact-revision totals:
 `dwellMs`, click counts by named target, selection counts, and `lastEngagedAt`. Character counts
-remain in the individual selection events.
+remain in the individual selection events. When available, `impressions` includes the displayed
+position, exact member revisions, foreground session and frozen first assignment. Impression
+delivery retries transient failures with the same event ID; analytics never blocks feedback.
 
 ### A reader needs to sign in again
 

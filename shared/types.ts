@@ -355,6 +355,23 @@ export interface ReadingGroupMember {
   contentRevision: string;
 }
 
+/** Frozen when a version first receives foreground exposure, not when an offscreen card mounts. */
+export interface ReadingPresentationAssignment {
+  id: string;
+  groupId: string;
+  members: ReadingGroupMember[];
+  firstCardId: string;
+  reason: "randomized_pair" | "single_available" | "restored_selection" | "preferred" | "previously_reviewed";
+}
+
+export interface ReadingImpression {
+  sessionId: string;
+  at: string;
+  assignment: ReadingPresentationAssignment;
+  members: ReadingGroupMember[];
+  position: number;
+}
+
 export const READING_ENGAGEMENT_CLICK_TARGETS = [
   "card", "sources_open", "sources_close", "source_link", "author_info",
   "previous_version", "next_version", "like", "not_for_me", "prefer_version",
@@ -371,6 +388,7 @@ export type ReadingEngagementInput = {
   | { type: "dwell"; dwellMs: number }
   | { type: "click"; target: ReadingEngagementClickTarget }
   | { type: "selection"; selectionChars: number }
+  | { type: "impression"; assignment: ReadingPresentationAssignment; members: ReadingGroupMember[]; position: number }
 );
 
 export interface ReadingEngagementSummary {
@@ -383,6 +401,7 @@ export interface ReadingEngagementSummary {
   clicks: Partial<Record<ReadingEngagementClickTarget, number>>;
   selections: number;
   lastEngagedAt: string;
+  impressions?: ReadingImpression[];
 }
 
 /** Passing a reading group is not an explicit reaction, preference, or completed action. */

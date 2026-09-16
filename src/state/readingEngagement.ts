@@ -1,10 +1,13 @@
-import { useEffect, type RefObject } from "react";
-import type { Card, ReadingEngagementClickTarget, ReadingEngagementInput } from "../../shared/types";
+import { useEffect, useRef, type RefObject } from "react";
+import type { Card, ReadingEngagementClickTarget, ReadingEngagementInput, ReadingGroupMember, ReadingPresentationAssignment } from "../../shared/types";
 import { readingProgressMember } from "../../shared/readingGroups";
 import { post } from "../app/api";
 
 export const ENGAGEMENT_FLUSH_MS = 15_000;
 export const ENGAGEMENT_IDLE_MS = 60_000;
+const recordedImpressions = new Set<string>();
+const pendingImpressions = new Map<string, { payload: ReadingEngagementInput; inFlight: boolean; attempts: number; retryAt: number }>();
+type Presentation = { assignment: ReadingPresentationAssignment; members: ReadingGroupMember[]; position: number; onExposed?: (assignment: ReadingPresentationAssignment) => void };
 
 export type DwellSample = { at: number; visible: boolean; lastActivity: number };
 /** Visible exposure, not proof of reading. Background, idle and stalled intervals do not accrue. */
@@ -24,8 +27,10 @@ export function engagementClickTarget(target: Element): ReadingEngagementClickTa
 }
 
 /** Local, bounded telemetry tied to the exact displayed version; no text or URLs leave the card. */
-export function useReadingEngagement(root: RefObject<HTMLElement>, card: Card, sessionId?: string) {
+export function useReadingEngagement(root: RefObject<HTMLElement>, card: Card, sessionId?: string, presentation?: Presentation) {
   const revision = readingProgressMember(card)?.contentRevision;
+  const presentationRef = useRef(presentation);
+  presentationRef.current = presentation;
   useEffect(() => {
     const element = root.current;
     if (!element || !revision || !sessionId) return;
@@ -53,6 +58,29 @@ export function useReadingEngagement(root: RefObject<HTMLElement>, card: Card, s
       // keepalive is best effort, not a delivery or reading guarantee.
       void post(endpoint, payload, { keepalive }).catch(() => {});
     };
+    const impressionKey = JSON.stringify([sessionId, card.id, revision]);
+    const expose = () => {
+      const current = presentationRef.current;
+      if (!current || recordedImpressions.has(impressionKey) || document.visibilityState !== "visible" || !document.hasFocus()) return;
+      let pending = pendingImpressions.get(impressionKey);
+      if (!pending) {
+        current.onExposed?.(current.assignment);
+        pending = { payload: { clientEventId: crypto.randomUUID(), sessionId, contentRevision: revision,
+          type: "impression", assignment: current.assignment, members: current.members, position: current.position },
+          inFlight: false, attempts: 0, retryAt: 0 };
+        pendingImpressions.set(impressionKey, pending);
+      }
+      if (pending.inFlight || pending.attempts >= 5 || performance.now() < pending.retryAt) return;
+      pending.inFlight = true; pending.attempts += 1;
+      const request = pending;
+      void post(endpoint, request.payload, { keepalive: true }).then(() => {
+        recordedImpressions.add(impressionKey);
+        pendingImpressions.delete(impressionKey);
+      }).catch(() => {
+        request.inFlight = false;
+        request.retryAt = performance.now() + Math.min(4_000, 250 * 2 ** (request.attempts - 1));
+      });
+    };
     const flush = (keepalive = false) => {
       const duration = Math.min(60_000, Math.round(dwellMs));
       dwellMs = 0;
@@ -68,6 +96,7 @@ export function useReadingEngagement(root: RefObject<HTMLElement>, card: Card, s
       const visible = document.visibilityState === "visible" && document.hasFocus() && rect.height > 0 && bottom > top
         && visibleHeight >= Math.min(rect.height * 0.5, (bottom - top) * 0.6);
       const next = { at: now, visible, lastActivity };
+      if (visible) expose();
       dwellMs += engagementDwellDelta(previous, next);
       previous = next;
       if (now - lastFlush >= ENGAGEMENT_FLUSH_MS) flush();
@@ -76,6 +105,7 @@ export function useReadingEngagement(root: RefObject<HTMLElement>, card: Card, s
     const click = (event: MouseEvent) => {
       if (!event.isTrusted || !(event.target instanceof Element)) return;
       activity(event);
+      expose();
       const target = engagementClickTarget(event.target);
       if (target === "card" && performance.now() < selectionClickUntil) return;
       // Capture once before nested controls stop propagation or switch the selected version.
@@ -95,6 +125,7 @@ export function useReadingEngagement(root: RefObject<HTMLElement>, card: Card, s
       const selectionChars = Math.min(50_000, range.toString().length);
       if (!selectionChars) return;
       lastSelection = current;
+      expose();
       lastActivity = performance.now();
       selectionClickUntil = lastActivity + 250;
       record({ type: "selection", selectionChars });

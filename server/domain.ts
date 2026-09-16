@@ -209,13 +209,31 @@ type ReadingEngagementEventDetail = ReadingEngagementInput & {
 };
 
 function validateReadingEngagement(body: unknown): ReadingEngagementInput {
-  const invalid = (): never => { throw new ReadingCardRequestError("Engagement requires exact version/session IDs and one bounded dwell, click, or selection value; text and URLs are not accepted.", 400, "invalid_engagement"); };
+  const invalid = (): never => { throw new ReadingCardRequestError("Engagement requires exact version/session IDs and bounded interaction or presentation data; text and URLs are not accepted.", 400, "invalid_engagement"); };
   if (!body || typeof body !== "object" || Array.isArray(body)) invalid();
   const input = body as Record<string, unknown>;
   for (const key of ["clientEventId", "sessionId"]) {
     if (typeof input[key] !== "string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(input[key])) invalid();
   }
   if (typeof input.contentRevision !== "string" || !/^[a-f0-9]{64}$/.test(input.contentRevision)) invalid();
+  if (input.type === "impression") {
+    if (Object.keys(input).some((key) => !["clientEventId", "sessionId", "contentRevision", "type", "assignment", "members", "position"].includes(key))) invalid();
+    if (!input.assignment || typeof input.assignment !== "object" || Array.isArray(input.assignment)) invalid();
+    const assignment = input.assignment as Record<string, unknown>;
+    if (Object.keys(assignment).some((key) => !["id", "groupId", "members", "firstCardId", "reason"].includes(key))) invalid();
+    if (typeof assignment.id !== "string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(assignment.id)
+      || typeof assignment.groupId !== "string" || !assignment.groupId.length || assignment.groupId.length > 1000
+      || typeof assignment.firstCardId !== "string" || !assignment.firstCardId.length || assignment.firstCardId.length > 200
+      || !["randomized_pair", "single_available", "restored_selection", "preferred", "previously_reviewed"].includes(assignment.reason as string)) invalid();
+    const members = validateReadingMembers(input.members, invalid, 1);
+    const assignedMembers = validateReadingMembers(assignment.members, invalid, 1);
+    if ([...(input.members as object[]), ...(assignment.members as object[])].some((member) => Object.keys(member).some((key) => !["cardId", "contentRevision"].includes(key)))) invalid();
+    if (!assignedMembers.some((member) => member.cardId === assignment.firstCardId)
+      || (assignment.reason === "randomized_pair" && assignedMembers.length !== 2)
+      || !assignedMembers.every((member) => members.some((current) => current.cardId === member.cardId && current.contentRevision === member.contentRevision))
+      || typeof input.position !== "number" || !Number.isSafeInteger(input.position) || input.position < 0 || input.position >= members.length) invalid();
+    return input as ReadingEngagementInput;
+  }
   const field = input.type === "dwell" ? "dwellMs" : input.type === "click" ? "target" : input.type === "selection" ? "selectionChars" : invalid();
   if (Object.keys(input).some((key) => !["clientEventId", "sessionId", "contentRevision", "type", field].includes(key))) invalid();
   if (input.type === "click") {
@@ -3403,6 +3421,28 @@ export class AttentionDomain {
         || (card.reading && readingContentRevision(card) !== input.contentRevision)) {
         throw new ReadingCardRequestError("This card version changed; engagement was not reassigned to the new version.", 409, "stale_content");
       }
+      if (input.type === "impression") {
+        const feed = await this.store.readFeed(feedId);
+        const group = groupReadingCards(feed.cards, feed.readingComparisons).find((item) => item.id === input.assignment.groupId);
+        const members = group?.cards.flatMap((item) => { const version = readingProgressMember(item); return version ? [version] : []; });
+        // A second reader may publish between foreground exposure and delivery of this event.
+        // Accept an exact earlier subset when versions only joined; changed wording still fails.
+        if (!group?.cards.some((item) => item.id === cardId) || !members || !input.members.some((item) => item.cardId === cardId)
+          || !input.members.every((item) => members.some((current) => current.cardId === item.cardId && current.contentRevision === item.contentRevision))) {
+          throw new ReadingCardRequestError("The displayed comparison changed. Reload its exact current versions.", 409, "stale_members");
+        }
+        const presentationOrder = [group.cards.find((item) => item.id === input.assignment.firstCardId),
+          ...group.cards.filter((item) => item.id !== input.assignment.firstCardId && input.members.some((member) => member.cardId === item.id))];
+        if (presentationOrder[input.position]?.id !== cardId) {
+          throw new ReadingCardRequestError("The impression position does not match the displayed version.", 400, "invalid_engagement");
+        }
+        const previousAssignment = events.find((event) => event.type === "reading.engagement_recorded"
+          && (event.detail as ReadingEngagementInput | undefined)?.type === "impression"
+          && (event.detail as Extract<ReadingEngagementInput, { type: "impression" }>).assignment.id === input.assignment.id);
+        if (previousAssignment && !isDeepStrictEqual((previousAssignment.detail as Extract<ReadingEngagementInput, { type: "impression" }>).assignment, input.assignment)) {
+          throw new ReadingCardRequestError("This assignment ID already identifies a different first presentation.", 409, "client_event_conflict");
+        }
+      }
       const detail: ReadingEngagementEventDetail = {
         ...input,
         ...(card.reading ? {
@@ -3438,6 +3478,12 @@ export class AttentionDomain {
       if (detail.type === "dwell") summary.dwellMs += detail.dwellMs;
       if (detail.type === "selection") summary.selections += 1;
       if (detail.type === "click") summary.clicks[detail.target] = (summary.clicks[detail.target] ?? 0) + 1;
+      if (detail.type === "impression") {
+        summary.impressions ??= [];
+        if (!summary.impressions.some((impression) => impression.sessionId === detail.sessionId && impression.assignment.id === detail.assignment.id)) {
+          summary.impressions.push({ sessionId: detail.sessionId, at: event.at, assignment: detail.assignment, members: detail.members, position: detail.position });
+        }
+      }
       if (event.at > summary.lastEngagedAt) summary.lastEngagedAt = event.at;
       summaries.set(key, summary);
     }
