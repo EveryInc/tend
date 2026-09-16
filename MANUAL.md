@@ -136,6 +136,9 @@ The active card follows your reading position. On the feed screen:
 - `O` opens or closes the active email thread
 - action buttons show their keyboard shortcut when one is available
 
+Email cards with a source mailbox and explicit Gmail thread references show **Open in Gmail** beneath the title.
+The link opens the conversation in that account in a new tab, with separate links when a card covers several conversations.
+
 ### Card Actions
 
 Card buttons describe the concrete next move, such as:

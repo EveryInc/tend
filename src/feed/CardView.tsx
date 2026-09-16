@@ -6,6 +6,7 @@ import { ApiError, post } from "../app/api";
 import type { Card, CardAction, CardBlock, FeedView, WorkItemView } from "../types";
 import { DetachedLink } from "../ui/DetachedLink";
 import { FormattedText } from "../ui/FormattedText";
+import { gmailHref, GmailLinks } from "./GmailLinks";
 import { ReadingIdentity } from "./ReadingIdentity";
 import { ReadingPreferenceFooter } from "./ReadingPreferenceFooter";
 import { visibleCardActions } from "./selectors";
@@ -124,7 +125,7 @@ function videoEmbedUrl(href: string): string | null {
   return null;
 }
 
-function Block({ feedId, cardId, block, onChanged, readingFace = false }: { feedId: string; cardId: string; block: CardBlock; onChanged: () => void; readingFace?: boolean }) {
+function Block({ feedId, cardId, block, sourceMailbox, onChanged, readingFace = false }: { feedId: string; cardId: string; block: CardBlock; sourceMailbox?: string; onChanged: () => void; readingFace?: boolean }) {
   const [value, setValue] = useState(block.value ?? "");
   useEffect(() => setValue(block.value ?? ""), [block.value]);
 
@@ -219,7 +220,7 @@ function Block({ feedId, cardId, block, onChanged, readingFace = false }: { feed
             {typeof item === "string"
               ? <FormattedText text={item} />
               : item.href
-                ? <DetachedLink href={item.href}>{item.label}</DetachedLink>
+                ? <DetachedLink href={gmailHref(item.href, sourceMailbox) ?? item.href}>{item.label}</DetachedLink>
                 : <FormattedText text={item.label} />}
           </li>
         ))}</ul>
@@ -460,6 +461,7 @@ function ReadingCardView({ card, active, reaction, group, preference, onVersion,
             </div>
           </div>
           <h2>{card.title}</h2>
+          <GmailLinks card={card} />
         </div>
       </header>
       <p className="why reading-face">{card.why}</p>
@@ -468,7 +470,7 @@ function ReadingCardView({ card, active, reaction, group, preference, onVersion,
         <div className="blocks">
           {card.blocks.map((block) => block.type === "quote"
             ? <blockquote className="block block-quote" key={block.id}><p>{block.text}</p>{block.attribution && <cite>{block.attribution}</cite>}</blockquote>
-            : <Block key={block.id} feedId={card.feedId} cardId={card.id} block={block.type === "editable_text" ? { ...block, type: "memo", text: block.value ?? block.text } : block} onChanged={onChanged} />)}
+            : <Block key={block.id} sourceMailbox={card.sourceMailbox} feedId={card.feedId} cardId={card.id} block={block.type === "editable_text" ? { ...block, type: "memo", text: block.value ?? block.text } : block} onChanged={onChanged} />)}
         </div>
         <a className="reading-run-link" href={`/feed/${encodeURIComponent(card.feedId)}/prompts#source-run-${encodeURIComponent(reading.runId)}`}>View this source run</a>
         <CardHistory card={card} />
@@ -545,6 +547,7 @@ export function CardView({
         <div>
           <div className="eyebrow">{card.eyebrow}</div>
           <h2>{card.title}</h2>
+          <GmailLinks card={card} />
         </div>
       </header>
       <p className={`why${card.readingPresentation ? " reading-face" : ""}`}><FormattedText text={card.why} /></p>
@@ -552,6 +555,7 @@ export function CardView({
       <div className="blocks">
         {card.blocks.map((block) => <Block
           key={block.id}
+          sourceMailbox={card.sourceMailbox}
           feedId={card.feedId}
           cardId={card.id}
           block={block}
