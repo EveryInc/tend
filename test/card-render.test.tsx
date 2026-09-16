@@ -1503,6 +1503,8 @@ test("offscreen singletons stay unpinned; foreground choices survive late reader
       const versions = readingVersions(2).map((card) => ({ ...card, id: `assignment-${seenBeforeAlternate}-${card.id}`,
         reading: { ...card.reading!, contentRevision: card.id.endsWith("1") ? "a".repeat(64) : "b".repeat(64), topicKey: `assignment-${seenBeforeAlternate}` } }));
       const group = groupReadingCards(versions)[0];
+      // A cached old bundle has eagerly saved v1 selection for this still-unseen pair.
+      sessionStorage.setItem("attention.readingSelections", JSON.stringify({ [versions[0].feedId]: { [group.id]: group.cards[0].id } }));
       let state = readingWorkspace([versions[0]]);
       state.active.config.readingMode = "stream";
       const impressions: Array<Record<string, any>> = [];
@@ -1566,6 +1568,35 @@ test("offscreen singletons stay unpinned; foreground choices survive late reader
     sessionStorage.clear(); localStorage.removeItem(READING_ASSIGNMENT_STORAGE);
   }
 }, 20_000);
+
+test("v1 selected versions remain respected when exact explicit feedback confirms review", async () => {
+  sessionStorage.clear(); localStorage.removeItem(READING_ASSIGNMENT_STORAGE);
+  globalThis.EventSource = class { addEventListener() {} close() {} } as unknown as typeof EventSource;
+  const versions = readingVersions(2).map((card) => ({ ...card, id: `legacy-reviewed-${card.id}`,
+    reading: { ...card.reading!, contentRevision: card.id.endsWith("1") ? "a".repeat(64) : "b".repeat(64), topicKey: "legacy-reviewed" } }));
+  const group = groupReadingCards(versions)[0];
+  const chosen = group.cards[1];
+  sessionStorage.setItem("attention.readingSelections", JSON.stringify({ [chosen.feedId]: { [group.id]: chosen.id } }));
+  const state = readingWorkspace(versions.map((card) => card.id === chosen.id ? { ...card, status: "done" } : card));
+  state.active.config.readingMode = "stream";
+  state.active.readingReactions = { [chosen.id]: { reaction: "like", contentRevision: chosen.reading!.contentRevision, eventId: "prior-like", at: "2026-09-16T12:00:00Z" } };
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/session") return Response.json({ mutationToken: "fixture-token" });
+    if (url.startsWith("/api/state?")) return Response.json(state);
+    if (url.endsWith("/native-approvals")) return Response.json([]);
+    if (url === "/api/voice/target-change") return Response.json(JSON.parse(String(init?.body)).target);
+    if (url.endsWith("/engagement")) return Response.json({ duplicate: false, event: {} });
+    throw new Error(`Unexpected legacy selection request: ${url}`);
+  }) as typeof fetch;
+  const app = await mountReadingApp(chosen.feedId);
+  try {
+    await waitFor(() => expect(app.ui.container.querySelector("article[data-card-id]")?.getAttribute("data-card-id")).toBe(chosen.id), { onTimeout: (error) => error });
+    expect(app.ui.container.querySelector("article[data-card-id]")?.textContent).toContain("Liked");
+    fireEvent.click(app.ui.getByRole("button", { name: "Next version" }));
+    expect(JSON.parse(sessionStorage.getItem("attention.readingSelections.v2")!)[chosen.feedId][group.id]).toBe(group.cards[0].id);
+  } finally { app.close(); sessionStorage.clear(); localStorage.removeItem(READING_ASSIGNMENT_STORAGE); }
+});
 
 test("engagement distinguishes source expansion, collapse and links without preserving source URLs", () => {
   const ui = render(readingView());

@@ -95,7 +95,8 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     setReadingFeedbackTarget(target);
     writeSession("attention.readingFeedbackTarget", target);
   }, []);
-  const [readingSelections, setReadingSelections] = useState<Record<string, Record<string, string>>>(() => readSession("attention.readingSelections", {}));
+  const [readingSelections, setReadingSelections] = useState<Record<string, Record<string, string>>>(() => readSession("attention.readingSelections.v2", {}));
+  const legacyReadingSelections = useMemo(() => readSession<Record<string, Record<string, string>>>("attention.readingSelections", {}), []);
   const [readingAssignments, setReadingAssignments] = useState(readReadingAssignments);
   const pendingReadingAssignments = useRef(new Map<string, ReadingPresentationAssignment>());
   // A reload restores the selected target, not textarea contents. An empty restored dock
@@ -169,12 +170,25 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     }
   }, [feed, feedId, readingSession, screen, streamGroups, streamMode, tab]);
   const availableCardGroups = useMemo(() => feed ? streamMode && tab === "review" ? streamGroups : visibleCardGroups(feed, tab) : [], [feed, streamGroups, streamMode, tab]);
+  const effectiveReadingSelections = useMemo(() => Object.fromEntries(availableCardGroups.flatMap((group) => {
+    const explicit = readingSelections[feedId]?.[group.id];
+    if (group.cards.some((card) => card.id === explicit)) return [[group.id, explicit]];
+    const legacy = legacyReadingSelections[feedId]?.[group.id];
+    // The old bundle saved automatic pins for every mounted offscreen card. Inherit them only
+    // when current state confirms real review or feedback, so cached old tabs cannot bias new pairs.
+    const reviewed = Boolean(currentReadingPreference(group, feed?.readingPreferences)
+      || currentReadingProgress(group, feed?.readingProgress)?.viewedMembers.length
+      || group.cards.some((card) => card.status === "done" || feed?.readingReactions?.[card.id]
+        || feed?.work.some((work) => work.cardId === card.id && work.intent === "voice_instruction")
+        || readingFeedbackTarget?.feedId === feedId && readingFeedbackTarget.cardId === card.id));
+    return reviewed && group.cards.some((card) => card.id === legacy) ? [[group.id, legacy]] : [];
+  })), [availableCardGroups, feed?.readingPreferences, feed?.readingProgress, feed?.readingReactions, feed?.work, feedId, legacyReadingSelections, readingFeedbackTarget, readingSelections]);
   const assignedGroups = useMemo(() => availableCardGroups.map((group) => {
     if (!group.cards.every(isPassiveReadingCard)) return { group, assignment: undefined };
     const saved = readingAssignments[feedId]?.[group.id];
     let assignment = usableReadingAssignment(group, saved) ? saved : undefined;
     if (!assignment) {
-      const selectedId = readingSelections[feedId]?.[group.id];
+      const selectedId = effectiveReadingSelections[group.id];
       const preferredId = currentReadingPreference(group, feed?.readingPreferences)?.preferredCardId;
       const previouslyReviewed = Boolean(currentReadingProgress(group, feed?.readingProgress)?.viewedMembers.length
         || group.cards.some((card) => card.status === "done" || feed?.readingReactions?.[card.id]));
@@ -186,9 +200,9 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
       }
     }
     return { group: orderAssignedGroup(group, assignment), assignment };
-  }), [availableCardGroups, feed?.readingPreferences, feed?.readingProgress, feed?.readingReactions, feedId, readingAssignments, readingSelections]);
+  }), [availableCardGroups, effectiveReadingSelections, feed?.readingPreferences, feed?.readingProgress, feed?.readingReactions, feedId, readingAssignments]);
   const cardGroups = useMemo(() => assignedGroups.map(({ group }) => group), [assignedGroups]);
-  const cards = useMemo(() => cardGroups.map((group) => selectedGroupCard(group, readingSelections[feedId]?.[group.id], feed?.readingPreferences)), [cardGroups, feed?.readingPreferences, feedId, readingSelections]);
+  const cards = useMemo(() => cardGroups.map((group) => selectedGroupCard(group, effectiveReadingSelections[group.id], feed?.readingPreferences)), [cardGroups, effectiveReadingSelections, feed?.readingPreferences]);
   const rememberReadingExposure = (groupId: string, assignment: ReadingPresentationAssignment) => {
     setReadingAssignments((current) => {
       if (current[feedId]?.[groupId]?.id === assignment.id) return current;
@@ -204,7 +218,7 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
   const selectReadingVersion = (groupId: string, cardId: string) => {
     setReadingSelections((current) => {
       const next = { ...current, [feedId]: { ...current[feedId], [groupId]: cardId } };
-      writeSession("attention.readingSelections", next);
+      writeSession("attention.readingSelections.v2", next);
       return next;
     });
     setActiveCardId(cardId);

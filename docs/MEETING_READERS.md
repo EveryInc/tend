@@ -332,6 +332,8 @@ foreground exposure. Mounting an offscreen singleton does not pin it: if the alt
 before you see it, the pair is still randomized. If you already saw the singleton, it stays first.
 Explicit selections, preferred versions and legacy saved selections remain respected; legacy
 selections and singletons are excluded from the randomized first-appearance counts.
+The old UI automatically saved selections for offscreen cards. Those legacy pins are inherited
+only with actual review or feedback evidence; new deliberate selections use a separate storage key.
 
 You can simply Like or mark Not for me on the version shown. Source run history reports those
 reactions among confirmed randomized first appearances, keeping unrated exposure visible. These
