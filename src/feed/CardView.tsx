@@ -7,6 +7,7 @@ import type { Card, CardAction, CardBlock, FeedView, WorkItemView } from "../typ
 import { DetachedLink } from "../ui/DetachedLink";
 import { FormattedText } from "../ui/FormattedText";
 import { ReadingIdentity } from "./ReadingIdentity";
+import { EmailTimestamp } from "./EmailTimestamp";
 import { ReadingPreferenceFooter } from "./ReadingPreferenceFooter";
 import { visibleCardActions } from "./selectors";
 
@@ -460,6 +461,7 @@ function ReadingCardView({ card, active, reaction, group, preference, onVersion,
             </div>
           </div>
           <h2>{card.title}</h2>
+          <EmailTimestamp card={card} />
         </div>
       </header>
       <p className="why reading-face">{card.why}</p>
@@ -545,6 +547,7 @@ export function CardView({
         <div>
           <div className="eyebrow">{card.eyebrow}</div>
           <h2>{card.title}</h2>
+          <EmailTimestamp card={card} />
         </div>
       </header>
       <p className={`why${card.readingPresentation ? " reading-face" : ""}`}><FormattedText text={card.why} /></p>

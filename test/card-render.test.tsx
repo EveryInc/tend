@@ -1485,3 +1485,10 @@ test("engagement distinguishes source expansion, collapse and links without pres
   expect(engagementClickTarget(ui.getByRole("link", { name: "Fixture transcript" }))).toBe("source_link");
   expect(engagementClickTarget(ui.getByRole("heading", { name: readingCard().title }))).toBe("card");
 });
+
+test("reading cards keep the source email timestamp visible outside Sources", () => {
+  const card = readingCard({ emailDates: [{ threadId: "abc123", receivedAt: "2026-07-15T11:47:00+02:00" }] });
+  const html = renderToStaticMarkup(<CardView card={card} active={false} onActivate={() => {}} onChanged={() => {}} onAction={() => {}} onReturnToReview={() => {}} />);
+  expect(html).toContain('dateTime="2026-07-15T11:47:00+02:00"');
+  expect(html.indexOf("Email received")).toBeLessThan(html.indexOf("</header>"));
+});

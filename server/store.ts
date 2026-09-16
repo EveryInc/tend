@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { appendFile, mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
 import path from "node:path";
+import { sourceEmailDates } from "../shared/emailTimestamp";
 import type {
   AgentPresence,
   AgentPresenceLiveness,
@@ -450,6 +451,21 @@ export class AttentionStore {
       this.readDrainState(feedId),
     ]);
     cards.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const emailRunIds = new Set(cards.flatMap((card) => card.sourceRunIds ?? []));
+    const emailSnapshots = new Map<string, readonly unknown[]>(await Promise.all(runs.filter((run) => emailRunIds.has(run.id)).map(async (run) => {
+      try {
+        const snapshots = await this.readSourceSnapshots(run);
+        return [run.id, snapshots.map((snapshot) => snapshot.value)] as const;
+      } catch {
+        console.warn(`Could not load email dates for source run ${run.id}.`);
+        return [run.id, []] as const;
+      }
+    })));
+    for (const card of cards) {
+      const dates = sourceEmailDates(card, (card.sourceRunIds ?? []).flatMap((id) => emailSnapshots.get(id) ?? []));
+      if (dates.length) card.emailDates = dates;
+      else delete card.emailDates;
+    }
     cards.forEach(projectReadingPresentation);
     runs.sort((a, b) => (a.completedAt ?? "").localeCompare(b.completedAt ?? "") || a.id.localeCompare(b.id));
     routineActions.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -665,7 +681,8 @@ export class AttentionStore {
     card.updatedAt = card.reading && existing && now <= existing.updatedAt
       ? new Date(Date.parse(existing.updatedAt) + 1).toISOString()
       : now;
-    await this.cards.write(card);
+    const { emailDates: _emailDates, ...stored } = card;
+    await this.cards.write(stored);
   }
 
   async removeCard(feedId: string, cardId: string): Promise<void> {

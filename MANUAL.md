@@ -48,6 +48,13 @@ The normal loop is:
 
 The local Tend runtime owns feed state. Codex Desktop owns the agent threads and connector access.
 
+### Email dates
+
+Email cards show the received date and time from their saved source metadata beneath the title, including older cards with that evidence.
+Times use your browser's timezone and include the timezone label.
+Cards citing several email threads show each matched thread's subject and date.
+Collection and card creation times are never substituted for an email date.
+
 ## Creating And Connecting A Feed
 
 ### Create The Feed
