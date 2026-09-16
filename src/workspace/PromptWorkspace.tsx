@@ -6,6 +6,7 @@ import type { Inspector, WorkspaceTab } from "../app/types";
 import { ReaderDetails } from "../feed/ReadingIdentity";
 import { currentReadingPreference } from "../feed/selectors";
 import type { Card, FeedView, SourceRecipe, SourceRun, ThreadBinding, VoiceTarget, WorkspaceRevision, WorkspaceView } from "../types";
+import type { ReadingEngagementSummary } from "../../shared/types";
 
 interface FeedWorkspaceView {
   policy: string;
@@ -23,6 +24,15 @@ export function SourceRunHistory({ runs, cards = [], reactions = {}, preferences
   runs: SourceRun[]; cards?: Card[]; reactions?: FeedView["readingReactions"];
   preferences?: FeedView["readingPreferences"]; comparisons?: FeedView["readingComparisons"];
 }) {
+  const [engagement, setEngagement] = useState<ReadingEngagementSummary[]>([]);
+  const feedId = runs[0]?.feedId;
+  useEffect(() => {
+    let cancelled = false;
+    if (!feedId) return;
+    void api<{ cards: ReadingEngagementSummary[] }>(`/api/feeds/${encodeURIComponent(feedId)}/reading-engagement`)
+      .then((result) => { if (!cancelled) setEngagement(result.cards); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [feedId, runs, cards]);
   if (!runs.length) return null;
   const groups = groupReadingCards(cards, comparisons);
   const reactionLabel = (card: Card) => {
@@ -48,10 +58,14 @@ export function SourceRunHistory({ runs, cards = [], reactions = {}, preferences
             const chosen = cards.find((card) => card.id === preference.preferredCardId);
             const chosenRevision = preference.members.find((member) => member.cardId === preference.preferredCardId)?.contentRevision;
             const earlierRevision = chosen && chosen.reading?.contentRevision !== chosenRevision;
+            const exposed = preference.members.filter((member) => engagement.some((summary) => summary.cardId === member.cardId
+              && summary.contentRevision === member.contentRevision && summary.impressions?.some((impression) => impression.at <= preference.at
+                && impression.assignment.groupId === id))).length;
             return <details className="source-run-preference source-run-card" key={id}>
               <summary><b>{preference.preferredCardId ? "Preferred version" : "Preference cleared"}</b><span>{current ? "Current comparison" : "Earlier comparison"}</span></summary>
               {preference.preferredCardId && <p>{earlierRevision ? "Earlier revision of: " : ""}{chosen?.title ?? preference.preferredCardId}</p>}
               <p>{preference.members.length} versions in this choice · {new Date(preference.at).toLocaleString()}. Individual ratings are unchanged.</p>
+              <p>{exposed === preference.members.length ? "All versions were viewed before this choice." : `${exposed} of ${preference.members.length} versions confirmed viewed before this choice. Treat this as a selection, not a demonstrated comparison.`}</p>
               {!current && <p>The versions have changed since this choice. It is not a preference for the current set.</p>}
               {preference.reason && <p>{preference.reason}</p>}
               <ul>{preference.members.map((member) => <li key={member.cardId}>{cards.find((card) => card.id === member.cardId)?.title ?? member.cardId}<small> · revision {member.contentRevision}</small></li>)}</ul>
@@ -61,6 +75,14 @@ export function SourceRunHistory({ runs, cards = [], reactions = {}, preferences
             const written = cards.filter((card) => card.reading?.runId === run.id && card.reading.readerId === reader.readerId);
             const liked = written.filter((card) => reactionLabel(card) === "Liked").length;
             const disliked = written.filter((card) => reactionLabel(card) === "Not for me").length;
+            const randomFirst = written.flatMap((card) => {
+              const first = engagement.find((summary) => summary.cardId === card.id && summary.contentRevision === card.reading?.contentRevision)
+                ?.impressions?.filter((impression) => impression.position === 0 && impression.assignment.firstCardId === card.id
+                  && impression.assignment.reason === "randomized_pair").sort((left, right) => left.at.localeCompare(right.at))[0];
+              return first ? [{ card, first }] : [];
+            });
+            const randomLikes = randomFirst.filter(({ card, first }) => reactions?.[card.id]?.at >= first.at && reactionLabel(card) === "Liked").length;
+            const randomDislikes = randomFirst.filter(({ card, first }) => reactions?.[card.id]?.at >= first.at && reactionLabel(card) === "Not for me").length;
             const login = reader.failureCode === "subscription_login_required" ? readerLoginGuidance(reader.adapter) : undefined;
             return <section className="source-run-reader" key={reader.readerId}>
             <header><h3>{reader.label}</h3><span>{login ? "Sign-in needed" : reader.status}</span></header>
@@ -69,6 +91,7 @@ export function SourceRunHistory({ runs, cards = [], reactions = {}, preferences
               : reader.error && <p className="reading-error">{reader.error}</p>}
             {reader.outputSnapshotId && <a href={`/api/feeds/${encodeURIComponent(run.feedId)}/runs/${encodeURIComponent(run.id)}/readers/${encodeURIComponent(reader.readerId)}/output`} target="_blank" rel="noopener noreferrer">Open saved reader output</a>}
             {!login && <p>{written.length} {written.length === 1 ? "card" : "cards"} in Tend · {liked} liked · {disliked} not for me</p>}
+            {!login && <p>{randomFirst.length} random first appearances · {randomLikes} liked · {randomDislikes} not for me · {randomFirst.length - randomLikes - randomDislikes} unrated. A Like rates the version shown; an unseen alternative receives no rating.</p>}
             {written.map((card) => <details className="source-run-card" key={card.id}>
               <summary><b>{card.title}</b><span>{reactionLabel(card)}{card.status === "done" ? " · Done" : ""}</span></summary>
               <p className="reading-face">{card.why}</p>

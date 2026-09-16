@@ -8,6 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { CardView } from "../src/feed/CardView";
 import { ReadingStreamCard, ReadingStreamControls } from "../src/feed/ReadingStream";
 import { engagementClickTarget } from "../src/state/readingEngagement";
+import { readReadingAssignments, READING_ASSIGNMENT_STORAGE } from "../src/state/readingAssignment";
 import App from "../src/App";
 import { countFor, currentReadingPreference, readingMembers, retainReadingSessionGroups, selectedGroupCard, streamReviewCounts, visibleCardActions, visibleCardGroups } from "../src/feed/selectors";
 import { groupReadingCards } from "../shared/readingGroups";
@@ -1473,6 +1474,98 @@ test("untrusted programmatic clicks never record engagement, including after swi
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(requests).toHaveLength(0);
 });
+
+test("offscreen singletons stay unpinned; foreground choices survive late readers, polls and reload", async () => {
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  const originalFocus = document.hasFocus;
+  const originalRandom = Math.random;
+  let visible = false;
+  let foreground = true;
+  const rect = (top: number, height: number) => ({ x: 0, y: top, top, bottom: top + height, left: 0, right: 600, width: 600, height, toJSON: () => ({}) });
+  document.hasFocus = () => foreground;
+  Math.random = () => .99;
+  HTMLElement.prototype.getBoundingClientRect = function () {
+    if (this.matches(".tabs")) return rect(0, 100);
+    if (this.matches(".dock")) return rect(900, 100);
+    if (this.matches("[data-reading-slot], article")) return rect(visible ? 150 : 1500, 300);
+    return originalRect.call(this);
+  };
+  globalThis.EventSource = class { addEventListener() {} close() {} } as unknown as typeof EventSource;
+  let app: Awaited<ReturnType<typeof mountReadingApp>> | undefined;
+  try {
+    for (const invalid of ["null", "[]", '{"fixture": null}', '{"fixture":{"group":{"members":[null]}}}']) {
+      localStorage.setItem(READING_ASSIGNMENT_STORAGE, invalid);
+      expect(Object.values(readReadingAssignments()).every((groups) => !Object.keys(groups).length)).toBe(true);
+    }
+    for (const seenBeforeAlternate of [false, true]) {
+      sessionStorage.clear(); localStorage.removeItem(READING_ASSIGNMENT_STORAGE);
+      visible = seenBeforeAlternate; foreground = true; Math.random = () => .99;
+      const versions = readingVersions(2).map((card) => ({ ...card, id: `assignment-${seenBeforeAlternate}-${card.id}`,
+        reading: { ...card.reading!, contentRevision: card.id.endsWith("1") ? "a".repeat(64) : "b".repeat(64), topicKey: `assignment-${seenBeforeAlternate}` } }));
+      const group = groupReadingCards(versions)[0];
+      let state = readingWorkspace([versions[0]]);
+      state.active.config.readingMode = "stream";
+      const impressions: Array<Record<string, any>> = [];
+      const impressionAttempts: Array<Record<string, any>> = [];
+      globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(input);
+        if (url === "/api/session") return Response.json({ mutationToken: "fixture-token" });
+        if (url.startsWith("/api/state?")) return Response.json(state);
+        if (url.endsWith("/native-approvals")) return Response.json([]);
+        if (url === "/api/voice/target-change") return Response.json(JSON.parse(String(init?.body)).target);
+        if (url.endsWith("/engagement")) {
+          const body = JSON.parse(String(init?.body));
+          if (body.type === "impression") {
+            impressionAttempts.push(body);
+            if (!seenBeforeAlternate && impressionAttempts.length === 1) throw new Error("Temporary network failure");
+            impressions.push(body);
+          }
+          return Response.json({ duplicate: false, event: {} });
+        }
+        throw new Error(`Unexpected assignment request: ${url}`);
+      }) as typeof fetch;
+      app = await mountReadingApp(versions[0].feedId);
+      await waitFor(() => expect(app!.ui.container.querySelector("article[data-card-id]")?.getAttribute("data-card-id")).toBe(versions[0].id), { onTimeout: (error) => error });
+      if (seenBeforeAlternate) await waitFor(() => expect(impressions.length).toBe(1), { onTimeout: (error) => error });
+      else {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(impressions).toHaveLength(0);
+        expect(localStorage.getItem(READING_ASSIGNMENT_STORAGE)).toBeNull();
+      }
+      state = { ...state, active: { ...state.active, cards: versions } };
+      await app.client.invalidateQueries({ queryKey: ["workspace", versions[0].feedId] });
+      const expectedFirst = seenBeforeAlternate ? versions[0].id : group.cards[1].id;
+      await waitFor(() => expect(app!.ui.container.querySelector("article[data-card-id]")?.getAttribute("data-card-id")).toBe(expectedFirst), { onTimeout: (error) => error });
+      if (!seenBeforeAlternate) {
+        visible = true; foreground = false;
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(impressions).toHaveLength(0);
+        foreground = true;
+        await waitFor(() => expect(impressions.length).toBe(1), { onTimeout: (error) => error });
+      }
+      expect(impressions[0].assignment.reason).toBe(seenBeforeAlternate ? "single_available" : "randomized_pair");
+      expect(impressions[0].assignment.members).toHaveLength(seenBeforeAlternate ? 1 : 2);
+      if (!seenBeforeAlternate) {
+        expect(impressionAttempts).toHaveLength(2);
+        expect(impressionAttempts[0]).toEqual(impressionAttempts[1]);
+      }
+      const assignmentId = impressions[0].assignment.id;
+      state = { ...state, active: { ...state.active, cards: versions.map((card) => ({ ...card })) } };
+      await app.client.invalidateQueries({ queryKey: ["workspace", versions[0].feedId] });
+      expect(app.ui.container.querySelector("article[data-card-id]")?.getAttribute("data-card-id")).toBe(expectedFirst);
+      app.close();
+      sessionStorage.clear(); Math.random = () => 0;
+      app = await mountReadingApp(versions[0].feedId);
+      await waitFor(() => expect(app!.ui.container.querySelector("article[data-card-id]")?.getAttribute("data-card-id")).toBe(expectedFirst), { onTimeout: (error) => error });
+      await waitFor(() => expect(impressions.length).toBe(2), { onTimeout: (error) => error });
+      expect(impressions[1].assignment.id).toBe(assignmentId);
+      app.close(); app = undefined;
+    }
+  } finally {
+    app?.close(); HTMLElement.prototype.getBoundingClientRect = originalRect; document.hasFocus = originalFocus; Math.random = originalRandom;
+    sessionStorage.clear(); localStorage.removeItem(READING_ASSIGNMENT_STORAGE);
+  }
+}, 20_000);
 
 test("engagement distinguishes source expansion, collapse and links without preserving source URLs", () => {
   const ui = render(readingView());

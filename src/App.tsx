@@ -10,6 +10,7 @@ import { NativeApprovals } from "./feed/NativeApprovals";
 import { countFor, currentReadingPreference, currentReadingProgress, retainReadingSessionGroups, selectedGroupCard, streamReviewCounts, visibleCardActions, visibleCardGroups, visibleFeedWork, visibleRoutineActions } from "./feed/selectors";
 import { ReadingStreamCard, ReadingStreamControls, ReadingStreamViewport, type ReadingUndo } from "./feed/ReadingStream";
 import { isPassiveReadingCard } from "../shared/readingGroups";
+import { assignmentMembers, createReadingAssignment, orderAssignedGroup, readReadingAssignments, usableReadingAssignment, writeReadingAssignments } from "./state/readingAssignment";
 import { Dock } from "./shell/Dock";
 import { InspectorPanel } from "./shell/InspectorPanel";
 import { TopBar } from "./shell/TopBar";
@@ -18,6 +19,7 @@ import { cardDispositionUndoPath, sameUndoRegistration, type CardDispositionUndo
 import { RealtimeProvider } from "./state/realtime";
 import { preferredTarget, sameTarget } from "./state/voiceTarget";
 import type { Card, CardAction, FeedView, RevisionProposal, RoutineActionGroup, VoiceTarget, WorkItemView, WorkspaceRevision, WorkspaceView } from "./types";
+import type { ReadingPresentationAssignment } from "../shared/types";
 import { FormattedText } from "./ui/FormattedText";
 import { LearningReview, RevisionProposals } from "./workspace/LearningReview";
 import { PromptWorkspace } from "./workspace/PromptWorkspace";
@@ -94,6 +96,8 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
     writeSession("attention.readingFeedbackTarget", target);
   }, []);
   const [readingSelections, setReadingSelections] = useState<Record<string, Record<string, string>>>(() => readSession("attention.readingSelections", {}));
+  const [readingAssignments, setReadingAssignments] = useState(readReadingAssignments);
+  const pendingReadingAssignments = useRef(new Map<string, ReadingPresentationAssignment>());
   // A reload restores the selected target, not textarea contents. An empty restored dock
   // must not make later Like/Prefer taps act as if an unfinished reason were still present.
   const readingDraftStartedRef = useRef(false);
@@ -164,19 +168,35 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
       if (ids.join("\0") !== readingSession.ids.join("\0")) setReadingSession({ feedId, ids });
     }
   }, [feed, feedId, readingSession, screen, streamGroups, streamMode, tab]);
-  const cardGroups = useMemo(() => feed ? streamMode && tab === "review" ? streamGroups : visibleCardGroups(feed, tab) : [], [feed, streamGroups, streamMode, tab]);
+  const availableCardGroups = useMemo(() => feed ? streamMode && tab === "review" ? streamGroups : visibleCardGroups(feed, tab) : [], [feed, streamGroups, streamMode, tab]);
+  const assignedGroups = useMemo(() => availableCardGroups.map((group) => {
+    if (!group.cards.every(isPassiveReadingCard)) return { group, assignment: undefined };
+    const saved = readingAssignments[feedId]?.[group.id];
+    let assignment = usableReadingAssignment(group, saved) ? saved : undefined;
+    if (!assignment) {
+      const selectedId = readingSelections[feedId]?.[group.id];
+      const preferredId = currentReadingPreference(group, feed?.readingPreferences)?.preferredCardId;
+      const previouslyReviewed = Boolean(currentReadingProgress(group, feed?.readingProgress)?.viewedMembers.length
+        || group.cards.some((card) => card.status === "done" || feed?.readingReactions?.[card.id]));
+      const key = JSON.stringify([feedId, group.id, assignmentMembers(group)]);
+      assignment = pendingReadingAssignments.current.get(key);
+      if (!assignment) {
+        assignment = createReadingAssignment(group, { selectedId, preferredId, previouslyReviewed });
+        pendingReadingAssignments.current.set(key, assignment);
+      }
+    }
+    return { group: orderAssignedGroup(group, assignment), assignment };
+  }), [availableCardGroups, feed?.readingPreferences, feed?.readingProgress, feed?.readingReactions, feedId, readingAssignments, readingSelections]);
+  const cardGroups = useMemo(() => assignedGroups.map(({ group }) => group), [assignedGroups]);
   const cards = useMemo(() => cardGroups.map((group) => selectedGroupCard(group, readingSelections[feedId]?.[group.id], feed?.readingPreferences)), [cardGroups, feed?.readingPreferences, feedId, readingSelections]);
-  useEffect(() => {
-    if (!streamMode || screen !== "feed" || tab !== "review") return;
-    const missing = cardGroups.flatMap((group, index) => group.cards.some((card) => card.id === readingSelections[feedId]?.[group.id])
-      ? [] : [[group.id, cards[index].id]]);
-    if (!missing.length) return;
-    setReadingSelections((current) => {
-      const next = { ...current, [feedId]: { ...current[feedId], ...Object.fromEntries(missing) } };
-      writeSession("attention.readingSelections", next);
+  const rememberReadingExposure = (groupId: string, assignment: ReadingPresentationAssignment) => {
+    setReadingAssignments((current) => {
+      if (current[feedId]?.[groupId]?.id === assignment.id) return current;
+      const next = { ...current, [feedId]: { ...current[feedId], [groupId]: assignment } };
+      writeReadingAssignments(next);
       return next;
     });
-  }, [cardGroups, cards, feedId, readingSelections, screen, streamMode, tab]);
+  };
   const routineActions = useMemo(() => feed ? visibleRoutineActions(feed, tab) : [], [feed, tab]);
   const cardIds = useMemo(() => cards.map((card) => card.id), [cards]);
   const { activeCardId, setActiveCardId, navTo } = useActiveCard(pageRef, cardIds);
@@ -642,6 +662,8 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
             {tab === "review" && !streamMode && index === updated.length && fresh.length > 0 && <div className="section-label" key={`${card.id}-label`}>New <span>{fresh.length}</span></div>}
             <ReadingStreamCard group={cardGroups[index]} card={card}
               engagementSessionId={engagementSessionId}
+              assignment={assignedGroups[index].assignment}
+              onExposed={(assignment) => rememberReadingExposure(cardGroups[index].id, assignment)}
               enabled={readingMode === "stream" && tab === "review" && cardGroups[index].cards.every(isPassiveReadingCard)}
               history={tab === "read"} progress={currentReadingProgress(cardGroups[index], feed.readingProgress)}
               busy={cardGroups[index].cards.some((member) => feed.work.some((work) => work.cardId === member.id && ["queued", "working", "approved_blocked"].includes(work.status)))}
@@ -653,7 +675,10 @@ export default function App({ feedId, screen, workspaceTab }: { feedId: string; 
               active={card.id === activeCard?.id} onActivate={() => setActiveCardId(card.id)} onChanged={() => void refresh()}
               onAction={(action) => runCardAction(card, action)} onReturnToReview={() => returnToReview(card)}
               readingReaction={feed.readingReactions?.[card.id]} onReadingFeedback={() => targetReadingFeedback(card, true)}
-              onReadingReaction={() => { if (!readingDraftStartedRef.current) targetReadingFeedback(card, false); }}
+              onReadingReaction={() => {
+                selectReadingVersion(cardGroups[index].id, card.id);
+                if (!readingDraftStartedRef.current) targetReadingFeedback(card, false);
+              }}
               readingGroup={cardGroups[index]} readingPreference={currentReadingPreference(cardGroups[index], feed.readingPreferences)}
               readingSession={streamMode && tab === "review"}
               onReadingVersion={(cardId) => selectReadingVersion(cardGroups[index].id, cardId)}

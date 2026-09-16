@@ -460,6 +460,38 @@ describe("native reading cards", () => {
 });
 
 describe("descriptive reading engagement", () => {
+  test("records frozen first assignments and exact impressions without scoring an unseen alternative", async () => {
+    const { store, domain } = await setup();
+    const { card, alternative } = await readingGroupFixture(store, domain);
+    const group = groupReadingCards([card, alternative])[0];
+    const members = group.cards.map((item) => ({ cardId: item.id, contentRevision: item.reading!.contentRevision }));
+    const assignment = { id: "random-assignment", groupId: group.id, members, firstCardId: card.id, reason: "randomized_pair" };
+    const input = { clientEventId: "first-impression", sessionId: "blind-visit", contentRevision: card.reading!.contentRevision,
+      type: "impression", assignment, members, position: 0 };
+    const before = await store.readFeed("company-attention");
+    const receipt = await domain.recordReadingEngagement("company-attention", card.id, input);
+    expect((await domain.recordReadingEngagement("company-attention", card.id, input)).event.id).toBe(receipt.event.id);
+    expect(await store.readFeed("company-attention")).toEqual(before);
+    expect(receipt.event.detail).toMatchObject({ readerId: card.reading!.readerId, requestedModel: card.reading!.writer.requestedModel });
+    await domain.recordCardReaction("company-attention", card.id, { clientEventId: "first-like", contentRevision: card.reading!.contentRevision, reaction: "like" });
+    const after = await store.readFeed("company-attention");
+    expect(after.readingReactions?.[card.id]?.reaction).toBe("like");
+    expect(after.readingReactions?.[alternative.id]).toBeUndefined();
+    expect(after.readingPreferences).toEqual({});
+    const summary = await domain.readingEngagement("company-attention");
+    expect(summary.cards).toHaveLength(1);
+    expect(summary.cards[0].impressions).toEqual([{ sessionId: "blind-visit", at: receipt.event.at, assignment, members, position: 0 }]);
+    await domain.recordReadingEngagement("company-attention", alternative.id, { ...input, clientEventId: "other-impression", contentRevision: alternative.reading!.contentRevision, position: 1 });
+    await expect(domain.recordReadingEngagement("company-attention", alternative.id, { ...input, clientEventId: "rewritten-assignment", contentRevision: alternative.reading!.contentRevision,
+      assignment: { ...assignment, firstCardId: alternative.id }, position: 0 })).rejects.toMatchObject({ code: "client_event_conflict" });
+    await expect(domain.recordReadingEngagement("company-attention", card.id, { ...input, clientEventId: "bad-position", position: 1 })).rejects.toMatchObject({ code: "invalid_engagement" });
+    await expect(domain.recordReadingEngagement("company-attention", card.id, { ...input, clientEventId: "bad-members", members: [members[0]] })).rejects.toMatchObject({ code: "invalid_engagement" });
+    const singleMember = members.find((member) => member.cardId === card.id)!;
+    await domain.recordReadingEngagement("company-attention", card.id, { ...input, clientEventId: "late-singleton", sessionId: "earlier-visit", members: [singleMember],
+      assignment: { ...assignment, id: "earlier-singleton-assignment", members: [singleMember], reason: "single_available" } });
+    expect((await domain.readingEngagement("company-attention", card.id)).cards[0].impressions?.[1].assignment.reason).toBe("single_available");
+  });
+
   test("records exact-version dwell, clicks and selection without changing taste or lifecycle", async () => {
     const { store, domain } = await setup();
     const { card, alternative } = await readingGroupFixture(store, domain);
