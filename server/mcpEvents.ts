@@ -48,13 +48,16 @@ export class TendMcpEvents {
   }
   async subscribe(params: any) {
     const identity = this.parse(params, true);
-    if (!await this.authorized(identity.feed, identity.thread)) throw new McpFault(-32012, "Feed is not bound to this thread.");
     if (params.ttlMs !== undefined && params.ttlMs !== null && (!Number.isSafeInteger(params.ttlMs) || params.ttlMs <= 0)) throw new McpFault(-32602, "Invalid subscription lifetime.");
-    // A feed has one conversation owner. Never deliver the same work to two callbacks.
-    const conflict = this.repository.subscriptions().find(sub => sub.feed === identity.feed && sub.id !== identity.id && sub.expires > this.now());
-    if (conflict) throw new McpFault(-32012, "Stop the existing feed subscription before changing its callback.");
+    // Register before any await, so unsubscribe also fences initial authorization.
     const generation = (this.generations.get(identity.id) ?? 0) + 1;
     this.generations.set(identity.id, generation);
+    await this.store.serialize(async () => {
+      if (!await this.authorized(identity.feed, identity.thread)) throw new McpFault(-32012, "Feed is not bound to this thread.");
+      if (this.generations.get(identity.id) !== generation) throw new McpFault(-32012, "Subscription changed during authorization.");
+      const conflict = this.repository.subscriptions().find(sub => sub.feed === identity.feed && sub.id !== identity.id && sub.expires > this.now());
+      if (conflict) throw new McpFault(-32012, "Stop the existing feed subscription before changing its callback.");
+    });
     const challenge = randomUUID(), verificationId = `verify_${randomUUID()}`;
     const body = JSON.stringify({ type: "verification", challenge });
     const verificationKey = createHash("sha256").update(JSON.stringify([identity.url, params.delivery.secret])).digest("hex");
@@ -67,23 +70,26 @@ export class TendMcpEvents {
         && Buffer.byteLength(echoed) === Buffer.byteLength(challenge) && timingSafeEqual(Buffer.from(echoed), Buffer.from(challenge));
     } } catch { /* Do not disclose destination or secrets in protocol errors. */ }
     if (!verified) throw new McpFault(-32015, "Callback verification failed.", { reason: "challenge_failed" });
-    if (this.generations.get(identity.id) !== generation || !await this.authorized(identity.feed, identity.thread)) throw new McpFault(-32012, "Subscription changed during verification.");
-    if (this.repository.subscriptions().some(sub => sub.feed === identity.feed && sub.id !== identity.id && sub.expires > this.now())) throw new McpFault(-32012, "Feed callback changed during verification.");
-    if (this.verified.size >= 100) this.verified.clear();
-    this.verified.set(verificationKey, this.now() + 300_000);
-    const old = this.repository.subscriptions().find(sub => sub.id === identity.id);
-    const expires = this.now() + Math.min(params.ttlMs ?? 86_400_000, 86_400_000);
-    this.repository.save({ ...identity, secret: params.delivery.secret, expires, generation: old?.generation ?? randomUUID(),
-      ...(old && old.secret !== params.delivery.secret ? { previousSecret: old.secret, rotationUntil: this.now() + 300_000 } : {}),
+    return this.store.serialize(async () => {
+      const authorized = await this.authorized(identity.feed, identity.thread);
+      // No await between this final fence and the write, under the transaction owner's lock.
+      if (!authorized || this.generations.get(identity.id) !== generation) throw new McpFault(-32012, "Subscription changed during verification.");
+      if (this.repository.subscriptions().some(sub => sub.feed === identity.feed && sub.id !== identity.id && sub.expires > this.now())) throw new McpFault(-32012, "Feed callback changed during verification.");
+      if (this.verified.size >= 100) this.verified.clear();
+      this.verified.set(verificationKey, this.now() + 300_000);
+      const old = this.repository.subscriptions().find(sub => sub.id === identity.id);
+      const expires = this.now() + Math.min(params.ttlMs ?? 86_400_000, 86_400_000);
+      this.repository.save({ ...identity, secret: params.delivery.secret, expires, generation: old?.generation ?? randomUUID(),
+        ...(old && old.secret !== params.delivery.secret ? { previousSecret: old.secret, rotationUntil: this.now() + 300_000 } : {}),
+      });
+      return { id: identity.id, refreshBefore: new Date(expires).toISOString(), cursor: null, truncated: false };
     });
-    return { id: identity.id, refreshBefore: new Date(expires).toISOString(), cursor: null, truncated: false };
   }
   async unsubscribe(params: any) {
     const identity = this.parse(params, false);
     // Owner-authenticated endpoint can revoke an obsolete binding, too.
     this.generations.set(identity.id, (this.generations.get(identity.id) ?? 0) + 1);
-    this.repository.remove(identity.id);
-    return {};
+    return this.store.serialize(async () => { this.repository.remove(identity.id); return {}; });
   }
   async enqueue(work: WorkItem) {
     if (!input.getStore() || !this.enabled()) return;
@@ -110,6 +116,7 @@ export class TendMcpEvents {
       if (!sub || !await this.current(sub)) continue;
       const work = await this.store.readWork(row.feed,row.work).catch(() => null);
       if (work?.status !== "queued" || work.updatedAt !== row.revision) continue;
+      if (effectiveWorkLane(work, await this.store.readThread(row.feed)) !== "codex") continue;
       pendingAccepted.push({ eventId: row.id, ...JSON.parse(row.body).data });
       if (pendingAccepted.length === 5) break;
     }
@@ -119,33 +126,48 @@ export class TendMcpEvents {
     const row = this.repository.get(eventId);
     const sub = row && this.repository.subscriptions().find(sub => sub.id === row.subscription && sub.generation === row.generation);
     if (!row || !sub || row.status !== "accepted" || row.feed !== feed || sub.thread !== thread || !await this.current(sub)) throw new McpFault(-32012, "No current accepted event reference.");
+    const work = await this.store.readWork(feed, row.work);
+    if (effectiveWorkLane(work, await this.store.readThread(feed)) !== "codex") throw new McpFault(-32012, "Work is no longer in the Codex lane.");
     return row;
   }
   async poll() {
     if (this.polling) return;
     this.polling = true;
     try {
-      for (const row of this.repository.due(this.now())) {
-        const sub = this.repository.subscriptions().find(sub => sub.id === row.subscription && sub.generation === row.generation);
-        const work = await this.store.readWork(row.feed,row.work).catch(() => null);
-        if (!sub || !await this.current(sub) || work?.status !== "queued" || work.updatedAt !== row.revision) {
-          this.repository.settle(row.id,"stopped",row.attempts); continue;
-        }
-        const attempts = row.attempts + 1;
-        // Persist the attempt before networking: interruption retries the same event ID.
-        this.repository.settle(row.id,"pending",attempts,this.now()+30_000);
+      const due = await this.store.serialize(async () => this.repository.due(this.now()));
+      for (const candidate of due) {
+        const attempt = await this.store.serialize(async () => {
+          const row = this.repository.get(candidate.id);
+          if (!row || row.status !== "pending" || row.nextAttempt > this.now()) return null;
+          const sub = this.repository.subscriptions().find(sub => sub.id === row.subscription && sub.generation === row.generation);
+          const work = await this.store.readWork(row.feed,row.work).catch(() => null);
+          const thread = await this.store.readThread(row.feed);
+          if (!sub || !await this.current(sub) || work?.status !== "queued" || work.updatedAt !== row.revision || effectiveWorkLane(work, thread) !== "codex") {
+            this.repository.settle(row.id,"stopped",row.attempts); return null;
+          }
+          const attempts = row.attempts + 1;
+          // Commit before networking; never join an unrelated async UI transaction.
+          this.repository.settle(row.id,"pending",attempts,this.now()+30_000);
+          return { row, sub, attempts };
+        });
+        if (!attempt) continue;
+        const { row, sub, attempts } = attempt;
         let status = 0;
         try {
           const secrets = [sub.secret];
           if (sub.previousSecret && (sub.rotationUntil ?? 0) > this.now()) secrets.push(sub.previousSecret);
           status = (await this.sender(sub.url,webhookHeaders(row.id,sub.id,row.body,secrets,this.now()),row.body)).status;
         } catch { /* Network failure uses bounded retry. */ }
-        const current = this.repository.subscriptions().find(item => item.id === sub.id && item.generation === sub.generation);
-        if (!current || !await this.current(current)) { this.repository.settle(row.id,"stopped",attempts); continue; }
-        if (status >= 200 && status < 300) this.repository.settle(row.id,"accepted",attempts);
-        else if (status === 410) { this.repository.remove(sub.id); this.repository.settle(row.id,"stopped",attempts); }
-        else if (status === 413 || (status >= 400 && status < 500 && status !== 408 && status !== 429) || attempts >= 8) this.repository.settle(row.id,"blocked",attempts);
-        else this.repository.settle(row.id,"pending",attempts,this.now()+Math.min(1_000*2**attempts,300_000));
+        await this.store.serialize(async () => {
+          const latest = this.repository.get(row.id);
+          if (!latest || latest.status !== "pending" || latest.attempts !== attempts) return;
+          const current = this.repository.subscriptions().find(item => item.id === sub.id && item.generation === sub.generation);
+          if (!current || !await this.current(current)) { this.repository.settle(row.id,"stopped",attempts); return; }
+          if (status >= 200 && status < 300) this.repository.settle(row.id,"accepted",attempts);
+          else if (status === 410) { this.repository.remove(sub.id); this.repository.settle(row.id,"stopped",attempts); }
+          else if (status === 413 || (status >= 400 && status < 500 && status !== 408 && status !== 429) || attempts >= 8) this.repository.settle(row.id,"blocked",attempts);
+          else this.repository.settle(row.id,"pending",attempts,this.now()+Math.min(1_000*2**attempts,300_000));
+        });
       }
     } finally { this.polling = false; }
   }

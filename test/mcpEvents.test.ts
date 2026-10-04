@@ -11,6 +11,7 @@ import { TendMcpEvents, WORK_READY } from "../server/mcpEvents";
 import { callbackUrl, publicIPv4, signingKey } from "../server/mcpWebhook";
 import { apiRoutes } from "../server/routes/api";
 import { mcpRoutes } from "../server/routes/mcp";
+import { DrainDispatcher } from "../server/dispatcher";
 
 const roots: string[] = [];
 const closers: (() => void)[] = [];
@@ -176,4 +177,90 @@ test("backup export preserves user work while removing delivery secrets and gran
     expect(backup.query("SELECT id FROM work_items WHERE id=?").get(work.id)).toEqual({ id: work.id });
     expect(await t.events.active("inbox")).toBe(true);
   } finally { backup.close(); }
+});
+
+test("legacy auto-drain tick cannot dispatch unclaimed event work after its age threshold", async () => {
+  const t = await setup(); await t.events.subscribe(subscription()); const work = await t.input();
+  work.createdAt = new Date(Date.now() - 120_000).toISOString(); await t.sqlite.workItems().write(work);
+  let runs = 0;
+  const dispatcher = new DrainDispatcher(t.store, { appRoot: t.root, runtimeRoot: t.root, codexAvailable: () => true,
+    eventsActive: feed => t.events.active(feed), runDrain: async () => { runs++; return 0; } });
+  await dispatcher.tick(); expect(runs).toBe(0);
+  expect((await t.store.readWork("inbox", work.id)).status).toBe("queued");
+  await t.events.unsubscribe(subscription()); await dispatcher.tick(); expect(runs).toBe(1);
+  for (let attempt = 0; attempt < 100 && !(await t.store.readEvents("inbox")).some(event => event.type === "drain.completed"); attempt++) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  expect((await t.store.readEvents("inbox")).some(event => event.type === "drain.completed")).toBe(true);
+});
+
+function gate() {
+  let release!: () => void;
+  const promise = new Promise<void>(resolve => { release = resolve; });
+  return { promise, release };
+}
+
+test("unsubscribe fences subscribe during initial and final awaited authorization", async () => {
+  for (const window of [1, 2]) {
+    const t = await setup(), entered = gate(), resume = gate();
+    let calls = 0;
+    const authorize = t.events.authorized.bind(t.events);
+    t.events.authorized = async (feed, thread) => {
+      if (++calls === window) { entered.release(); await resume.promise; }
+      return authorize(feed, thread);
+    };
+    const subscribing = t.events.subscribe(subscription()).then(() => "saved", () => "revoked");
+    await entered.promise;
+    const revoking = t.events.unsubscribe(subscription());
+    resume.release(); await revoking;
+    expect(await subscribing).toBe("revoked");
+    expect(t.events.repository.subscriptions()).toHaveLength(0);
+  }
+});
+
+test("successful unsubscribe cannot roll back with an unrelated UI transaction", async () => {
+  const t = await setup(); await t.events.subscribe(subscription());
+  const entered = gate(), resume = gate();
+  const transaction = t.store.serializeAtomic(async () => { entered.release(); await resume.promise; throw new Error("Intentional UI rollback"); }).catch(() => {});
+  await entered.promise;
+  const revoking = t.events.unsubscribe(subscription());
+  // Let the old implementation finish its uncoordinated SQLite write inside the open transaction.
+  await new Promise(resolve => setTimeout(resolve, 10));
+  resume.release(); await transaction; await revoking;
+  expect(t.events.repository.subscriptions()).toHaveLength(0);
+});
+
+test("successful callback settlement cannot roll back with an unrelated UI transaction", async () => {
+  const t = await setup(); await t.events.subscribe(subscription()); await t.input();
+  const networkEntered = gate(), receipt = gate();
+  const service = new TendMcpEvents(t.sqlite.mcpEvents(), t.store, async () => { networkEntered.release(); await receipt.promise; return { status: 204, body: "" }; });
+  const publishing = service.poll(); await networkEntered.promise;
+  const entered = gate(), resume = gate();
+  const transaction = t.store.serializeAtomic(async () => { entered.release(); await resume.promise; throw new Error("Intentional UI rollback"); }).catch(() => {});
+  await entered.promise; receipt.release(); await new Promise(resolve => setTimeout(resolve, 10));
+  resume.release(); await transaction; await publishing;
+  expect(service.repository.deliveries()[0].status).toBe("accepted");
+});
+
+test("verified subscription creation cannot join an unrelated rollback", async () => {
+  const t = await setup(), callbackEntered = gate(), verified = gate();
+  const service = new TendMcpEvents(t.sqlite.mcpEvents(), t.store, async (_url, _headers, body) => {
+    callbackEntered.release(); await verified.promise;
+    return { status: 200, body: JSON.stringify({ challenge: JSON.parse(body).challenge }) };
+  });
+  const subscribing = service.subscribe(subscription()); await callbackEntered.promise;
+  const entered = gate(), resume = gate();
+  const transaction = t.store.serializeAtomic(async () => { entered.release(); await resume.promise; throw new Error("Intentional UI rollback"); }).catch(() => {});
+  await entered.promise; verified.release(); await new Promise(resolve => setTimeout(resolve, 10));
+  resume.release(); await transaction; await subscribing;
+  expect(service.repository.subscriptions()).toHaveLength(1);
+});
+
+test("changing an unassigned item's effective lane stops a pending Codex event without a work revision change", async () => {
+  const t = await setup(); await t.events.subscribe(subscription()); const work = await t.input();
+  const thread = await t.store.readThread("inbox");
+  await t.store.writeThread("inbox", { ...thread, drainAgent: "claude", agents: { ...thread.agents, claude: { threadId: "claude-thread", boundAt: new Date().toISOString() } } });
+  expect((await t.store.readWork("inbox", work.id)).updatedAt).toBe(work.updatedAt);
+  await t.events.poll(); expect(t.deliveries).toHaveLength(0);
+  expect(t.events.repository.deliveries()[0].status).toBe("stopped");
 });

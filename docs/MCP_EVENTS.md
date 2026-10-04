@@ -62,6 +62,10 @@ Subscription identities are deterministic and refresh in place. Subscriptions la
 at most 24 hours and must be refreshed before `refreshBefore`. A feed has one active
 callback. Unsubscribe is idempotent and fences verification in flight. Expiry,
 rebinding, cancellation, or changed queued-work revisions stop pending delivery.
+Subscription revocation fences both initial and final authorization waits. Grant,
+revocation, attempt, and receipt writes use the same mutation owner as UI transactions;
+callback networking runs outside that lock, so unrelated UI rollback cannot undo a
+successful revocation or delivery receipt.
 
 The outbox survives process interruption. Retries keep the event ID and exact body,
 refresh the signing timestamp, and use bounded exponential backoff (eight attempts).
