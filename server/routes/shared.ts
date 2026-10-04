@@ -5,6 +5,7 @@ import type { AttentionStore } from "../store";
 import type { MobileSyncStatus } from "../../shared/mobile";
 import type { NativeApprovalBroker } from "../nativeApprovals";
 import type { ReaderRunner } from "../readers";
+import type { TendMcpEvents } from "../mcpEvents";
 
 export type Notify = (data: unknown) => void;
 
@@ -21,6 +22,7 @@ export type LocalRouteContext = {
   mutationToken: string;
   nativeApprovals?: NativeApprovalBroker;
   readers?: ReaderRunner;
+  mcpEvents?: TendMcpEvents;
 };
 
 export async function body(c: any): Promise<Record<string, unknown>> {
@@ -101,7 +103,7 @@ function isLoopbackOrigin(origin: string): boolean {
   }
 }
 
-function tokensMatch(left: string, right: string): boolean {
+export function tokensMatch(left: string, right: string): boolean {
   if (!right) return false;
   const leftBytes = Buffer.from(left);
   const rightBytes = Buffer.from(right);

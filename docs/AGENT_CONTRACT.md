@@ -159,3 +159,12 @@ collection, search, ranking, or framing. In `research` mode it may originate one
 when the feed's configured source permissions support that research. Record the independently
 collected answer in normal source snapshots, pin the context update to the sweep batch, and attach a
 context influence receipt only when the context materially changed the card.
+# Event-driven work
+
+On `tend.work.ready`, claim the exact accepted event reference through
+`tend_work_claim`, then read its work, feed policy, and card. Repeated delivery
+replays a claim rather than authorizing another action. Ordinary instruction
+responses can use `tend_work_respond`; specialized work and external actions retain
+the existing scoped CLI workflow and approval/verification requirements. Only
+authenticated user UI queue mutations publish events; model writes do not wake a
+conversation. See [MCP events](MCP_EVENTS.md).

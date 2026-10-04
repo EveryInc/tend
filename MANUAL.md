@@ -538,3 +538,10 @@ See [docs/IOS.md](./docs/IOS.md) for setup and device validation.
 - [docs/AGENT_CONTRACT.md](./docs/AGENT_CONTRACT.md) documents the JSON CLI contract.
 - [docs/SECURITY.md](./docs/SECURITY.md) describes local, Chronicle, and mobile trust boundaries.
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) explains runtime ownership and persistence.
+# Optional conversation wake-ups
+
+Tend can send queued UI instructions to its feed's bound Work conversation through
+MCP events. A private connection and an actual conversation subscription must be
+configured first; [MCP events](docs/MCP_EVENTS.md) explains setup and verification.
+The response appears in the existing work/card UI. Draft-only and policy-only edits
+retain their current behavior, and event receipt does not authorize external actions.

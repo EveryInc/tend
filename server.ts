@@ -13,6 +13,8 @@ import { MobileSyncWorker } from "./server/mobile/sync";
 import { makeToken } from "./server/util";
 import { NativeApprovalBroker } from "./server/nativeApprovals";
 import { ReaderRunner } from "./server/readers";
+import { TendMcpEvents } from "./server/mcpEvents";
+import { mcpRoutes } from "./server/routes/mcp";
 
 declare const Bun: {
   serve(options: { port: number; hostname: string; idleTimeout: number; fetch: (...args: any[]) => any }): { stop(force?: boolean): void };
@@ -26,13 +28,15 @@ const runtimeRoot = resolveRuntimeRoot(root);
 const artifactsDir = resolveArtifactsDir(root);
 const dataDir = resolveDataDir(root);
 const { sqlite, store } = await createLocalRuntime(dataDir, resolveDbPath(root));
-const domain = new AttentionDomain(store, artifactsDir);
+const mcpToken = process.env.TEND_MCP_TOKEN ?? "";
+const mcpEvents = new TendMcpEvents(sqlite.mcpEvents(), store, undefined, undefined, () => Boolean(mcpToken));
+const domain = new AttentionDomain(store, artifactsDir, work => mcpEvents.enqueue(work));
 const readers = new ReaderRunner(store);
 const mutationToken = process.env.ATTENTION_MUTATION_TOKEN ?? makeToken();
 const realtime = createRealtimeHub();
 const feedEventBridge = createFeedEventBridge(store, realtime.notify);
 const nativeApprovals = new NativeApprovalBroker(store, () => realtime.notify({ changedAt: new Date().toISOString() }));
-const drainDispatcher = new DrainDispatcher(store, { appRoot: root, runtimeRoot, nativeApprovals });
+const drainDispatcher = new DrainDispatcher(store, { appRoot: root, runtimeRoot, nativeApprovals, eventsActive: feed => mcpEvents.active(feed) });
 const mobileConfig = mobileCloudConfigFromEnv();
 const mobileSync = mobileConfig
   ? new MobileSyncWorker(store, domain, new SupabaseMobileCloudClient(mobileConfig))
@@ -45,6 +49,7 @@ app.route("/", apiRoutes({
   domain,
   mobileStatus: () => mobileSync?.currentStatus() ?? { enabled: false },
   mutationToken,
+  mcpEvents,
   nativeApprovals,
   readers,
   notify: realtime.notify,
@@ -53,6 +58,7 @@ app.route("/", apiRoutes({
   sqlite,
   store,
 }));
+app.route("/", mcpRoutes({ domain, store, events: mcpEvents, token: () => mcpToken, notify: realtime.notify }));
 app.route("/", realtime.routes());
 app.route("/", assetRoutes(clientDir));
 
@@ -71,6 +77,7 @@ try {
   // also protects this data directory when a second server chooses another port.
   await readers.recoverInterrupted();
   await feedEventBridge.start();
+  mcpEvents.start();
   if (process.env.ATTENTION_AUTODRAIN === "1") drainDispatcher.start();
   mobileSync?.start();
   initialized = true;
@@ -83,6 +90,7 @@ try {
 export async function closeServer() {
   initialized = false;
   mobileSync?.stop();
+  mcpEvents.stop();
   drainDispatcher.stop();
   nativeApprovals.close();
   feedEventBridge.stop();

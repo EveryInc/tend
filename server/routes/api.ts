@@ -8,7 +8,7 @@ import type { ReaderConfig } from "../../shared/readers";
 import { ReadingCardRequestError, mindContextPublicationReceipt } from "../domain";
 import { versionInfo } from "../version";
 import { IMAGE_NAME, MAX_CARD_IMAGE_BYTES, readCardImage } from "../imageAttachments";
-import { body, hasCurrentMutationSession, mutation, mutationAccessError, type LocalRouteContext } from "./shared";
+import { body, hasCurrentMutationSession, mutation, mutationAccessError, tokensMatch, type LocalRouteContext } from "./shared";
 
 async function readingMutation(c: any, context: LocalRouteContext, callback: () => Promise<unknown>, announce = true) {
   const accessError = mutationAccessError(c, context.mutationToken);
@@ -36,7 +36,9 @@ export function apiRoutes(context: LocalRouteContext): Hono {
   app.use("/api/*", async (c, next) => {
     const error = mutationAccessError(c, mutationToken);
     if (error) return error;
-    await next();
+    if (c.req.method === "POST" && context.mcpEvents && tokensMatch(c.req.header("x-attention-mutation-token") ?? "", mutationToken)) {
+      await context.mcpEvents.userInput(next);
+    } else await next();
   });
 
   app.get("/api/session", (c) => {

@@ -22,6 +22,7 @@ export interface DispatcherOptions {
   runDrain?: (feedId: string, threadId: string, prompt: string) => Promise<number>;
   codexAvailable?: () => boolean;
   nativeApprovals?: NativeApprovalBroker;
+  eventsActive?: (feedId: string) => Promise<boolean>;
 }
 
 export interface DrainDecision {
@@ -115,6 +116,7 @@ export class DrainDispatcher {
 
   private async recoverStaleRunning(): Promise<void> {
     for (const feedId of await this.store.listFeedIds()) {
+      if (await this.options.eventsActive?.(feedId)) continue;
       await this.store.serialize(async () => {
         const drain = await this.store.readDrainState(feedId);
         if (drain.status !== "running" || this.running.has(feedId)) return;

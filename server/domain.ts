@@ -1057,7 +1057,8 @@ function cleanupCompleted(work: WorkItem): boolean {
 }
 
 export class AttentionDomain {
-  constructor(readonly store: AttentionStore, readonly artifactsDir = path.join(path.dirname(store.dataDir), "output")) {}
+  constructor(readonly store: AttentionStore, readonly artifactsDir = path.join(path.dirname(store.dataDir), "output"),
+    private readonly onQueuedWork?: (work: WorkItem) => Promise<void>) {}
 
   async importImage(feedId: string, cardId: string, contentRevision: string, bytes: Buffer, filename: string): Promise<CardBlock> {
     safeIdentifier(feedId, "Feed id");
@@ -1106,6 +1107,7 @@ export class AttentionDomain {
     if (work.status !== "queued") throw new Error(`Cannot persist non-queued work through queued wake helper: ${work.status}`);
     await this.store.writeWork(work);
     await options.afterWrite?.();
+    await this.onQueuedWork?.(work);
     await this.store.afterCommit(() => this.maybeEmitClaudeWake(feedId, work, options.thread, options.wake));
   }
 
@@ -2292,7 +2294,7 @@ export class AttentionDomain {
 
   async updateQueuedWorkInstruction(feedId: string, workId: string, instruction: string): Promise<WorkItem> {
     if (!instruction.trim()) throw new Error("Instruction is required.");
-    return this.store.serialize(async () => {
+    return this.store.serializeAtomic(async () => {
       const work = await this.store.readWork(feedId, workId);
       if (work.status !== "queued") throw new Error("Only queued notes can be edited before Codex starts.");
       if (
@@ -2309,6 +2311,7 @@ export class AttentionDomain {
       appendHistory(card, "user.edited_queued_instruction", work.instruction);
       await this.store.writeCard(card);
       await this.store.appendEvent({ feedId, cardId: work.cardId, workId, type: "work.instruction_edited" });
+      await this.onQueuedWork?.(work);
       return work;
     });
   }
@@ -2554,7 +2557,7 @@ export class AttentionDomain {
       .map(workItemView);
   }
 
-  async claimWork(feedId: string, threadId: string, explicitCrossFeed = false, sessionId?: string): Promise<WorkClaimResult> {
+  async claimWork(feedId: string, threadId: string, explicitCrossFeed = false, sessionId?: string, expectedWorkId?: string, expectedRevision?: string): Promise<WorkClaimResult> {
     const caller = await this.assertThread(feedId, threadId, explicitCrossFeed, sessionId);
     return this.store.serialize(async () => {
       const [feed, thread] = await Promise.all([
@@ -2562,7 +2565,11 @@ export class AttentionDomain {
         this.store.readThread(feedId),
       ]);
       const workItems = orderedWorkItems(await this.store.readWorkItems(feedId));
+      if (expectedWorkId && thread.homeThreadId !== threadId) throw new Error("Feed binding changed before claim.");
+      const expected = expectedWorkId && workItems.find(item => item.id === expectedWorkId);
+      if (expected && expected.status === "queued" && expectedRevision && expected.updatedAt !== expectedRevision) throw new Error("Work changed before claim.");
       const existing = workItems.find((work) => work.status === "working" && callerCanSeeWork(caller, work, thread));
+      if (existing && expectedWorkId && existing.id !== expectedWorkId) throw new Error("Another work item is already claimed in this lane.");
       if (existing && !(await this.quarantineLegacyMutationWork(feed, existing))) {
         const claimant = claimantForWork(caller, existing, thread);
         if (!existing.claimedBy) {
@@ -2578,10 +2585,10 @@ export class AttentionDomain {
         }
         return claimedByReport(existing, existing.claimedBy);
       }
-      let work = workItems.find((item) => item.status === "queued" && callerCanSeeWork(caller, item, thread));
+      let work = workItems.find((item) => item.status === "queued" && (!expectedWorkId || item.id === expectedWorkId) && callerCanSeeWork(caller, item, thread));
       while (work && await this.quarantineLegacyMutationWork(feed, work)) {
         const nextItems = orderedWorkItems(await this.store.readWorkItems(feedId));
-        work = nextItems.find((item) => item.status === "queued" && callerCanSeeWork(caller, item, thread));
+        work = nextItems.find((item) => item.status === "queued" && (!expectedWorkId || item.id === expectedWorkId) && callerCanSeeWork(caller, item, thread));
       }
       if (!work) return null;
       if (work.kind === "compound_learnings") {
