@@ -2,6 +2,8 @@ import { lookup } from "node:dns/promises";
 import { request } from "node:https";
 import { isIP } from "node:net";
 import { createHmac } from "node:crypto";
+import type { LookupAddress } from "node:dns";
+import type { LookupFunction } from "node:net";
 
 export function signingKey(secret: string): Buffer {
   if (!/^whsec_[A-Za-z0-9+/]+={0,2}$/.test(secret)) throw new Error("Invalid webhook signing secret.");
@@ -27,6 +29,18 @@ export function callbackUrl(value: string): URL {
 export type WebhookResult = { status: number; body: string };
 export type WebhookSender = (url: string, headers: Record<string,string>, body: string) => Promise<WebhookResult>;
 
+/** Bun and modern Node request all addresses when selecting a socket family. */
+export function pinnedLookup(addresses: LookupAddress[]): LookupFunction {
+  if (!addresses.length || addresses.some(item => item.family !== 4 || !publicIPv4(item.address))) throw new Error("Non-public callback address.");
+  return (_host, options, callback) => {
+    if (options.all) {
+      // net.LookupFunction's legacy callback type omits dns.lookup's all-address overload.
+      const all = callback as unknown as (error: Error | null, addresses: LookupAddress[]) => void;
+      all(null, addresses);
+    } else callback(null, addresses[0].address, 4);
+  };
+}
+
 /** Resolve again on each delivery; pin the actual socket while preserving hostname/TLS. */
 export const sendWebhook: WebhookSender = async (value, headers, body) => {
   const url = callbackUrl(value);
@@ -36,8 +50,9 @@ export const sendWebhook: WebhookSender = async (value, headers, body) => {
   ]);
   if (!addresses.length || addresses.some(item => !publicIPv4(item.address))) throw new Error("Non-public callback address.");
   return new Promise((resolve, reject) => {
-    const req = request(url, { method: "POST", headers, agent: false,
-      lookup: (_host, _options, callback) => callback(null, addresses[0].address, 4),
+    const req = request(url, { method: "POST", headers, agent: false, rejectUnauthorized: true,
+      servername: isIP(url.hostname) ? undefined : url.hostname,
+      lookup: pinnedLookup(addresses),
     }, response => {
       let size = 0; const chunks: Buffer[] = [];
       response.on("data", chunk => { size += chunk.length; if (size > 16_384) req.destroy(new Error("Callback response too large.")); else chunks.push(chunk); });

@@ -8,7 +8,8 @@ import { Database } from "bun:sqlite";
 import { createLocalRuntime } from "../server/runtime";
 import { AttentionDomain } from "../server/domain";
 import { TendMcpEvents, WORK_READY } from "../server/mcpEvents";
-import { callbackUrl, publicIPv4, signingKey } from "../server/mcpWebhook";
+import { callbackUrl, publicIPv4, signingKey, pinnedLookup } from "../server/mcpWebhook";
+import { request as httpsRequest } from "node:https";
 import { apiRoutes } from "../server/routes/api";
 import { mcpRoutes } from "../server/routes/mcp";
 import { DrainDispatcher } from "../server/dispatcher";
@@ -263,4 +264,33 @@ test("changing an unassigned item's effective lane stops a pending Codex event w
   expect((await t.store.readWork("inbox", work.id)).updatedAt).toBe(work.updatedAt);
   await t.events.poll(); expect(t.deliveries).toHaveLength(0);
   expect(t.events.repository.deliveries()[0].status).toBe("stopped");
+});
+
+test("real HTTPS request lookup receives a pinned address array when Bun requests all addresses", async () => {
+  const lookup = pinnedLookup([{ address: "8.8.8.8", family: 4 }]);
+  lookup("callback.example", { family: 4 }, (error, address, family) => {
+    expect(error).toBeNull(); expect(address).toBe("8.8.8.8"); expect(family).toBe(4);
+  });
+  lookup("callback.example", { all: true }, ((error: Error | null, addresses: unknown) => {
+    expect(error).toBeNull(); expect(addresses).toEqual([{ address: "8.8.8.8", family: 4 }]);
+  }) as any);
+  let observed = false;
+  await new Promise<void>((resolve, reject) => {
+    const req = httpsRequest("https://callback.example/events", { agent: false, lookup: (host, options, callback) => {
+      expect(host).toBe("callback.example");
+      lookup(host, options, ((error: Error | null, value: unknown, family?: number) => {
+        try {
+          expect(error).toBeNull();
+          if (options.all) expect(value).toEqual([{ address: "8.8.8.8", family: 4 }]);
+          else { expect(value).toBe("8.8.8.8"); expect(family).toBe(4); }
+          observed = true;
+        } catch (error) { reject(error); }
+        // Abort before connecting: this exercises actual runtime lookup shape without any public request.
+        callback(new Error("Synthetic transport stop"), "", 4);
+      }) as any);
+    } });
+    req.on("error", () => resolve()); req.end();
+  });
+  expect(observed).toBe(true);
+  expect(() => pinnedLookup([{ address: "127.0.0.1", family: 4 }])).toThrow();
 });
