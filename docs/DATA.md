@@ -70,3 +70,11 @@ Older data-directory-only backups are rehydrated in staging.
 Tend refuses to import while its configured API reports the same home active.
 If replacement fails, rollback restores only files that were moved.
 If rollback fails, the error identifies the preserved recovery directory instead of deleting it.
+# MCP delivery state
+
+Optional `mcp_event_subscriptions` and `mcp_event_outbox` tables are additive to the
+existing database. They hold delivery secrets and reference-only delivery records;
+restrict access to the database and any raw database copies. They are not mirrored
+under `data/`; Tend backup export strips these tables, so backup import cannot restore
+an old delivery grant. Reconnect and subscribe after
+restoring; do not copy another app's subscriptions. See [MCP events](MCP_EVENTS.md).

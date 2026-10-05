@@ -91,3 +91,11 @@ receipts make retries idempotent after network or worker failures.
 
 Supabase is disposable transport. It does not own passes, cards, approvals, work status, or connector
 access. Deleting and rebuilding the cloud mirror cannot change the canonical local workflow state.
+# MCP event adapter
+
+`server/mcpEvents.ts` manages verified subscriptions and delivery; `/mcp` exposes
+authenticated event and scoped work methods on the existing loopback server.
+`McpEventRepository` uses the runtime SQLite connection so work and outbox commit
+together. Current UI mutations establish the publication context; agent writes do
+not. Active event subscriptions suppress the legacy dispatcher for that feed.
+See [MCP events](MCP_EVENTS.md) for transport boundaries and live verification.

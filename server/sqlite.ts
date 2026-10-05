@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { attentionDbPath } from "./paths";
+import { McpEventRepository } from "./repositories/mcpEvents";
 import type { Card, FeedEvent, MindContextBinding, MindContextUpdate, PolicyRevision, RevisionProposal, RoutineActionGroup, SourceRecipe, SourceRun, SweepBatch, SweepFeedbackTrace, SweepState, WorkItem, WorkspaceRevision } from "../shared/types";
 import type { MobileCommandReceipt } from "../shared/mobile";
 import type { CardRepository } from "./repositories/cards";
@@ -216,6 +217,11 @@ export class LocalSqliteStore {
   async backupTo(targetPath: string): Promise<void> {
     await mkdir(path.dirname(targetPath), { recursive: true });
     this.database().exec(`VACUUM INTO '${targetPath.replaceAll("'", "''")}';`);
+    // Delivery grants belong to the running private connection, never to an imported backup.
+    const backup = new Database(targetPath);
+    try {
+      backup.exec("PRAGMA secure_delete=ON; DROP TABLE IF EXISTS mcp_event_subscriptions; DROP TABLE IF EXISTS mcp_event_outbox; VACUUM;");
+    } finally { backup.close(); }
   }
 
   async transaction<T>(callback: () => Promise<T>): Promise<T> {
@@ -281,6 +287,12 @@ export class LocalSqliteStore {
 
   workItems(): WorkItemRepository {
     return new SqliteWorkItemRepository(() => this.database());
+  }
+
+  mcpEvents(): McpEventRepository {
+    const repository = new McpEventRepository(() => this.database());
+    repository.init();
+    return repository;
   }
 
   private database(): Database {

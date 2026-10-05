@@ -22,6 +22,7 @@ export interface DispatcherOptions {
   runDrain?: (feedId: string, threadId: string, prompt: string) => Promise<number>;
   codexAvailable?: () => boolean;
   nativeApprovals?: NativeApprovalBroker;
+  eventsActive?: (feedId: string) => Promise<boolean>;
 }
 
 export interface DrainDecision {
@@ -126,6 +127,7 @@ export class DrainDispatcher {
   async tick(): Promise<void> {
     const now = Date.now();
     for (const feedId of await this.store.listFeedIds()) {
+      if (await this.options.eventsActive?.(feedId)) continue;
       const thread = await this.store.readThread(feedId);
       const work = await this.store.readWorkItems(feedId);
       const drain = await this.store.readDrainState(feedId);
@@ -143,6 +145,7 @@ export class DrainDispatcher {
   }
 
   private async dispatch(feedId: string, threadId: string, decision: DrainDecision): Promise<void> {
+    if (await this.options.eventsActive?.(feedId)) return;
     if (this.running.has(feedId)) return;
     this.running.add(feedId);
     const prompt = drainPrompt(feedId, threadId);

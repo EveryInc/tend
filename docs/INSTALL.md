@@ -147,3 +147,9 @@ XcodeGen, an Apple Account configured in Xcode, and an iOS 17 device or simulato
 Developer Program membership is needed only for TestFlight or App Store distribution. See
 [`docs/IOS.md`](./IOS.md) for the complete requirements, magic-link, worker, signing, installation,
 and validation guide.
+# Optional event connection
+
+For a private connection from the existing runtime to its actual bound dot or Work
+conversation, follow [MCP event setup](MCP_EVENTS.md). Configure the verified original
+`ATTENTION_HOME` before startup. `/mcp` requires owner-supplied `TEND_MCP_TOKEN`;
+never expose the whole UI server through a public transport.

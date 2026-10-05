@@ -304,3 +304,10 @@ through the private process described in [docs/SECURITY.md](./docs/SECURITY.md),
 ## License
 
 Tend is available under the [MIT License](./LICENSE).
+# Optional MCP events
+
+The existing local runtime can publish queued user inputs to its bound Work
+conversation through an authenticated MCP event connection. See
+[setup and live acceptance testing](docs/MCP_EVENTS.md). The connection is disabled
+until the runtime owner configures private MCP access and subscribes the actual
+destination conversation.
