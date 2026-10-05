@@ -8,6 +8,13 @@ import { mcpWorkTools, TendMcpWork } from "../mcpWork";
 export function mcpRoutes(context: { domain: AttentionDomain; store: AttentionStore; events: TendMcpEvents; token: () => string; notify: Notify }) {
   const app = new Hono();
   const work = new TendMcpWork(context);
+  // This owner-bearer adapter does not advertise OAuth. Keep metadata probes
+  // and unsupported streaming GETs out of the UI's HTML fallback.
+  app.get("/.well-known/*", c => c.json({ error: "Metadata not available." }, 404));
+  app.get("/mcp", c => {
+    c.header("allow", "POST");
+    return c.json({ error: "Use JSON-RPC POST." }, 405);
+  });
   app.post("/mcp", async c => {
     c.header("cache-control", "no-store");
     if (!context.token() || c.req.header("origin") || !tokensMatch(c.req.header("authorization") ?? "", `Bearer ${context.token()}`)) return c.json({ error: "MCP authentication required." }, 401);

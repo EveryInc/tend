@@ -18,7 +18,9 @@ This adds no second app, model credentials, replacement database, or cloud datab
    Never expose `/api/session`, the UI mutation API, or the whole loopback server.
    Obtain approval before creating a persistent credential, new tunnel, or expanded
    access grant. Do not reuse another app's transport or credentials.
-3. Connect/rescan this endpoint through the original Tend plugin. Confirm
+3. Connect/rescan this endpoint through the original runtime's private Tend MCP
+   connection. If none exists, register one for this same runtime; do not reuse a
+   separate app's connection. Confirm
    `server/discover` advertises protocol `2026-07-28` and `events/list` lists
    `tend.work.ready`. A normal webhook URL or local Codex process does not establish
    a subscription to a dot.
@@ -33,6 +35,11 @@ The bearer grants a single local owner access to all locally bound feeds; the
 thread filter is a routing constraint, not independently authenticated conversation
 identity. Deploy only behind private owner access. A hosted multi-user service
 requires per-user authentication and grants rather than this local-owner adapter.
+
+The endpoint supports JSON-RPC POST. Unsupported streaming GET returns 405, and
+OAuth metadata probes return 404 because this owner-bearer adapter does not advertise
+OAuth. These probes must not receive the UI's HTML fallback; private tunnel clients
+use the metadata responses to determine readiness.
 
 ## What wakes the conversation
 

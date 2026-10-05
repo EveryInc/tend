@@ -44,6 +44,21 @@ async function setup() {
   return { ...runtime, root, domain, events, app, rpc, input, deliveries, advance: (ms: number) => { now += ms; }, setStatus: (value: number) => { status = value; } };
 }
 
+test("MCP and OAuth metadata probes do not fall through to UI HTML", async () => {
+  const t = await setup();
+  t.app.get("*", c => c.html("<html>Original Tend UI</html>"));
+  const get = await t.app.request("/mcp");
+  expect(get.status).toBe(405);
+  expect(get.headers.get("allow")).toBe("POST");
+  for (const path of ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp", "/.well-known/oauth-authorization-server", "/.well-known/openid-configuration"]) {
+    const response = await t.app.request(path);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("content-type")).toContain("application/json");
+  }
+  expect((await t.rpc("server/discover")).result.capabilities.events).toEqual({});
+  expect((await t.rpc("server/discover", {}, "wrong")).status).toBe(401);
+});
+
 test("authenticated discovery, actual input route, signed delivery, exact claim, response visible in original state, duplicate replay", async () => {
   const t = await setup();
   expect((await t.rpc("server/discover")).result.capabilities.events).toEqual({});
