@@ -4073,3 +4073,25 @@ describe("local card dismissal (Tend-only, no source cleanup)", () => {
     expect((await store.readCard("inbox", legacy.id)).actions).toEqual(legacy.actions);
   });
 });
+
+test("feed reads project saved email dates without rewriting old cards", async () => {
+  const { store, domain } = await setup();
+  const snapshot = {
+    kind: "gmail_thread_metadata", threadId: "abc123", sourceMailbox: "owner@example.com",
+    subject: "Workshop", receivedAt: "2026-07-15T11:47:00+02:00",
+  };
+  const run = await domain.recordSourceRun("inbox", "gmail-inbox", [snapshot], [], {});
+  await domain.recordSweepBatch("inbox", [run]);
+  const original = await domain.upsertCard("inbox", {
+    id: "email-abc123", title: "Confirm the attendee list", why: "The organizer needs a reply.",
+    sourceRunIds: [run],
+    blocks: [{ id: "source", type: "receipt", text: "Thread ID: abc123." }],
+  });
+  const view = await store.readFeed("inbox");
+  expect(view.cards.find((card) => card.id === original.id)?.emailDates).toEqual([
+    { threadId: snapshot.threadId, receivedAt: snapshot.receivedAt, subject: snapshot.subject },
+  ]);
+  expect(await store.readCard("inbox", original.id)).toEqual(original);
+  await store.writeCard(view.cards.find((card) => card.id === original.id)!);
+  expect(await store.readCard("inbox", original.id)).not.toHaveProperty("emailDates");
+});

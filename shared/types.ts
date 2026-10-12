@@ -454,6 +454,7 @@ export interface Card {
   eyebrow: string;
   why: string;
   sourceMailbox?: string;
+  emailDates?: Array<{ threadId: string; receivedAt: string; subject?: string }>;
   sourceRunIds?: string[];
   contextInfluence?: CardContextInfluence;
   reading?: CardReading;
